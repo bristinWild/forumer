@@ -4,6 +4,7 @@ add_executable(forumer_core_tests
     test_vault.cpp
     test_mnemonic.cpp
     test_identity.cpp
+    test_account_store.cpp
 )
 
 target_link_libraries(forumer_core_tests PRIVATE forumer_core)

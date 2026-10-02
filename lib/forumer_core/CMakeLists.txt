@@ -42,6 +42,7 @@ add_library(forumer_core STATIC
     src/vault.cpp
     src/mnemonic.cpp
     src/identity.cpp
+    src/account_store.cpp
 )
 
 target_include_directories(forumer_core PUBLIC
