@@ -24,10 +24,22 @@ if(NOT TARGET forumer::sodium)
         INTERFACE_INCLUDE_DIRECTORIES "${SODIUM_INCLUDE_DIR}")
 endif()
 
+# --- nlohmann/json (header-only) ---------------------------------------------
+# The module build provides it as a CMake package; standalone test builds may
+# only have the header, so fall back to locating it directly.
+find_package(nlohmann_json 3 QUIET)
+if(NOT TARGET nlohmann_json::nlohmann_json)
+    find_path(NLOHMANN_JSON_INCLUDE_DIR nlohmann/json.hpp REQUIRED)
+    add_library(nlohmann_json::nlohmann_json INTERFACE IMPORTED)
+    set_target_properties(nlohmann_json::nlohmann_json PROPERTIES
+        INTERFACE_INCLUDE_DIRECTORIES "${NLOHMANN_JSON_INCLUDE_DIR}")
+endif()
+
 # --- Library -----------------------------------------------------------------
 add_library(forumer_core STATIC
     src/bytes.cpp
     src/crypto.cpp
+    src/vault.cpp
 )
 
 target_include_directories(forumer_core PUBLIC
@@ -39,7 +51,7 @@ target_compile_features(forumer_core PUBLIC cxx_std_20)
 # The module plugin is a shared library, so this static archive must be PIC.
 set_target_properties(forumer_core PROPERTIES POSITION_INDEPENDENT_CODE ON)
 
-target_link_libraries(forumer_core PUBLIC forumer::sodium)
+target_link_libraries(forumer_core PUBLIC forumer::sodium nlohmann_json::nlohmann_json)
 
 # --- Tests (standalone builds only) ------------------------------------------
 option(FORUMER_CORE_TESTS "Build forumer_core unit tests" OFF)
