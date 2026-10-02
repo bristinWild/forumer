@@ -20,11 +20,13 @@
   "nix": {
     "packages": {
       "build": [
-        "sqlite"
+        "sqlite",
+        "libsodium"
       ],
       "runtime": [
         "sqlite",
-        "nlohmann_json"
+        "nlohmann_json",
+        "libsodium"
       ]
     },
     "external_libraries": [],

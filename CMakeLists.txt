@@ -18,6 +18,10 @@ string(JSON MODULE_VERSION GET ${METADATA_JSON} version)
 # mechanism — it is first-party source compiled in this tree.
 add_subdirectory(lib)
 
+# forumer_core: Forumer's own engine (identity, crypto, envelopes, policy).
+# Qt- and SDK-free so it is unit-testable standalone (scripts/test-core.sh).
+add_subdirectory(lib/forumer_core)
+
 # Universal UI module: you write the .rep + the *Backend class. REP_FILE runs
 # repc; the generated *Plugin glue in generated_code/ is compiled automatically.
 logos_module(
@@ -38,6 +42,7 @@ logos_module(
         src
     LINK_LIBRARIES
         cloud_data_core
+        forumer_core
 )
 
 # Surface the metadata.json version to the backend, which publishes it to the
