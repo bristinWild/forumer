@@ -2,6 +2,7 @@ add_executable(forumer_core_tests
     test_main.cpp
     test_crypto.cpp
     test_vault.cpp
+    test_mnemonic.cpp
 )
 
 target_link_libraries(forumer_core_tests PRIVATE forumer_core)

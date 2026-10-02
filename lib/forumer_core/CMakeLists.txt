@@ -40,6 +40,7 @@ add_library(forumer_core STATIC
     src/bytes.cpp
     src/crypto.cpp
     src/vault.cpp
+    src/mnemonic.cpp
 )
 
 target_include_directories(forumer_core PUBLIC
