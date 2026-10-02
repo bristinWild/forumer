@@ -30,8 +30,6 @@ logos_module(
     SOURCES
         src/forumer_backend.h
         src/forumer_backend.cpp
-        src/forum_message.h
-        src/forum_message.cpp
         src/base64.h
         src/base64.cpp
         src/delivery_module_transport.h

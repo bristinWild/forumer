@@ -3,11 +3,12 @@
 #include <algorithm>
 #include <iostream>
 #include <memory>
+#include <set>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include <QByteArray>
-#include <QCryptographicHash>
 #include <QDateTime>
 #include <QDir>
 #include <QFile>
@@ -16,35 +17,38 @@
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QLatin1String>
-#include <QRandomGenerator>
 #include <QStandardPaths>
 #include <QTextStream>
 #include <QTimer>
 #include <QUuid>
 #include <QVariantList>
 
+#include <nlohmann/json.hpp>
+
 // Generated umbrella: LogosModules (behind modules()) built from
-// metadata.json#dependencies — the typed `delivery_module` and `keystore_signer`
-// wrappers and their typed event accessors. logos_types.h provides LogosResult
-// (delivery_module's return type); logos_call_error.h provides logos::CallError,
-// the out-param error keystore_signer's synchronous, direct-return calls use
-// instead (it has no native LogosResult wrapping).
-#include "logos_call_error.h"
+// metadata.json#dependencies — the typed delivery_module and storage_module
+// wrappers. logos_types.h provides LogosResult.
 #include "logos_sdk.h"
 #include "logos_types.h"
 
 // The vendored local-first engine (lib/, from cloud-data-module) and the two
-// Qt-typed adapters that bind it to this app's delivery_module/storage_module
-// dependencies.
+// Qt-typed adapters that bind it to delivery_module / storage_module.
 #include "cloud_data_core/sync_engine.h"
 #include "delivery_module_transport.h"
 #include "storage_module_blob_store.h"
 
-// Injected by CMake from metadata.json#version. Guard so the file still compiles
-// (as an "unknown" version) if the definition is ever missing.
+// Forumer's own engine (lib/forumer_core).
+#include "forumer_core/crypto.h"
+#include "forumer_core/mnemonic.h"
+
+// Injected by CMake from metadata.json#version.
 #ifndef FORUMER_VERSION
 #define FORUMER_VERSION "unknown"
 #endif
+
+namespace fc = forumer;
+using fc::identity::Disclosure;
+using fc::identity::RotationPolicy;
 
 namespace {
 // One consistently-tagged line per lifecycle hook / delivery event so the
@@ -53,42 +57,19 @@ void logEvent(const std::string &what) {
   std::cerr << "[forumer backend] " << what << std::endl;
 }
 
-// A fresh, collision-free message id (also the topic id, for topics).
+// A fresh random id — only used for this install's CRDT peer id.
 QString newId() {
   return QUuid::createUuid().toString(QUuid::WithoutBraces);
 }
 
-// Length of the keystore_signer bearer credential, in bytes: 256 bits, the
-// minimum secret length keystore_signer accepts.
-constexpr int kCredentialBytes = 32;
-
-// Local-echo timestamp in the same units delivery_module reports for received
-// messages: nanoseconds since the Unix epoch.
-qint64 nowNs() {
-  return QDateTime::currentMSecsSinceEpoch() * 1000000LL;
-}
+qint64 nowMs() { return QDateTime::currentMSecsSinceEpoch(); }
 
 // Subscribe retry: how long to wait before asking again, and how many attempts
 // before giving up and leaving the failure on screen.
 constexpr int kSubscribeRetryMs = 5000;
 constexpr int kMaxSubscribeAttempts = 5;
 
-// Account bookkeeping timestamp: milliseconds since the Unix epoch. Human
-// scale, and deliberately not the ns units delivery_module stamps messages
-// with — these two never mix.
-qint64 nowMs() {
-  return QDateTime::currentMSecsSinceEpoch();
-}
-
-// Schema version stamped into accounts.json, so a future layout change can be
-// recognised rather than silently misparsed.
-constexpr int kAccountsVersion = 1;
-
-// The signing algorithm every account's key is minted with.
-const QLatin1String kKeyAlgorithm("secp256k1");
-
-// Small text-file helpers: the identity files are all short, single-value
-// documents, and both the credential and accounts.json need reading/writing.
+// Small text-file helpers (the CRDT peer id file).
 QString readTextFile(const QString &path) {
   QFile f(path);
   if (!f.open(QIODevice::ReadOnly | QIODevice::Text))
@@ -104,12 +85,28 @@ bool writeTextFile(const QString &path, const QString &contents) {
   out << contents;
   return true;
 }
+
+// JSON result for slots that return more than an error string.
+QString jsonResult(const QString &error, const QString &phrase = QString()) {
+  QJsonObject obj{{"error", error}};
+  if (!phrase.isEmpty())
+    obj.insert(QStringLiteral("phrase"), phrase);
+  return QString::fromUtf8(QJsonDocument(obj).toJson(QJsonDocument::Compact));
+}
+
+QString qs(const std::string &s) { return QString::fromStdString(s); }
+
+QString joinDomains(const std::vector<std::string> &domains) {
+  QStringList parts;
+  for (const auto &d : domains)
+    parts << qs(d);
+  return parts.join(QLatin1Char(','));
+}
+
+// Envelope timestamps are ms; the view (and the store's sort key) use ns.
+qint64 toNs(int64_t ms) { return static_cast<qint64>(ms) * 1000000LL; }
 } // namespace
 
-// The LIP-23 content-topic app segment
-// (https://lip.logos.co/messaging/informational/23/topics.html) and the two
-// collections posts live in. The engine derives one topic per collection from
-// these (kBucketBytes == 0), so every instance of this app shares one forum.
 const char ForumerBackend::kAppName[] = "forumer";
 const char ForumerBackend::kTopicsCollection[] = "topics";
 const char ForumerBackend::kRepliesCollection[] = "replies";
@@ -117,7 +114,8 @@ const char ForumerBackend::kRepliesCollection[] = "replies";
 ForumerBackend::ForumerBackend() {
   // Runs in the ui-host process before the context is wired.
   logEvent("ctor — backend constructed (context not yet wired)");
-  // FORUMER_VERSION is injected by CMake from metadata.json#version.
+  if (!fc::crypto::initCrypto())
+    logEvent("libsodium failed to initialise — signing and unlocking will fail");
   setAppVersion(QStringLiteral(FORUMER_VERSION));
 }
 
@@ -127,17 +125,19 @@ ForumerBackend::~ForumerBackend() {
 
 void ForumerBackend::onContextReady() {
   logEvent("onContextReady — context wired, scheduling node bootstrap");
-  // Both collection topics, for display. Derived rather than written out, so
-  // the line on screen can't drift from what the engine actually joins.
   setTopic(QStringLiteral("%1 + %2")
-               .arg(QString::fromStdString(cloud_data_core::sync_engine::contentTopicForDoc(
-                        kAppName, 1, kTopicsCollection, QString().toStdString(), kBucketBytes)),
-                    QString::fromStdString(cloud_data_core::sync_engine::contentTopicForDoc(
-                        kAppName, 1, kRepliesCollection, QString().toStdString(), kBucketBytes))));
+               .arg(qs(cloud_data_core::sync_engine::contentTopicForDoc(
+                        kAppName, kTopicVersion, kTopicsCollection, std::string(), kBucketBytes)),
+                    qs(cloud_data_core::sync_engine::contentTopicForDoc(
+                        kAppName, kTopicVersion, kRepliesCollection, std::string(), kBucketBytes))));
+
+  // Accounts are purely local, so they're available before the network is.
+  m_accounts = std::make_unique<fc::AccountStore>(
+      std::filesystem::path((dataDir() + QStringLiteral("/accounts")).toStdString()));
+  publishIdentityState();
 
   // createNode()/start() are synchronous and can block for a moment. Defer the
-  // bootstrap to the next event-loop turn so onContextReady() returns and the
-  // QML view's replica can reach its Valid state promptly. modules() stays live.
+  // bootstrap to the next event-loop turn so the QML replica comes up promptly.
   QTimer::singleShot(0, [this]() { bootstrap(); });
 }
 
@@ -287,11 +287,6 @@ void ForumerBackend::bootstrap() {
     m_engine->onBlobDownloadDone(ev.success, ev.sessionId);
   });
 
-  // --- Open/create this install's signing accounts ---------------------------
-  // Independent of the delivery node below; publish() gates on both being
-  // ready (nodeReady() and a selected account).
-  loadAccounts();
-
   // --- Open the local store and replay what it holds -------------------------
   // Before the node, deliberately: local reads and writes never touch the
   // network, so the forum can be populated and composable while the node is
@@ -425,505 +420,439 @@ void ForumerBackend::settleSend(const QString &requestId,
   emit messageStateChanged(messageId, state, detail);
 }
 
-QString ForumerBackend::identityDir() const {
-  // Basecamp's --user-dir gives an instance its own data tree (plugins,
-  // modules, module_data, logs) and exports it to every child process — this
-  // backend's ui-host included — as LOGOS_USER_DIR. keystore_signer keeps its
-  // keys inside that tree (<user dir>/module_data/keystore_signer/<instance>),
-  // so our credential + accounts have to live there too: an account stored
-  // outside it is reloaded against a keystore that has never seen its key, and
-  // every sign() then fails. Sit next to the keystore we're bound to.
+QString ForumerBackend::dataDir() const {
+  // Basecamp's --user-dir (and our two-instance test script) gives each
+  // instance its own data tree, exported to child processes as LOGOS_USER_DIR.
   const QString userDir = qEnvironmentVariable("LOGOS_USER_DIR");
   if (!userDir.isEmpty())
-    return userDir + QStringLiteral("/module_data/forumer/identity");
-
-  // Default launch (no --user-dir): AppDataLocation is keyed off the *host*
-  // process's org/app name (the ui-host, not this plugin), so namespace under
-  // it by module name to avoid colliding with any other Logos module's local
-  // data. This path doesn't track the keystore's data tree either, but
-  // loadAccounts() reconciles against the keystore, so a mismatch costs the
-  // account labels rather than every publish().
+    return userDir + QStringLiteral("/module_data/forumer");
+  // Default launch: AppDataLocation is keyed off the host process's name, so
+  // namespace under the module name.
   return QStandardPaths::writableLocation(QStandardPaths::AppDataLocation) +
-         QStringLiteral("/forumer/identity");
+         QStringLiteral("/forumer");
 }
 
-bool ForumerBackend::ensureCredential() {
-  const QString dir = identityDir();
-  QDir().mkpath(dir);
-  const QString credentialFile =
-      dir + QStringLiteral("/keystore_signer_credential");
+// ── Identity ──────────────────────────────────────────────────────────────────
 
-  QByteArray credential =
-      QByteArray::fromHex(readTextFile(credentialFile).toLatin1());
-  if (credential.size() == kCredentialBytes) {
-    m_credential = credential;
-    return true;
-  }
-  if (!credential.isEmpty())
-    logEvent("credential in " + dir.toStdString() +
-             " is malformed — generating a new one");
-
-  // A random 256-bit credential. Not a user secret, but isolation plumbing
-  // (see loadAccounts()'s header doc comment). Replacing it means a brand-new
-  // keystore namespace, so any accounts.json beside it reconciles to empty and
-  // a fresh account is minted below — the same outcome as a first run.
-  credential = QByteArray(kCredentialBytes, 0);
-  for (int i = 0; i < credential.size(); ++i)
-    credential[i] =
-        static_cast<char>(QRandomGenerator::global()->generate() & 0xFF);
-
-  if (!writeTextFile(credentialFile,
-                     QString::fromLatin1(credential.toHex()))) {
-    logEvent("failed to persist credential to " + dir.toStdString());
-    return false;
-  }
-  m_credential = credential;
-  return true;
-}
-
-void ForumerBackend::loadAccounts() {
-  if (!ensureCredential())
-    return; // no credential, no accounts — publish() reports "Identity not ready"
-
-  const QString dir = identityDir();
-  const QString accountsFile = dir + QStringLiteral("/accounts.json");
-
-  // --- What we last persisted: the labels and the selection -----------------
-  // The keystore holds the keys but knows nothing about names or which one the
-  // user was posting under, so that half comes from disk.
-  QVector<Account> persisted;
-  QString selected;
-  const QJsonDocument doc =
-      QJsonDocument::fromJson(readTextFile(accountsFile).toUtf8());
-  if (doc.isObject()) {
-    const QJsonObject obj = doc.object();
-    selected = obj.value(QStringLiteral("selected")).toString();
-    const QJsonArray stored = obj.value(QStringLiteral("accounts")).toArray();
-    for (const QJsonValue &value : stored) {
-      const QJsonObject entry = value.toObject();
-      Account acct;
-      acct.keyId = entry.value(QStringLiteral("keyId")).toString();
-      acct.label = entry.value(QStringLiteral("label")).toString();
-      acct.createdAt = static_cast<qint64>(
-          entry.value(QStringLiteral("createdAt")).toDouble());
-      if (!acct.keyId.isEmpty())
-        persisted.append(acct);
-    }
-  } else {
-    // No accounts.json. A pre-accounts install still has the single key_id
-    // file, so adopt that key as the first account — minting a second identity
-    // beside one the user has already been posting under would silently change
-    // their author id. The legacy file is left alone from here on.
-    const QString legacyKeyId = readTextFile(dir + QStringLiteral("/key_id"));
-    if (!legacyKeyId.isEmpty()) {
-      Account acct;
-      acct.keyId = legacyKeyId;
-      acct.label = QStringLiteral("Account 1");
-      acct.createdAt = nowMs();
-      persisted.append(acct);
-      selected = legacyKeyId;
-      logEvent("migrating legacy identity " + legacyKeyId.toStdString() +
-               " into accounts.json");
-    }
-  }
-
-  // --- Reconcile against the keystore, which owns the real key set ----------
-  logos::CallError err;
-  const QStringList live =
-      modules().keystore_signer.listKeys(m_credential, &err);
-
-  m_accounts.clear();
-  if (!err.ok()) {
-    // The *call* failed, as opposed to reporting an empty namespace, so `live`
-    // says nothing about what exists. Trusting it would drop every account on
-    // a transient keystore hiccup, so validate each persisted account
-    // individually instead — the same publicKey() probe the single-identity
-    // path used, just applied per account.
-    logEvent("listKeys failed (" + err.code + ": " + err.message +
-             ") — validating persisted accounts individually");
-    for (const Account &acct : persisted) {
-      logos::CallError probe;
-      if (!modules()
-               .keystore_signer.publicKey(m_credential, acct.keyId, &probe)
-               .isEmpty())
-        m_accounts.append(acct);
-      else
-        logEvent("dropping account " + acct.keyId.toStdString() +
-                 " — keystore holds no such key");
-    }
-  } else {
-    // Keys that still exist keep their persisted label and order...
-    for (const Account &acct : persisted) {
-      if (live.contains(acct.keyId))
-        m_accounts.append(acct);
-      else
-        logEvent("dropping account " + acct.keyId.toStdString() +
-                 " — keystore no longer holds it");
-    }
-    // ...and keys the keystore holds that we have no record of get adopted, so
-    // a lost or corrupt accounts.json heals into labelled accounts instead of
-    // stranding usable keys and minting duplicates next to them.
-    for (const QString &keyId : live) {
-      if (indexOfAccount(keyId) >= 0)
-        continue;
-      Account acct;
-      acct.keyId = keyId;
-      acct.label = defaultAccountLabel();
-      acct.createdAt = nowMs();
-      m_accounts.append(acct);
-      logEvent("adopted unlabelled keystore key " + keyId.toStdString() +
-               " as \"" + acct.label.toStdString() + "\"");
-    }
-  }
-
-  // --- First run, or nothing survived: mint the starting account ------------
-  if (m_accounts.isEmpty()) {
-    QString keyId;
-    const QString error = mintAccount(defaultAccountLabel(), &keyId);
-    if (!error.isEmpty()) {
-      logEvent("could not mint a first account: " + error.toStdString());
-      return; // m_keyId stays empty; publish() fails closed on it
-    }
-    selected = keyId;
-  }
-
-  // publishAccountState() re-points the selection if `selected` names an
-  // account that didn't survive reconciliation.
-  m_keyId = selected;
-  publishAccountState();
-  saveAccounts();
-  logEvent("accounts ready — " + std::to_string(m_accounts.size()) +
-           " account(s), signing as " + m_keyId.toStdString());
-}
-
-QString ForumerBackend::mintAccount(const QString &label,
-                                         QString *outKeyId) {
-  logos::CallError err;
-  const QString keyId =
-      modules().keystore_signer.createKey(m_credential, kKeyAlgorithm, &err);
-  if (keyId.isEmpty()) {
-    // Same empty-return convention as sign() (see publish()): keystore_signer
-    // has no result envelope, so err is normally blank even on failure.
-    // Substitute a description rather than letting "" reach the view, which
-    // reads "" as success.
-    const std::string detail =
-        err.message.empty() ? std::string("keystore_signer returned no key id")
-                            : err.message;
-    logEvent("createKey failed: " + detail);
-    return QString::fromStdString("Couldn't create account: " + detail);
-  }
-
-  Account acct;
-  acct.keyId = keyId;
-  acct.label = label;
-  acct.createdAt = nowMs();
-  m_accounts.append(acct);
-  if (outKeyId)
-    *outKeyId = keyId;
-  logEvent("minted account " + keyId.toStdString() + " (\"" +
-           label.toStdString() + "\")");
-  return QString();
-}
-
-bool ForumerBackend::saveAccounts() {
-  QJsonArray stored;
-  for (const Account &acct : m_accounts) {
-    QJsonObject entry;
-    entry.insert(QStringLiteral("keyId"), acct.keyId);
-    entry.insert(QStringLiteral("label"), acct.label);
-    entry.insert(QStringLiteral("createdAt"), acct.createdAt);
-    stored.append(entry);
-  }
-  QJsonObject root;
-  root.insert(QStringLiteral("version"), kAccountsVersion);
-  root.insert(QStringLiteral("selected"), m_keyId);
-  root.insert(QStringLiteral("accounts"), stored);
-
-  const QString path = identityDir() + QStringLiteral("/accounts.json");
-  if (!writeTextFile(path, QString::fromUtf8(QJsonDocument(root).toJson(
-                               QJsonDocument::Indented)))) {
-    // In-memory state stands, so the session keeps working — only the
-    // selection and labels are lost on the next start.
-    logEvent("failed to persist accounts to " + path.toStdString());
-    return false;
-  }
-  return true;
-}
-
-void ForumerBackend::publishAccountState() {
-  // m_keyId must always name a held account, or be empty when there are none.
-  // Every mutation lands here, so this is the one place that re-establishes
-  // that invariant — including after a delete removed the selected account.
-  if (indexOfAccount(m_keyId) < 0)
-    m_keyId = m_accounts.isEmpty() ? QString() : m_accounts.first().keyId;
+void ForumerBackend::publishIdentityState() {
+  if (!m_accounts)
+    return;
+  const auto accounts = m_accounts->list();
 
   QJsonArray view;
-  for (const Account &acct : m_accounts) {
-    QJsonObject entry;
-    entry.insert(QStringLiteral("keyId"), acct.keyId);
-    entry.insert(QStringLiteral("label"), acct.label);
-    view.append(entry);
+  for (const auto &a : accounts)
+    view.append(QJsonObject{{"id", qs(a.id)}, {"label", qs(a.label)}});
+  setAccountsJson(QString::fromUtf8(QJsonDocument(view).toJson(QJsonDocument::Compact)));
+
+  std::string selected;
+  if (m_account)
+    selected = m_account->state().id;
+  else if (auto id = m_accounts->selectedId())
+    selected = *id;
+
+  QString label;
+  for (const auto &a : accounts)
+    if (a.id == selected)
+      label = qs(a.label);
+  setSelectedAccountId(qs(selected));
+  setMyLabel(label);
+
+  if (m_account) {
+    const auto &s = m_account->state();
+    setRotationPolicy(qs(std::string(fc::identity::toString(s.policy))));
+    setDefaultDisclosure(qs(std::string(fc::identity::toString(s.defaultDisclosure))));
+    setAlias(qs(s.alias));
+    setMyPersona(qs(m_account->currentPersona().fingerprint()));
+  } else {
+    setMyPersona(QString());
   }
-  setAccountsJson(QString::fromUtf8(
-      QJsonDocument(view).toJson(QJsonDocument::Compact)));
 
-  const int selectedIndex = indexOfAccount(m_keyId);
-  setMyLabel(selectedIndex >= 0 ? m_accounts.at(selectedIndex).label
-                                : QString());
-  // myAddress last: the view gates composing on it, so it should only go
-  // non-empty once the list and label it refers to are already published.
-  setMyAddress(m_keyId);
+  // Last: the view switches screens on this, so everything it shows is ready.
+  setIdentityState(m_account ? QStringLiteral("unlocked")
+                             : accounts.empty() ? QStringLiteral("none")
+                                                : QStringLiteral("locked"));
 }
 
-int ForumerBackend::indexOfAccount(const QString &keyId) const {
-  if (keyId.isEmpty())
-    return -1;
-  for (int i = 0; i < m_accounts.size(); ++i)
-    if (m_accounts.at(i).keyId == keyId)
-      return i;
-  return -1;
+void ForumerBackend::saveAccount() {
+  if (m_account && m_accounts && !m_accounts->save(*m_account))
+    logEvent("failed to save account state for " + m_account->state().id);
 }
 
-QString ForumerBackend::defaultAccountLabel() const {
-  // Count up from the current size, skipping names already in use so deleting
-  // "Account 2" of three doesn't hand the next account a name that's still on
-  // screen. At most m_accounts.size() names are taken, so this terminates.
-  for (int n = m_accounts.size() + 1;; ++n) {
-    const QString candidate = QStringLiteral("Account %1").arg(n);
-    bool taken = false;
-    for (const Account &acct : m_accounts) {
-      if (acct.label == candidate) {
-        taken = true;
-        break;
-      }
-    }
-    if (!taken)
-      return candidate;
-  }
+QString ForumerBackend::createIdentity(QString label, QString password) {
+  if (!m_accounts)
+    return jsonResult(QStringLiteral("Not ready yet"));
+  std::string phrase;
+  auto result = m_accounts->create(label.trimmed().toStdString(), password.toStdString(), phrase);
+  if (!result.ok())
+    return jsonResult(qs(result.error));
+
+  m_account = std::move(result.account);
+  logEvent("created account " + m_account->state().id);
+  publishIdentityState();
+
+  const QString out = jsonResult(QString(), qs(phrase));
+  fc::mnemonic::wipe(phrase);
+  return out;
 }
 
-QString ForumerBackend::createAccount(QString label) {
-  if (m_credential.isEmpty())
-    return QStringLiteral("Accounts aren't ready yet");
+QString ForumerBackend::unlockIdentity(QString accountId, QString password) {
+  if (!m_accounts)
+    return QStringLiteral("Not ready yet");
+  auto result = m_accounts->unlock(accountId.toStdString(), password.toStdString());
+  if (!result.ok())
+    return qs(result.error);
 
-  label = label.trimmed();
-  if (label.isEmpty())
-    label = defaultAccountLabel();
-
-  QString keyId;
-  const QString error = mintAccount(label, &keyId);
-  if (!error.isEmpty())
-    return error;
-
-  // Select what was just created — creating an account and then continuing to
-  // post as the old one would be surprising.
-  m_keyId = keyId;
-  publishAccountState();
-  saveAccounts();
-  return QString(); // empty == success
-}
-
-QString ForumerBackend::selectAccount(QString keyId) {
-  if (indexOfAccount(keyId) < 0)
-    return QStringLiteral("No such account");
-  if (keyId == m_keyId)
-    return QString(); // already signing as this one
-
-  m_keyId = keyId;
-  publishAccountState();
-  saveAccounts();
-  logEvent("selected account " + keyId.toStdString());
+  m_accounts->select(accountId.toStdString());
+  m_account = std::move(result.account);
+  logEvent("unlocked account " + m_account->state().id);
+  publishIdentityState();
   return QString();
 }
 
-QString ForumerBackend::renameAccount(QString keyId, QString label) {
-  const int index = indexOfAccount(keyId);
-  if (index < 0)
+QString ForumerBackend::restoreIdentity(QString phrase, QString label, QString password) {
+  if (!m_accounts)
+    return QStringLiteral("Not ready yet");
+
+  // Recover the persona counter from authors already in the local store.
+  // (More are found after catch-up; restore again later to pick those up.)
+  const std::set<fc::Bytes> known = knownAuthors();
+  std::string phraseStd = phrase.toStdString();
+  auto result = m_accounts->restore(phraseStd, label.trimmed().toStdString(),
+                                    password.toStdString(),
+                                    [&known](const fc::Bytes &pk) { return known.count(pk) > 0; });
+  fc::mnemonic::wipe(phraseStd);
+  if (!result.ok())
+    return qs(result.error);
+
+  m_account = std::move(result.account);
+  logEvent("restored account " + m_account->state().id + " (next persona " +
+           std::to_string(m_account->state().nextIndex) + ")");
+  publishIdentityState();
+  return QString();
+}
+
+QString ForumerBackend::lockIdentity() {
+  m_account.reset();
+  publishIdentityState();
+  return QString();
+}
+
+QString ForumerBackend::selectAccount(QString accountId) {
+  if (!m_accounts || !m_accounts->select(accountId.toStdString()))
     return QStringLiteral("No such account");
+  m_account.reset(); // switching means unlocking the other account
+  publishIdentityState();
+  return QString();
+}
+
+QString ForumerBackend::revealPhrase(QString password) {
+  if (!m_account)
+    return jsonResult(QStringLiteral("Unlock first"));
+  // Re-check the password even though we're unlocked: the phrase is the whole
+  // identity, so someone at an unattended screen shouldn't get it for free.
+  auto check = m_accounts->unlock(m_account->state().id, password.toStdString());
+  if (!check.ok())
+    return jsonResult(qs(check.error));
+  std::string phrase = fc::mnemonic::encode(m_account->masterSecret());
+  const QString out = jsonResult(QString(), qs(phrase));
+  fc::mnemonic::wipe(phrase);
+  return out;
+}
+
+QString ForumerBackend::changePassword(QString oldPassword, QString newPassword) {
+  if (!m_account)
+    return QStringLiteral("Unlock first");
+  return qs(m_accounts->changePassword(m_account->state().id, oldPassword.toStdString(),
+                                       newPassword.toStdString()));
+}
+
+QString ForumerBackend::renameAccount(QString label) {
+  if (!m_account)
+    return QStringLiteral("Unlock first");
   label = label.trimmed();
   if (label.isEmpty())
     return QStringLiteral("An account needs a name");
-
-  // Display metadata only — the key is untouched, so this changes neither what
-  // was signed before nor what can be signed after.
-  m_accounts[index].label = label;
-  publishAccountState();
-  saveAccounts();
+  m_account->setLabel(label.toStdString());
+  saveAccount();
+  publishIdentityState();
   return QString();
 }
 
-QString ForumerBackend::deleteAccount(QString keyId) {
-  const int index = indexOfAccount(keyId);
-  if (index < 0)
-    return QStringLiteral("No such account");
-  if (m_accounts.size() == 1)
-    return QStringLiteral("Can't delete your only account");
-
-  // Destroy the key first: dropping the account while the keystore still held
-  // its key would strand a usable key that the next reconcile would silently
-  // re-adopt as an unlabelled account.
-  logos::CallError err;
-  const bool deleted =
-      modules().keystore_signer.deleteKey(m_credential, keyId, &err);
-  if (!deleted || !err.ok()) {
-    const std::string detail =
-        err.message.empty()
-            ? "keystore_signer did not delete key " + keyId.toStdString()
-            : err.message;
-    logEvent("deleteKey failed: " + detail);
-    return QString::fromStdString("Couldn't delete account: " + detail);
-  }
-
-  const std::string label = m_accounts.at(index).label.toStdString();
-  m_accounts.removeAt(index);
-  // publishAccountState() re-selects when this was the selected account.
-  publishAccountState();
-  saveAccounts();
-  logEvent("deleted account " + keyId.toStdString() + " (\"" + label + "\")");
+QString ForumerBackend::deleteAccount(QString password) {
+  if (!m_account)
+    return QStringLiteral("Unlock first");
+  const std::string id = m_account->state().id;
+  auto check = m_accounts->unlock(id, password.toStdString());
+  if (!check.ok())
+    return qs(check.error);
+  if (!m_accounts->remove(id))
+    return QStringLiteral("Couldn't remove the account's files");
+  m_account.reset();
+  logEvent("removed account " + id + " from this device");
+  publishIdentityState();
   return QString();
 }
 
-QString ForumerBackend::createTopic(QString title, QString body) {
+QString ForumerBackend::rotatePersona() {
+  if (!m_account)
+    return QStringLiteral("Unlock first");
+  m_account->rotate();
+  saveAccount();
+  publishIdentityState();
+  return QString();
+}
+
+QString ForumerBackend::chooseRotationPolicy(QString policy) {
+  if (!m_account)
+    return QStringLiteral("Unlock first");
+  auto parsed = fc::identity::rotationPolicyFrom(policy.toStdString());
+  if (!parsed)
+    return QStringLiteral("Unknown rotation policy");
+  m_account->setPolicy(*parsed);
+  saveAccount();
+  publishIdentityState();
+  return QString();
+}
+
+QString ForumerBackend::chooseDefaultDisclosure(QString disclosure) {
+  if (!m_account)
+    return QStringLiteral("Unlock first");
+  auto parsed = fc::identity::disclosureFrom(disclosure.toStdString());
+  if (!parsed)
+    return QStringLiteral("Unknown disclosure");
+  m_account->setDefaultDisclosure(*parsed);
+  saveAccount();
+  publishIdentityState();
+  return QString();
+}
+
+QString ForumerBackend::chooseAlias(QString alias) {
+  if (!m_account)
+    return QStringLiteral("Unlock first");
+  alias = alias.trimmed();
+  if (alias.toUtf8().size() > static_cast<int>(fc::post::kMaxAlias))
+    return QStringLiteral("Alias is too long (max %1 characters)").arg(fc::post::kMaxAlias);
+  m_account->setAlias(alias.toStdString());
+  saveAccount();
+  publishIdentityState();
+  return QString();
+}
+
+// ── Posting ───────────────────────────────────────────────────────────────────
+
+QString ForumerBackend::createTopic(QString title, QString body, QString domains,
+                                    QString disclosure) {
+  title = title.trimmed();
   if (title.isEmpty())
     return QStringLiteral("A topic needs a title");
 
-  ForumMessage msg;
-  msg.type = QStringLiteral("topic");
-  msg.id = topicIdFor(title); // content-addressed: derived from the title
-  msg.title = title;
-  msg.body = body;
-  return publish(msg);
+  fc::post::Draft draft;
+  draft.kind = fc::post::Kind::Post;
+  draft.title = title.toStdString();
+  draft.body = body.toStdString();
+  draft.domains = fc::post::parseDomains(domains.toStdString());
+  if (draft.domains.empty())
+    draft.domains = {"general"};
+  draft.timestampMs = nowMs();
+  return publish(std::move(draft), disclosure);
 }
 
-QString ForumerBackend::reconstructTopic(QString topicId, QString title) {
-  // Local recovery for a topic we only know through its replies (a backfilled
-  // placeholder in the view). The topic id is a hash of the title, so a title
-  // shared out-of-band and pasted here is provably the right one iff its hash
-  // matches. No network send — we just surface the verified topic locally, with
-  // an empty body (the body isn't part of the id and can't be recovered from
-  // it; it fills in later only if the original topic message reaches us).
-  if (title.isEmpty())
-    return QStringLiteral("Enter the topic title");
-  if (topicIdFor(title) != topicId)
-    return QStringLiteral("That title doesn't match this topic");
-
-  // No author: this is a local-only reconstruction from a title, not a
-  // signed message that arrived over the network.
-  emit topicReceived(topicId, title, QString(), QString(), nowNs());
-  return QString(); // empty == success
-}
-
-QString ForumerBackend::replyToTopic(QString topicId, QString body) {
+QString ForumerBackend::replyToTopic(QString topicId, QString body, QString disclosure) {
   if (topicId.isEmpty())
     return QStringLiteral("No topic selected");
-  if (body.isEmpty())
+  if (body.trimmed().isEmpty())
     return QStringLiteral("A reply needs a body");
 
-  ForumMessage msg;
-  msg.type = QStringLiteral("reply");
-  msg.id = newId();
-  msg.topicId = topicId;
-  msg.body = body;
-  return publish(msg);
+  fc::post::Draft draft;
+  draft.kind = fc::post::Kind::Reply;
+  draft.root = topicId.toStdString();
+  draft.parent = topicId.toStdString(); // flat thread for now; nesting comes with the new UI
+  draft.body = body.toStdString();
+  draft.timestampMs = nowMs();
+  return publish(std::move(draft), disclosure);
 }
 
-QString ForumerBackend::publish(ForumMessage msg) {
-  // Unconditional entry log — the two early-return guards below fail closed
-  // and silently (no send, no local echo, so nothing reaches the topics/reply
-  // list), so this is what distinguishes "never got here" from "got here and
-  // one of the guards tripped" when diagnosing a post that doesn't appear.
-  logEvent("publish(" + msg.type.toStdString() + " id=" + msg.id.toStdString() +
-           "): contextReady=" + std::to_string(isContextReady()) +
-           " nodeReady=" + std::to_string(nodeReady()) +
-           " myKeyId=" + (m_keyId.isEmpty() ? "<empty>" : m_keyId.toStdString()));
-
+QString ForumerBackend::publish(fc::post::Draft draft, const QString &disclosureText) {
   if (!isContextReady() || !m_engine)
     return QStringLiteral("Store not ready");
-  if (m_keyId.isEmpty())
-    return QStringLiteral("Identity not ready");
+  if (!m_account)
+    return QStringLiteral("Unlock your identity to post");
 
-  // Sign the canonical payload (Keccak-256, matching go-wallet-sdk's
-  // go-ethereum-derived signing convention) before storing — author/sig must
-  // be set on msg itself so they land in the document the engine syncs.
-  msg.author = m_keyId;
-  const QByteArray signingBytes = forumMessageSigningBytes(msg);
-  const QByteArray hash = QCryptographicHash::hash(signingBytes,
-                                                    QCryptographicHash::Keccak_256);
-
-  // Sign with keystore-signer-module. Unlike accounts_module, keystore-signer
-  // provides per-caller isolation via the secret credential, so no re-init
-  // workaround is needed. The sign() call returns raw signature bytes.
-  logos::CallError err;
-  const QByteArray sigBytes =
-      modules().keystore_signer.sign(m_credential, m_keyId, hash, &err);
-  if (sigBytes.isEmpty()) {
-    // keystore_signer reports failure by returning empty bytes, not an error
-    // (its .lidl has no result envelope), so err.message is normally empty
-    // here. Substitute a real description: an empty return would otherwise
-    // reach the view as "" — which the view reads as success — silently
-    // dropping the post instead of showing why it failed.
-    const std::string detail =
-        err.message.empty()
-            ? "keystore_signer returned no signature for key " + m_keyId.toStdString() +
-                  " (is this identity still in its keystore?)"
-            : err.message;
-    logEvent("sign failed: " + detail);
-    return QString::fromStdString("sign failed: " + detail);
+  Disclosure disclosure = m_account->state().defaultDisclosure;
+  if (!disclosureText.isEmpty()) {
+    auto parsed = fc::identity::disclosureFrom(disclosureText.toStdString());
+    if (!parsed)
+      return QStringLiteral("Unknown disclosure \"%1\"").arg(disclosureText);
+    disclosure = *parsed;
   }
-  // Convert signature bytes to hex string for JSON wire format.
-  msg.sig = QStringLiteral("0x") + QString::fromLatin1(sigBytes.toHex());
+  const std::string alias = m_account->state().alias;
+  if (disclosure == Disclosure::Alias && alias.empty())
+    return QStringLiteral("Set an alias first, or post as persona / anonymous");
 
-  // The document the engine stores and syncs. `ts` is a *string* deliberately:
-  // it is nanoseconds since the epoch (~1.7e18), which a JSON number would
-  // round, since that exceeds the 2^53 a double represents exactly.
-  const bool isTopic = msg.type == QLatin1String("topic");
-  QJsonObject doc{
-      {"type", msg.type},
-      {"body", msg.body},
-      {"author", msg.author},
-      {"sig", msg.sig},
-      {"ts", QString::number(nowNs())},
+  // Picking the persona may allocate a new one (Auto, Anonymous); save at once
+  // so a crash can never hand the same persona out twice.
+  const fc::identity::Persona persona = m_account->personaForPost(disclosure);
+  saveAccount();
+
+  const int pow = disclosure == Disclosure::Anonymous ? kAnonymousPowBits : kPowBits;
+  fc::post::Error err = fc::post::Error::None;
+  auto signedPost = fc::post::sign(std::move(draft), persona, disclosure, alias, pow, &err);
+  if (!signedPost)
+    return QStringLiteral("Couldn't sign the post: %1").arg(fc::post::describe(err));
+
+  const nlohmann::json doc = {
+      {"env", signedPost->toJson()},
+      // Sort key for the backlog, as a string: ns overflow a JSON double.
+      {"ts", std::to_string(toNs(signedPost->content.timestampMs))},
   };
-  if (isTopic)
-    doc.insert("title", msg.title);
-  else
-    doc.insert("topicId", msg.topicId);
-
+  const bool isTopic = signedPost->content.kind == fc::post::Kind::Post;
   const std::string collection = isTopic ? kTopicsCollection : kRepliesCollection;
-  const cloud_data_core::EngineResult r = m_engine->put(
-      collection, msg.id.toStdString(),
-      QString::fromUtf8(QJsonDocument(doc).toJson(QJsonDocument::Compact))
-          .toStdString());
+  const cloud_data_core::EngineResult r = m_engine->put(collection, signedPost->id, doc.dump());
   if (!r.success) {
     logEvent("put failed: " + r.error);
-    return QString::fromStdString(r.error);
+    return qs(r.error);
   }
-  logEvent("stored " + msg.type.toStdString() + " id=" + msg.id.toStdString());
+  logEvent("stored " + collection + " " + signedPost->id + " as " +
+           persona.fingerprint() + " (" + std::string(fc::identity::toString(disclosure)) + ")");
 
-  // No local echo: put() already reported the write through
-  // handleDocumentChanged() before returning, so the post is on screen.
-  //
-  // Mark it unconfirmed all the same. The write is durable locally the moment
-  // put() succeeds, but that says nothing about whether it left the machine —
-  // the engine parks it in an outbox and retries. settleSend() resolves this
-  // once delivery_module reports what became of the broadcast.
-  emit messageStateChanged(msg.id, QStringLiteral("pending"), QString());
-  return QString(); // empty == success
+  // put() already reported the write through handleDocumentChanged(), so the
+  // post is on screen; this marks it unconfirmed until delivery settles it.
+  emit messageStateChanged(qs(signedPost->id), QStringLiteral("pending"), QString());
+  publishIdentityState(); // the current persona may have changed (Auto)
+  return QString();
+}
+
+std::optional<fc::post::Post> ForumerBackend::decodeDocument(const std::string &docId,
+                                                             const std::string &json) const {
+  const nlohmann::json doc = nlohmann::json::parse(json, nullptr, /*allow_exceptions=*/false);
+  if (doc.is_discarded() || !doc.is_object())
+    return std::nullopt;
+  if (doc.value("$deleted", false))
+    return std::nullopt;
+  auto env = doc.find("env");
+  if (env == doc.end() || !env->is_string())
+    return std::nullopt; // partially merged, or not one of ours
+
+  auto post = fc::post::Post::fromJson(env->get<std::string>());
+  if (!post) {
+    logEvent("dropped " + docId + ": unreadable envelope");
+    return std::nullopt;
+  }
+  if (post->id != docId) {
+    logEvent("dropped " + docId + ": envelope id does not match");
+    return std::nullopt;
+  }
+  const int minPow = post->disclosure == Disclosure::Anonymous ? kAnonymousPowBits : kPowBits;
+  const fc::post::Error err = fc::post::verify(*post, minPow);
+  if (err != fc::post::Error::None) {
+    logEvent("dropped " + docId + ": " + fc::post::describe(err));
+    return std::nullopt;
+  }
+  return post;
+}
+
+void ForumerBackend::emitPost(const fc::post::Post &post) {
+  const auto &c = post.content;
+  if (c.kind == fc::post::Kind::Post)
+    emit topicReceived(qs(post.id), qs(c.title), qs(c.body), qs(post.authorDisplay()),
+                       joinDomains(c.domains), toNs(c.timestampMs));
+  else
+    emit replyReceived(qs(post.id), qs(c.root), qs(c.body), qs(post.authorDisplay()),
+                       toNs(c.timestampMs));
+}
+
+void ForumerBackend::handleDocumentChanged(const std::string &collectionId,
+                                           const std::string &docId, const std::string &json) {
+  auto post = decodeDocument(docId, json);
+  if (!post)
+    return;
+  // A post must sit in the collection matching its kind.
+  const bool isTopic = post->content.kind == fc::post::Kind::Post;
+  if (collectionId != (isTopic ? kTopicsCollection : kRepliesCollection))
+    return;
+  emitPost(*post);
+}
+
+QString ForumerBackend::loadBacklog() {
+  if (!m_engine)
+    return QStringLiteral("[]");
+
+  QJsonArray backlog;
+  int dropped = 0;
+  // Topics before replies, so the view never has to stand up a placeholder for
+  // a topic that is a few entries further down the same array.
+  for (const char *collection : {kTopicsCollection, kRepliesCollection}) {
+    const cloud_data_core::EngineResult r = m_engine->query(collection, "{}");
+    if (!r.success || !r.value.is_array()) {
+      logEvent(std::string("backlog query of ") + collection + " failed: " + r.error);
+      continue;
+    }
+    const bool isTopics = collection == std::string(kTopicsCollection);
+
+    std::vector<fc::post::Post> posts;
+    for (const auto &row : r.value) {
+      if (!row.is_object() || !row.contains("docId") || !row["docId"].is_string())
+        continue;
+      auto post = decodeDocument(row["docId"].get<std::string>(), row.dump());
+      if (!post || (post->content.kind == fc::post::Kind::Post) != isTopics) {
+        ++dropped;
+        continue;
+      }
+      posts.push_back(std::move(*post));
+    }
+    // SQLite returns rows unordered; sort by the author's timestamp.
+    std::stable_sort(posts.begin(), posts.end(), [](const auto &a, const auto &b) {
+      return a.content.timestampMs < b.content.timestampMs;
+    });
+
+    for (const auto &p : posts) {
+      QJsonObject entry{
+          {"kind", isTopics ? QStringLiteral("topic") : QStringLiteral("reply")},
+          {"id", qs(p.id)},
+          {"body", qs(p.content.body)},
+          {"author", qs(p.authorDisplay())},
+          {"ts", QString::number(toNs(p.content.timestampMs))},
+      };
+      if (isTopics) {
+        entry.insert(QStringLiteral("title"), qs(p.content.title));
+        entry.insert(QStringLiteral("domains"), joinDomains(p.content.domains));
+      } else {
+        entry.insert(QStringLiteral("topicId"), qs(p.content.root));
+      }
+      backlog.append(entry);
+    }
+  }
+
+  logEvent("backlog: " + std::to_string(backlog.size()) + " verified post(s), " +
+           std::to_string(dropped) + " dropped");
+  return QString::fromUtf8(QJsonDocument(backlog).toJson(QJsonDocument::Compact));
+}
+
+std::set<fc::Bytes> ForumerBackend::knownAuthors() const {
+  std::set<fc::Bytes> authors;
+  if (!m_engine)
+    return authors;
+  for (const char *collection : {kTopicsCollection, kRepliesCollection}) {
+    const cloud_data_core::EngineResult r = m_engine->query(collection, "{}");
+    if (!r.success || !r.value.is_array())
+      continue;
+    for (const auto &row : r.value) {
+      if (!row.is_object() || !row.contains("docId") || !row["docId"].is_string())
+        continue;
+      if (auto post = decodeDocument(row["docId"].get<std::string>(), row.dump()))
+        authors.insert(post->publicKey);
+    }
+  }
+  return authors;
 }
 
 bool ForumerBackend::openEngine() {
-  // Sit beside the identity in the same per-instance data tree (see
-  // identityDir()'s doc comment), so the store follows the keystore whose keys
-  // signed its posts rather than drifting into another Basecamp instance's.
-  QString dir = identityDir();
-  dir.chop(QStringLiteral("/identity").size());
-  dir += QStringLiteral("/store");
+  const QString dir = dataDir() + QStringLiteral("/store");
   QDir().mkpath(dir);
 
-  // A stable per-install peer id. It tie-breaks concurrent CRDT writes and
-  // namespaces op ids, so it has to survive a restart — and deliberately is
-  // *not* the selected account, which the user can switch or delete without
-  // meaning to fork this install's op history.
+  // A stable per-install CRDT peer id. It tie-breaks concurrent writes and
+  // namespaces op ids, so it must survive restarts. Unrelated to identity:
+  // it's never shown and never linked to a persona.
   const QString peerIdFile = dir + QStringLiteral("/peer_id");
   QString peerId = readTextFile(peerIdFile);
   if (peerId.isEmpty()) {
@@ -938,9 +867,8 @@ bool ForumerBackend::openEngine() {
   m_blobStore = std::make_unique<StorageModuleBlobStore>(modules());
 
   cloud_data_core::EngineConfig cfg;
-  // The app segment of every topic the engine derives, which is what keeps
-  // this forum's traffic off any other embedder's topics.
   cfg.appName = kAppName;
+  cfg.topicVersion = kTopicVersion;
   cfg.bucketBytes = kBucketBytes;
 
   m_engine = std::make_unique<cloud_data_core::CloudDataEngine>(
@@ -951,10 +879,6 @@ bool ForumerBackend::openEngine() {
     return false;
   }
 
-  // One path for every materialized change, whatever caused it: a local put,
-  // a merged remote op, or a row replayed from disk below. `origin` is
-  // deliberately ignored — the view renders its own posts and everyone else's
-  // identically, and its de-dupe by id makes a repeat harmless.
   m_engine->setOnDocumentChanged([this](const std::string &collectionId,
                                         const std::string &docId,
                                         const std::string &json,
@@ -967,127 +891,12 @@ bool ForumerBackend::openEngine() {
         notePublished(requestId, payload);
       });
 
-  logEvent("local store open at " + dir.toStdString() +
-           ", peer " + peerId.toStdString());
-  // Nothing is pushed to the view here: its replica does not exist yet. The
-  // view pulls the backlog itself via loadBacklog() once it is ready.
+  logEvent("local store open at " + dir.toStdString() + ", peer " + peerId.toStdString());
 
   // Composing runs off the local store, not the network: put() is durable and
-  // queued for broadcast whether or not a node ever comes up. Gating this on a
-  // successful subscribe — which is what it did before there was a store —
-  // would now refuse posts the app can keep perfectly well. Connectivity stays
-  // a separate question, reported through the status PROP.
+  // queued for broadcast whether or not a node ever comes up.
   setNodeReady(true);
   return true;
-}
-
-QString ForumerBackend::loadBacklog() {
-  if (!m_engine)
-    return QStringLiteral("[]");
-
-  QJsonArray backlog;
-  // Topics before replies, so the view never has to stand up a placeholder for
-  // a topic that is a few entries further down the same array.
-  for (const char *collection : {kTopicsCollection, kRepliesCollection}) {
-    const cloud_data_core::EngineResult r = m_engine->query(collection, "{}");
-    if (!r.success) {
-      logEvent(std::string("backlog query of ") + collection + " failed: " + r.error);
-      continue;
-    }
-    if (!r.value.is_array())
-      continue;
-
-    // SQLite hands rows back in no particular order, so sort by the post's own
-    // timestamp — otherwise a restart would shuffle every thread into storage
-    // order.
-    std::vector<std::pair<qint64, const nlohmann::json *>> rows;
-    for (const auto &row : r.value) {
-      if (!row.is_object() || !row.contains("docId") || !row["docId"].is_string())
-        continue;
-      qint64 ts = 0;
-      if (row.contains("ts") && row["ts"].is_string())
-        ts = QString::fromStdString(row["ts"].get<std::string>()).toLongLong();
-      rows.emplace_back(ts, &row);
-    }
-    std::stable_sort(rows.begin(), rows.end(),
-                     [](const auto &a, const auto &b) { return a.first < b.first; });
-
-    const bool isTopics = collection == std::string(kTopicsCollection);
-    for (const auto &[ts, row] : rows) {
-      const QJsonDocument doc =
-          QJsonDocument::fromJson(QByteArray::fromStdString(row->dump()));
-      if (!doc.isObject())
-        continue;
-      const QJsonObject obj = doc.object();
-      if (obj.value(QStringLiteral("$deleted")).toBool())
-        continue;
-
-      QJsonObject entry{
-          {"kind", isTopics ? QStringLiteral("topic") : QStringLiteral("reply")},
-          {"id", obj.value(QStringLiteral("docId")).toString()},
-          {"body", obj.value(QStringLiteral("body")).toString()},
-          {"author", obj.value(QStringLiteral("author")).toString()},
-          {"ts", QString::number(ts)},
-      };
-      if (isTopics) {
-        const QString title = obj.value(QStringLiteral("title")).toString();
-        if (title.isEmpty())
-          continue; // a topic must have a title
-        entry.insert(QStringLiteral("title"), title);
-      } else {
-        const QString topicId = obj.value(QStringLiteral("topicId")).toString();
-        if (topicId.isEmpty())
-          continue; // a reply must reference its topic
-        entry.insert(QStringLiteral("topicId"), topicId);
-      }
-      backlog.append(entry);
-    }
-  }
-
-  logEvent("backlog: " + std::to_string(backlog.size()) + " persisted post(s)");
-  return QString::fromUtf8(
-      QJsonDocument(backlog).toJson(QJsonDocument::Compact));
-}
-
-void ForumerBackend::handleDocumentChanged(const std::string &collectionId,
-                                                 const std::string &docId,
-                                                 const std::string &json) {
-  const QJsonDocument parsed =
-      QJsonDocument::fromJson(QByteArray::fromStdString(json));
-  if (!parsed.isObject())
-    return;
-  const QJsonObject obj = parsed.object();
-  // A removed document still materializes, carrying the engine's reserved
-  // tombstone marker. Nothing in this app deletes posts, but a merged remote
-  // tombstone would otherwise put one back on screen.
-  if (obj.value(QStringLiteral("$deleted")).toBool())
-    return;
-
-  ForumMessage msg;
-  msg.id = QString::fromStdString(docId);
-  msg.body = obj.value(QStringLiteral("body")).toString();
-  // Claimed, not verified — see the .rep's topicReceived doc comment. Carried
-  // as ordinary document fields, so the signature survives the trip through
-  // the store and out to other peers unchanged.
-  msg.author = obj.value(QStringLiteral("author")).toString();
-  msg.sig = obj.value(QStringLiteral("sig")).toString();
-  const qint64 ts = obj.value(QStringLiteral("ts")).toString().toLongLong();
-
-  if (collectionId == kTopicsCollection) {
-    msg.type = QStringLiteral("topic");
-    msg.title = obj.value(QStringLiteral("title")).toString();
-    if (msg.title.isEmpty())
-      return; // a topic must have a title
-  } else if (collectionId == kRepliesCollection) {
-    msg.type = QStringLiteral("reply");
-    msg.topicId = obj.value(QStringLiteral("topicId")).toString();
-    if (msg.topicId.isEmpty())
-      return; // a reply must reference its topic
-  } else {
-    return; // not a collection this app knows
-  }
-
-  emitForumMessage(msg, ts != 0 ? ts : nowNs());
 }
 
 void ForumerBackend::notePublished(const std::string &requestId,
@@ -1106,12 +915,4 @@ void ForumerBackend::notePublished(const std::string &requestId,
 
   m_pendingSends.insert(QString::fromStdString(requestId),
                         QString::fromStdString(op.docId));
-}
-
-void ForumerBackend::emitForumMessage(const ForumMessage &msg,
-                                           qint64 timestamp) {
-  if (msg.type == QLatin1String("topic"))
-    emit topicReceived(msg.id, msg.title, msg.body, msg.author, timestamp);
-  else if (msg.type == QLatin1String("reply"))
-    emit replyReceived(msg.id, msg.topicId, msg.body, msg.author, timestamp);
 }

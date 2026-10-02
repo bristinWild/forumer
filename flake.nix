@@ -14,9 +14,6 @@
     # Backs cloud_data_core's durability/snapshot bridge (BlobStore).
     storage_module.url = "github:logos-co/logos-storage-module/v2.1.2";
     storage_module.inputs.logos-module-builder.follows = "logos-module-builder";
-    # Core module dependency — must match metadata.json "dependencies".
-    # Using jzaki/keystore-signer-module for per-caller key isolation.
-    keystore_signer.url = "github:jzaki/keystore-signer-module";
   };
 
   outputs = inputs@{ logos-module-builder, ... }:
