@@ -41,6 +41,7 @@ add_library(forumer_core STATIC
     src/crypto.cpp
     src/vault.cpp
     src/mnemonic.cpp
+    src/identity.cpp
 )
 
 target_include_directories(forumer_core PUBLIC
