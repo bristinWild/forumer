@@ -43,6 +43,7 @@ add_library(forumer_core STATIC
     src/mnemonic.cpp
     src/identity.cpp
     src/account_store.cpp
+    src/post.cpp
 )
 
 target_include_directories(forumer_core PUBLIC
