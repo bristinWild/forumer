@@ -1,12 +1,12 @@
 {
-  "name": "example_forum",
-  "display_name": "Example Forum",
-  "version": "1.1.2",
+  "name": "forumer",
+  "display_name": "Forumer",
+  "version": "0.1.0",
   "type": "ui_qml",
   "interface": "universal",
   "category": "example",
-  "description": "Example Forum App. No login required to post topics/replies — posts are signed under a per-install identity generated on first run. Topics and replies persist locally and are restored on restart.",
-  "main": "example_forum_plugin",
+  "description": "Forumer: a private, serverless forum on the Logos stack. Personas, identity rotation, offline catch-up and an outbox.",
+  "main": "forumer_plugin",
   "icon": null,
   "view": "qml/Main.qml",
   "dependencies": [
@@ -15,7 +15,7 @@
     "storage_module"
   ],
   "codegen": {
-    "rep": "src/example_forum.rep"
+    "rep": "src/forumer.rep"
   },
   "nix": {
     "packages": {

@@ -11,11 +11,11 @@
 #include "delivery_module_transport.h"
 #include "forum_message.h"
 #include "logos_ui_plugin_context.h"
-#include "rep_example_forum_source.h"
+#include "rep_forumer_source.h"
 #include "storage_module_blob_store.h"
 
 /**
- * @brief UI backend for Example Forum (universal authoring model).
+ * @brief UI backend for Forumer (universal authoring model).
  *
  * Posts live in a local-first CRDT store: `cloud_data_core::CloudDataEngine`
  * (vendored under lib/, from cloud-data-module) owns an embedded SQLite
@@ -45,7 +45,7 @@
  * are generated around it.
  *
  * It derives:
- *   - `ExampleForumSimpleSource` — generated from example_forum.rep; implement
+ *   - `ForumerSimpleSource` — generated from forumer.rep; implement
  *     its slots and feed its PROPs (e.g. `setStatus(...)`), which auto-sync to
  *     every QML replica.
  *   - `LogosUiPluginContext` — gives `onContextReady()` plus `modules()`, the
@@ -62,11 +62,11 @@
  * The C++ backend runs in its own isolated `ui-host` process; lifecycle hooks
  * and delivery events log to `std::cerr`, visible in the host's stderr stream.
  */
-class ExampleForumBackend : public ExampleForumSimpleSource,
+class ForumerBackend : public ForumerSimpleSource,
                             public LogosUiPluginContext {
 public:
-  ExampleForumBackend();
-  ~ExampleForumBackend() override;
+  ForumerBackend();
+  ~ForumerBackend() override;
 
   // .rep SLOTs — broadcast a new forum topic / a reply on the shared topic.
   // Each returns an empty string on success, or an error description.
@@ -218,7 +218,7 @@ private:
 
   // LIP-23 content-topic app segment, and the two collections every post
   // belongs to. The engine derives the actual topics from these
-  // (`/example-forum/1/<collection>/proto`, unbucketed — see kBucketBytes),
+  // (`/forumer/1/<collection>/proto`, unbucketed — see kBucketBytes),
   // so every instance of the app shares one forum.
   static const char kAppName[];
   static const char kTopicsCollection[];

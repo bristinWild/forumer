@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.14)
-project(ExampleForumPlugin LANGUAGES CXX)
+project(ForumerPlugin LANGUAGES CXX)
 
 if(DEFINED ENV{LOGOS_MODULE_BUILDER_ROOT})
     include($ENV{LOGOS_MODULE_BUILDER_ROOT}/cmake/LogosModule.cmake)
@@ -22,10 +22,10 @@ add_subdirectory(lib)
 # repc; the generated *Plugin glue in generated_code/ is compiled automatically.
 logos_module(
     NAME ${MODULE_NAME}
-    REP_FILE src/example_forum.rep
+    REP_FILE src/forumer.rep
     SOURCES
-        src/example_forum_backend.h
-        src/example_forum_backend.cpp
+        src/forumer_backend.h
+        src/forumer_backend.cpp
         src/forum_message.h
         src/forum_message.cpp
         src/base64.h
@@ -43,4 +43,4 @@ logos_module(
 # Surface the metadata.json version to the backend, which publishes it to the
 # QML view via the appVersion PROP (so the title's version stays in sync here).
 target_compile_definitions(${MODULE_NAME}_module_plugin PRIVATE
-    EXAMPLE_FORUM_VERSION="${MODULE_VERSION}")
+    FORUMER_VERSION="${MODULE_VERSION}")

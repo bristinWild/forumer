@@ -1,5 +1,5 @@
 {
-  description = "Example Forum — Logos ui_qml module (C++ backend + QML view)";
+  description = "Forumer — Logos ui_qml module (C++ backend + QML view)";
 
   inputs = {
     # Pinned to 0.2.6 to match cloud-data-module, whose cloud_data_core library

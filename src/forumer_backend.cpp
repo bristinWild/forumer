@@ -1,4 +1,4 @@
-#include "example_forum_backend.h"
+#include "forumer_backend.h"
 
 #include <algorithm>
 #include <iostream>
@@ -42,15 +42,15 @@
 
 // Injected by CMake from metadata.json#version. Guard so the file still compiles
 // (as an "unknown" version) if the definition is ever missing.
-#ifndef EXAMPLE_FORUM_VERSION
-#define EXAMPLE_FORUM_VERSION "unknown"
+#ifndef FORUMER_VERSION
+#define FORUMER_VERSION "unknown"
 #endif
 
 namespace {
 // One consistently-tagged line per lifecycle hook / delivery event so the
 // backend's activity is easy to spot (and grep) in the host's stderr stream.
 void logEvent(const std::string &what) {
-  std::cerr << "[example_forum backend] " << what << std::endl;
+  std::cerr << "[forumer backend] " << what << std::endl;
 }
 
 // A fresh, collision-free message id (also the topic id, for topics).
@@ -110,22 +110,22 @@ bool writeTextFile(const QString &path, const QString &contents) {
 // (https://lip.logos.co/messaging/informational/23/topics.html) and the two
 // collections posts live in. The engine derives one topic per collection from
 // these (kBucketBytes == 0), so every instance of this app shares one forum.
-const char ExampleForumBackend::kAppName[] = "example-forum";
-const char ExampleForumBackend::kTopicsCollection[] = "topics";
-const char ExampleForumBackend::kRepliesCollection[] = "replies";
+const char ForumerBackend::kAppName[] = "forumer";
+const char ForumerBackend::kTopicsCollection[] = "topics";
+const char ForumerBackend::kRepliesCollection[] = "replies";
 
-ExampleForumBackend::ExampleForumBackend() {
+ForumerBackend::ForumerBackend() {
   // Runs in the ui-host process before the context is wired.
   logEvent("ctor — backend constructed (context not yet wired)");
-  // EXAMPLE_FORUM_VERSION is injected by CMake from metadata.json#version.
-  setAppVersion(QStringLiteral(EXAMPLE_FORUM_VERSION));
+  // FORUMER_VERSION is injected by CMake from metadata.json#version.
+  setAppVersion(QStringLiteral(FORUMER_VERSION));
 }
 
-ExampleForumBackend::~ExampleForumBackend() {
+ForumerBackend::~ForumerBackend() {
   logEvent("dtor — backend destroyed");
 }
 
-void ExampleForumBackend::onContextReady() {
+void ForumerBackend::onContextReady() {
   logEvent("onContextReady — context wired, scheduling node bootstrap");
   // Both collection topics, for display. Derived rather than written out, so
   // the line on screen can't drift from what the engine actually joins.
@@ -141,7 +141,7 @@ void ExampleForumBackend::onContextReady() {
   QTimer::singleShot(0, [this]() { bootstrap(); });
 }
 
-void ExampleForumBackend::bootstrap() {
+void ForumerBackend::bootstrap() {
   // --- Subscribe to delivery_module events before starting the node ---------
 
   // Node health. connectionStateChanged (Connected / PartiallyConnected /
@@ -352,7 +352,7 @@ void ExampleForumBackend::bootstrap() {
   logEvent("start dispatched — waiting for nodeStarted");
 }
 
-void ExampleForumBackend::subscribeToForum() {
+void ForumerBackend::subscribeToForum() {
   if (m_subscribed)
     return; // the pre-start attempt and nodeStarted can both land
 
@@ -387,7 +387,7 @@ void ExampleForumBackend::subscribeToForum() {
   logEvent("subscribed — forum on the topics + replies collections");
 }
 
-void ExampleForumBackend::refreshStatus() {
+void ForumerBackend::refreshStatus() {
   if (!m_subscribed)
     return; // bootstrap's own progress messages own the status until then
 
@@ -403,7 +403,7 @@ void ExampleForumBackend::refreshStatus() {
   setStatus(m_connectionState);
 }
 
-void ExampleForumBackend::settleSend(const QString &requestId,
+void ForumerBackend::settleSend(const QString &requestId,
                                      const QString &state,
                                      const QString &detail) {
   if (requestId.isEmpty())
@@ -425,7 +425,7 @@ void ExampleForumBackend::settleSend(const QString &requestId,
   emit messageStateChanged(messageId, state, detail);
 }
 
-QString ExampleForumBackend::identityDir() const {
+QString ForumerBackend::identityDir() const {
   // Basecamp's --user-dir gives an instance its own data tree (plugins,
   // modules, module_data, logs) and exports it to every child process — this
   // backend's ui-host included — as LOGOS_USER_DIR. keystore_signer keeps its
@@ -435,7 +435,7 @@ QString ExampleForumBackend::identityDir() const {
   // every sign() then fails. Sit next to the keystore we're bound to.
   const QString userDir = qEnvironmentVariable("LOGOS_USER_DIR");
   if (!userDir.isEmpty())
-    return userDir + QStringLiteral("/module_data/example_forum/identity");
+    return userDir + QStringLiteral("/module_data/forumer/identity");
 
   // Default launch (no --user-dir): AppDataLocation is keyed off the *host*
   // process's org/app name (the ui-host, not this plugin), so namespace under
@@ -444,10 +444,10 @@ QString ExampleForumBackend::identityDir() const {
   // loadAccounts() reconciles against the keystore, so a mismatch costs the
   // account labels rather than every publish().
   return QStandardPaths::writableLocation(QStandardPaths::AppDataLocation) +
-         QStringLiteral("/example_forum/identity");
+         QStringLiteral("/forumer/identity");
 }
 
-bool ExampleForumBackend::ensureCredential() {
+bool ForumerBackend::ensureCredential() {
   const QString dir = identityDir();
   QDir().mkpath(dir);
   const QString credentialFile =
@@ -481,7 +481,7 @@ bool ExampleForumBackend::ensureCredential() {
   return true;
 }
 
-void ExampleForumBackend::loadAccounts() {
+void ForumerBackend::loadAccounts() {
   if (!ensureCredential())
     return; // no credential, no accounts — publish() reports "Identity not ready"
 
@@ -596,7 +596,7 @@ void ExampleForumBackend::loadAccounts() {
            " account(s), signing as " + m_keyId.toStdString());
 }
 
-QString ExampleForumBackend::mintAccount(const QString &label,
+QString ForumerBackend::mintAccount(const QString &label,
                                          QString *outKeyId) {
   logos::CallError err;
   const QString keyId =
@@ -625,7 +625,7 @@ QString ExampleForumBackend::mintAccount(const QString &label,
   return QString();
 }
 
-bool ExampleForumBackend::saveAccounts() {
+bool ForumerBackend::saveAccounts() {
   QJsonArray stored;
   for (const Account &acct : m_accounts) {
     QJsonObject entry;
@@ -650,7 +650,7 @@ bool ExampleForumBackend::saveAccounts() {
   return true;
 }
 
-void ExampleForumBackend::publishAccountState() {
+void ForumerBackend::publishAccountState() {
   // m_keyId must always name a held account, or be empty when there are none.
   // Every mutation lands here, so this is the one place that re-establishes
   // that invariant — including after a delete removed the selected account.
@@ -675,7 +675,7 @@ void ExampleForumBackend::publishAccountState() {
   setMyAddress(m_keyId);
 }
 
-int ExampleForumBackend::indexOfAccount(const QString &keyId) const {
+int ForumerBackend::indexOfAccount(const QString &keyId) const {
   if (keyId.isEmpty())
     return -1;
   for (int i = 0; i < m_accounts.size(); ++i)
@@ -684,7 +684,7 @@ int ExampleForumBackend::indexOfAccount(const QString &keyId) const {
   return -1;
 }
 
-QString ExampleForumBackend::defaultAccountLabel() const {
+QString ForumerBackend::defaultAccountLabel() const {
   // Count up from the current size, skipping names already in use so deleting
   // "Account 2" of three doesn't hand the next account a name that's still on
   // screen. At most m_accounts.size() names are taken, so this terminates.
@@ -702,7 +702,7 @@ QString ExampleForumBackend::defaultAccountLabel() const {
   }
 }
 
-QString ExampleForumBackend::createAccount(QString label) {
+QString ForumerBackend::createAccount(QString label) {
   if (m_credential.isEmpty())
     return QStringLiteral("Accounts aren't ready yet");
 
@@ -723,7 +723,7 @@ QString ExampleForumBackend::createAccount(QString label) {
   return QString(); // empty == success
 }
 
-QString ExampleForumBackend::selectAccount(QString keyId) {
+QString ForumerBackend::selectAccount(QString keyId) {
   if (indexOfAccount(keyId) < 0)
     return QStringLiteral("No such account");
   if (keyId == m_keyId)
@@ -736,7 +736,7 @@ QString ExampleForumBackend::selectAccount(QString keyId) {
   return QString();
 }
 
-QString ExampleForumBackend::renameAccount(QString keyId, QString label) {
+QString ForumerBackend::renameAccount(QString keyId, QString label) {
   const int index = indexOfAccount(keyId);
   if (index < 0)
     return QStringLiteral("No such account");
@@ -752,7 +752,7 @@ QString ExampleForumBackend::renameAccount(QString keyId, QString label) {
   return QString();
 }
 
-QString ExampleForumBackend::deleteAccount(QString keyId) {
+QString ForumerBackend::deleteAccount(QString keyId) {
   const int index = indexOfAccount(keyId);
   if (index < 0)
     return QStringLiteral("No such account");
@@ -783,7 +783,7 @@ QString ExampleForumBackend::deleteAccount(QString keyId) {
   return QString();
 }
 
-QString ExampleForumBackend::createTopic(QString title, QString body) {
+QString ForumerBackend::createTopic(QString title, QString body) {
   if (title.isEmpty())
     return QStringLiteral("A topic needs a title");
 
@@ -795,7 +795,7 @@ QString ExampleForumBackend::createTopic(QString title, QString body) {
   return publish(msg);
 }
 
-QString ExampleForumBackend::reconstructTopic(QString topicId, QString title) {
+QString ForumerBackend::reconstructTopic(QString topicId, QString title) {
   // Local recovery for a topic we only know through its replies (a backfilled
   // placeholder in the view). The topic id is a hash of the title, so a title
   // shared out-of-band and pasted here is provably the right one iff its hash
@@ -813,7 +813,7 @@ QString ExampleForumBackend::reconstructTopic(QString topicId, QString title) {
   return QString(); // empty == success
 }
 
-QString ExampleForumBackend::replyToTopic(QString topicId, QString body) {
+QString ForumerBackend::replyToTopic(QString topicId, QString body) {
   if (topicId.isEmpty())
     return QStringLiteral("No topic selected");
   if (body.isEmpty())
@@ -827,7 +827,7 @@ QString ExampleForumBackend::replyToTopic(QString topicId, QString body) {
   return publish(msg);
 }
 
-QString ExampleForumBackend::publish(ForumMessage msg) {
+QString ForumerBackend::publish(ForumMessage msg) {
   // Unconditional entry log — the two early-return guards below fail closed
   // and silently (no send, no local echo, so nothing reaches the topics/reply
   // list), so this is what distinguishes "never got here" from "got here and
@@ -911,7 +911,7 @@ QString ExampleForumBackend::publish(ForumMessage msg) {
   return QString(); // empty == success
 }
 
-bool ExampleForumBackend::openEngine() {
+bool ForumerBackend::openEngine() {
   // Sit beside the identity in the same per-instance data tree (see
   // identityDir()'s doc comment), so the store follows the keystore whose keys
   // signed its posts rather than drifting into another Basecamp instance's.
@@ -981,7 +981,7 @@ bool ExampleForumBackend::openEngine() {
   return true;
 }
 
-QString ExampleForumBackend::loadBacklog() {
+QString ForumerBackend::loadBacklog() {
   if (!m_engine)
     return QStringLiteral("[]");
 
@@ -1049,7 +1049,7 @@ QString ExampleForumBackend::loadBacklog() {
       QJsonDocument(backlog).toJson(QJsonDocument::Compact));
 }
 
-void ExampleForumBackend::handleDocumentChanged(const std::string &collectionId,
+void ForumerBackend::handleDocumentChanged(const std::string &collectionId,
                                                  const std::string &docId,
                                                  const std::string &json) {
   const QJsonDocument parsed =
@@ -1090,7 +1090,7 @@ void ExampleForumBackend::handleDocumentChanged(const std::string &collectionId,
   emitForumMessage(msg, ts != 0 ? ts : nowNs());
 }
 
-void ExampleForumBackend::notePublished(const std::string &requestId,
+void ForumerBackend::notePublished(const std::string &requestId,
                                          const std::vector<uint8_t> &payload) {
   if (requestId.empty())
     return;
@@ -1108,7 +1108,7 @@ void ExampleForumBackend::notePublished(const std::string &requestId,
                         QString::fromStdString(op.docId));
 }
 
-void ExampleForumBackend::emitForumMessage(const ForumMessage &msg,
+void ForumerBackend::emitForumMessage(const ForumMessage &msg,
                                            qint64 timestamp) {
   if (msg.type == QLatin1String("topic"))
     emit topicReceived(msg.id, msg.title, msg.body, msg.author, timestamp);

@@ -11,10 +11,10 @@ Item {
     // One consistently-tagged line per QML lifecycle / callback. console.log is
     // routed to stderr by Qt's default message handler, so these land in the
     // same stream as the C++ backend's std::cerr lines.
-    function log(msg) { console.log("[example_forum qml] " + msg); }
+    function log(msg) { console.log("[forumer qml] " + msg); }
 
     // Typed replica — auto-synced properties and callable slots.
-    readonly property var backend: logos.module("example_forum")
+    readonly property var backend: logos.module("forumer")
     property bool ready: false
 
     // Monospace family for code-like values (the topic id). The design system
@@ -33,7 +33,7 @@ Item {
 
     // Short display form for a signer key id: first 6 + last 4 hex chars.
     // `author` is a claimed signer, not a verified one — this app can't check
-    // a signature yet (see example_forum.rep's topicReceived doc comment) —
+    // a signature yet (see forumer.rep's topicReceived doc comment) —
     // so this is a label, not a trust indicator.
     // shortAddress("a3f0c41d9b27e5106d84b3f27e109c2b") → "a3f0c4…9c2b"
     function shortAddress(addr) {
@@ -60,7 +60,7 @@ Item {
     Connections {
         target: logos
         function onViewModuleReadyChanged(moduleName, isReady) {
-            if (moduleName === "example_forum")
+            if (moduleName === "forumer")
                 root.ready = isReady && root.backend !== null;
         }
     }
@@ -123,7 +123,7 @@ Item {
 
     Component.onCompleted: {
         log("Component.onCompleted — view created");
-        root.ready = root.backend !== null && logos.isViewModuleReady("example_forum");
+        root.ready = root.backend !== null && logos.isViewModuleReady("forumer");
         // The replica may already hold accounts by now, in which case
         // onAccountsJsonChanged has come and gone before this view existed.
         root.rebuildAccounts();
@@ -642,7 +642,7 @@ Item {
 
         // Header — version is sourced from metadata.json via the backend PROP.
         LogosText {
-            text: "Example Forum" + (root.appVersion.length > 0 ? " v" + root.appVersion : "")
+            text: "Forumer" + (root.appVersion.length > 0 ? " v" + root.appVersion : "")
             font.pixelSize: Theme.typography.panelTitleText
             font.weight: Theme.typography.weightBold
             color: Theme.palette.text

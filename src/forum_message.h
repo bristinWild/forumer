@@ -11,7 +11,7 @@
  * `id`/`topicId` thread replies under their topic.
  *
  * It is no longer a wire format. Posts travel as CRDT ops over
- * cloud_data_core (see ExampleForumBackend), which owns their encoding; what
+ * cloud_data_core (see ForumerBackend), which owns their encoding; what
  * survives here is the part this app owns — the canonical bytes a post's
  * signature covers, and the content-addressed derivation of a topic's id.
  */
