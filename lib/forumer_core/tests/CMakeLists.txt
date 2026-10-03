@@ -6,6 +6,8 @@ add_executable(forumer_core_tests
     test_identity.cpp
     test_account_store.cpp
     test_post.cpp
+    test_post_store.cpp
+    test_sync.cpp
 )
 
 target_link_libraries(forumer_core_tests PRIVATE forumer_core)

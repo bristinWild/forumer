@@ -1,4 +1,4 @@
-# forumer_core — Forumer's engine: identity, crypto, envelopes, policy.
+# forumer_core — Forumer's engine: identity, crypto, envelopes, the post log, sync.
 #
 # A plain C++20 static library with no Qt and no Logos SDK, so it can be unit
 # tested on its own (see tests/) and later promoted to a standalone Logos core
@@ -35,6 +35,16 @@ if(NOT TARGET nlohmann_json::nlohmann_json)
         INTERFACE_INCLUDE_DIRECTORIES "${NLOHMANN_JSON_INCLUDE_DIR}")
 endif()
 
+# --- SQLite -----------------------------------------------------------------
+# CMake 4.x names the target SQLite3::SQLite3 and deprecates the older
+# SQLite::SQLite3; older CMake only has the latter.
+find_package(SQLite3 REQUIRED)
+if(TARGET SQLite3::SQLite3)
+    set(FORUMER_SQLITE_TARGET SQLite3::SQLite3)
+else()
+    set(FORUMER_SQLITE_TARGET SQLite::SQLite3)
+endif()
+
 # --- Library -----------------------------------------------------------------
 add_library(forumer_core STATIC
     src/bytes.cpp
@@ -44,6 +54,8 @@ add_library(forumer_core STATIC
     src/identity.cpp
     src/account_store.cpp
     src/post.cpp
+    src/post_store.cpp
+    src/sync.cpp
 )
 
 target_include_directories(forumer_core PUBLIC
@@ -55,7 +67,7 @@ target_compile_features(forumer_core PUBLIC cxx_std_20)
 # The module plugin is a shared library, so this static archive must be PIC.
 set_target_properties(forumer_core PROPERTIES POSITION_INDEPENDENT_CODE ON)
 
-target_link_libraries(forumer_core PUBLIC forumer::sodium nlohmann_json::nlohmann_json)
+target_link_libraries(forumer_core PUBLIC forumer::sodium nlohmann_json::nlohmann_json ${FORUMER_SQLITE_TARGET})
 
 # --- Tests (standalone builds only) ------------------------------------------
 option(FORUMER_CORE_TESTS "Build forumer_core unit tests" OFF)
