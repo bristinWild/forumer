@@ -7,34 +7,40 @@
 #include <vector>
 
 #include <QHash>
+#include <QSet>
 #include <QString>
 
-#include "cloud_data_core/engine.h"
+class QTimer;
+
 #include "delivery_module_transport.h"
 #include "forumer_core/account_store.h"
 #include "forumer_core/identity.h"
 #include "forumer_core/post.h"
+#include "forumer_core/post_store.h"
+#include "forumer_core/sync.h"
 #include "logos_ui_plugin_context.h"
 #include "rep_forumer_source.h"
-#include "storage_module_blob_store.h"
 
 /**
  * @brief UI backend for Forumer.
  *
- * Two halves, glued to the QML view through the generated .rep contract:
+ * Three parts, glued to the QML view through the generated .rep contract:
  *
  * Identity (forumer_core): accounts live in password-protected vaults under
  * dataDir()/accounts (AccountStore). At most one is unlocked at a time; its
  * personas sign posts according to the account's rotation policy and the
  * per-post disclosure. Nothing about identity touches the network.
  *
- * Content: every post is a signed envelope (forumer_core::post) stored as a
- * document in the local-first CRDT store (cloud_data_core, vendored under lib/),
- * which syncs it over delivery_module. Documents are { "env": <envelope JSON>,
- * "ts": <ns string> } keyed by the envelope id. Every document that
- * materialises — our own put, a merged remote op, or a replay from disk — is
- * verified (signature, id, proof-of-work, shape) before the view sees it;
- * anything that fails is dropped.
+ * Post log (forumer_core::PostStore): every verified post this device knows,
+ * append-only — the first valid copy of a post is kept and nothing can change
+ * or remove it afterwards — plus the outbox of posts this device wrote.
+ *
+ * Sync (forumer_core::sync over delivery_module): one content topic for the
+ * public forum carrying signed posts and digests. Inbound posts are verified
+ * (signature, id, proof-of-work, timestamp) before they are stored or shown.
+ * Our own posts are retried until the network confirms them, and digests —
+ * sent shortly after joining, periodically, and on "Catch up" — make peers
+ * re-send whatever either side missed.
  *
  * The C++ backend runs in its own isolated `ui-host` process; lifecycle hooks
  * and delivery events log to `std::cerr`, visible in the host's stderr stream.
@@ -44,13 +50,15 @@ public:
   ForumerBackend();
   ~ForumerBackend() override;
 
-  //  .rep SLOTs: posting 
+  // ── .rep SLOTs: posting and sync ───────────────────────────────────────────
   QString createTopic(QString title, QString body, QString domains,
                       QString disclosure) override;
   QString replyToTopic(QString topicId, QString body, QString disclosure) override;
   QString loadBacklog() override;
+  QString catchUp() override;
+  QString retryUnsent() override;
 
-  //  .rep SLOTs: identity 
+  // ── .rep SLOTs: identity ───────────────────────────────────────────────────
   QString createIdentity(QString label, QString password) override;
   QString unlockIdentity(QString accountId, QString password) override;
   QString restoreIdentity(QString phrase, QString label, QString password) override;
@@ -61,7 +69,7 @@ public:
   QString renameAccount(QString label) override;
   QString deleteAccount(QString password) override;
 
-  //  .rep SLOTs: persona controls 
+  // ── .rep SLOTs: persona controls ───────────────────────────────────────────
   QString rotatePersona() override;
   QString chooseRotationPolicy(QString policy) override;
   QString chooseDefaultDisclosure(QString disclosure) override;
@@ -73,54 +81,64 @@ protected:
   void onContextReady() override;
 
 private:
-  //  Network / store plumbing 
-  // Wires delivery_module + storage_module events, opens the store, then
-  // createNode + subscribe + start.
+  // ── Node lifecycle ─────────────────────────────────────────────────────────
+  // Wires delivery_module events, opens the post log, then createNode +
+  // join + start.
   void bootstrap();
 
-  // Subscribe to both collections. Retries itself on failure (up to
-  // kMaxSubscribeAttempts); idempotent.
-  void subscribeToForum();
+  // Open the post log and build the transport. False if the log could not be
+  // opened (composing then stays disabled).
+  bool openStore();
+
+  // Join the forum topic. Retries itself on failure (up to
+  // kMaxJoinAttempts); idempotent. Starts the sync timers once joined.
+  void joinForum();
 
   // Re-derive the status PROP from the last connectionStateChanged value.
   void refreshStatus();
 
-  // Map a delivery_module requestId back to the post it carried and report
-  // `state` to the view. Ignores other apps' sends (delivery_module is shared).
-  void settleSend(const QString &requestId, const QString &state,
-                  const QString &detail);
+  // ── Inbound ────────────────────────────────────────────────────────────────
+  // One payload from the network. Ignores other topics (delivery_module is
+  // shared by every Basecamp app).
+  void handlePayload(const QString &topic, const QByteArray &payload);
+  void handlePost(forumer::post::Post post);
+  void handleDigest(const forumer::sync::Digest &digest);
 
-  // Build the adapters and the engine and open the local store. Returns false
-  // if the store could not be opened (composing then stays disabled).
-  bool openEngine();
+  // Full acceptance check for a post from anywhere. "" if acceptable.
+  std::string checkPost(const forumer::post::Post &post) const;
 
-  // The engine's single report of a materialised document change. Verifies the
-  // envelope and fans it out to topicReceived / replyReceived.
-  void handleDocumentChanged(const std::string &collectionId,
-                             const std::string &docId, const std::string &json);
-
-  // Record which of our posts a delivery request id belongs to.
-  void notePublished(const std::string &requestId,
-                     const std::vector<uint8_t> &payload);
-
-  //  Posts 
-  // Parse and fully verify a stored/received document. nullopt (and a log
-  // line) for anything that isn't a valid post with id `docId`.
-  std::optional<forumer::post::Post> decodeDocument(const std::string &docId,
-                                                     const std::string &json) const;
-
-  // Sign `draft` with the unlocked account and put() it. "" on success.
+  // ── Outbound ───────────────────────────────────────────────────────────────
+  // Sign `draft` with the unlocked account, store it, queue it. "" on success.
   QString publish(forumer::post::Draft draft, const QString &disclosure);
 
-  // Emit the matching .rep signal for a verified post.
+  // One send attempt of our own post `id` (outbox bookkeeping included).
+  void sendOwn(const std::string &id);
+
+  // Send a post again for someone else's benefit (digest answers). No
+  // outbox bookkeeping; skipped if the post was seen on the wire recently.
+  void resend(const std::string &id);
+
+  // Retry every unsent post that is due (or all of them, if `force`).
+  void retryDue(bool force);
+
+  // Broadcast our digest for the last sync::kWindowMs.
+  void sendDigest(const char *why);
+
+  // Schedule the next periodic digest (jittered, so peers don't sync in step).
+  void scheduleDigest(int delayMs);
+
+  // Re-send the posts queued by digest answers (batched, rate-limited).
+  void flushAnswers();
+
+  // A delivery event about one of our requests: record it and tell the view.
+  void settleSend(const QString &requestId, const QString &state, const QString &detail);
+
+  // ── View ───────────────────────────────────────────────────────────────────
   void emitPost(const forumer::post::Post &post);
+  void publishSyncState();
 
-  // Every persona public key in the local store's verified posts — what
-  // restore scans to recover the persona counter.
-  std::set<forumer::Bytes> knownAuthors() const;
-
-  //  Identity 
-  // Base directory for this app's local data (accounts + store), scoped to the
+  // ── Identity ───────────────────────────────────────────────────────────────
+  // Base directory for this app's local data (accounts + posts), scoped to the
   // Basecamp instance's data tree (LOGOS_USER_DIR) when there is one.
   QString dataDir() const;
 
@@ -132,35 +150,46 @@ private:
   // that allocated a persona). Logs on failure; the in-memory state stands.
   void saveAccount();
 
-  //  Constants 
-  // LIP-23 app segment and topic version for every content topic. Version 2:
-  // signed envelopes are not readable by (or mixed with) the sample's v1 posts.
-  static const char kAppName[];
-  static constexpr int kTopicVersion = 2;
-  static const char kTopicsCollection[];
-  static const char kRepliesCollection[];
-
-  // One content topic per collection (see cloud_data_core contentTopicForDoc).
-  static constexpr int kBucketBytes = 0;
+  // ── Constants ──────────────────────────────────────────────────────────────
+  static const char kForum[];  // "public" — private forums come later
 
   // Proof-of-work: what we mine when sending, and the minimum we accept.
   static constexpr int kPowBits = 16;
   static constexpr int kAnonymousPowBits = 20;
 
-  //  State 
+  // ── State ──────────────────────────────────────────────────────────────────
   std::unique_ptr<forumer::AccountStore> m_accounts;
   std::optional<forumer::identity::Account> m_account;  // set while unlocked
 
-  bool m_subscribed = false;
-  int m_subscribeAttempts = 0;
+  std::unique_ptr<forumer::PostStore> m_posts;
+  std::unique_ptr<DeliveryModuleTransport> m_transport;
+  std::string m_topic;  // content topic of kForum
+
+  bool m_joined = false;
+  int m_joinAttempts = 0;
   QString m_connectionState;
 
-  // In-flight sends: delivery_module requestId -> post id.
+  // In-flight sends of our own posts: delivery_module requestId -> post id.
   QHash<QString, QString> m_pendingSends;
 
-  // Declared in this order so the engine (which references both adapters) is
-  // destroyed first.
-  std::unique_ptr<DeliveryModuleTransport> m_transport;
-  std::unique_ptr<StorageModuleBlobStore> m_blobStore;
-  std::unique_ptr<cloud_data_core::CloudDataEngine> m_engine;
+  // When each post id was last seen on the wire (sent or received), ms. Lets
+  // a peer skip re-sending what another peer has just re-sent.
+  QHash<QString, qint64> m_lastSeenOnWire;
+
+  // Post ids queued to re-send in answer to digests, and whether a flush is
+  // already scheduled.
+  QSet<QString> m_answerQueue;
+  bool m_answerFlushScheduled = false;
+
+  // Digest schedule: how many we've sent (the first two come quickly, then
+  // they settle into the periodic interval) and when the last one went out.
+  int m_digestRound = 0;
+  qint64 m_lastDigestMs = 0;
+  qint64 m_lastPromptedDigestMs = 0;  // last digest sent because a peer had more
+
+  // Fires every few seconds once joined; retries whatever is due.
+  QTimer *m_retryTimer = nullptr;
+
+  // For the status line.
+  int m_receivedCount = 0;  // new posts that arrived from the network this session
 };

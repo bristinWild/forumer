@@ -153,6 +153,17 @@ std::vector<std::string> missingFrom(const Digest& digest, const std::vector<Pos
     return out;
 }
 
+bool listsUnknown(const Digest& digest, const std::vector<PostSummary>& held) {
+    std::unordered_set<std::string> mine;
+    mine.reserve(held.size());
+    for (const auto& p : held)
+        mine.insert(shortId(p.id));
+    for (const auto& id : digest.have)
+        if (mine.count(id) == 0)
+            return true;
+    return false;
+}
+
 bool acceptTimestamp(int64_t postMs, int64_t nowMs) {
     return postMs > 0 && postMs <= nowMs + kMaxClockSkewMs;
 }

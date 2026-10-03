@@ -209,3 +209,20 @@ TEST(sync_retry_backoff) {
     e.state = SendState::Sent;
     CHECK(!dueForRetry(e, 1'000'000'000));
 }
+
+TEST(sync_lists_unknown) {
+    const auto mine = held(3);  // ts 3..1
+    Digest same = makeDigest(mine, 0);
+    CHECK(!listsUnknown(same, mine));
+
+    Digest subset;
+    subset.have = {shortId(fakeId(2))};
+    CHECK(!listsUnknown(subset, mine));  // they hold less: we answer, they don't
+
+    Digest more = same;
+    more.have.push_back(shortId(fakeId(9)));
+    CHECK(listsUnknown(more, mine));     // they hold a post we lack
+
+    CHECK(!listsUnknown(Digest{}, mine));
+    CHECK(listsUnknown(more, {}));
+}

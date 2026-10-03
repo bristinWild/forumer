@@ -1,69 +1,73 @@
 #pragma once
 
 #include <cstdint>
-#include <functional>
+#include <set>
 #include <string>
 #include <vector>
 
-#include "cloud_data_core/transport.h"
-
 // The per-build aggregate of dependency wrappers behind LogosUiPluginContext's
 // modules(). Forward-declared so this header stays free of the generated
-// umbrella; the .cpp includes logos_sdk.h to make it complete, per the
-// "generated umbrella in .cpp, not header" convention used across this repo.
+// umbrella; the .cpp includes logos_sdk.h to make it complete.
 struct LogosModules;
 
-/// Implements cloud_data_core::Transport by forwarding to
-/// modules().delivery_module.*.
+/// Forumer's connection to the Logos network: a thin layer over
+/// modules().delivery_module.
 ///
-/// A Qt-typed port of cloud-data-module's own src/delivery_module_transport.*.
-/// It could not be reused verbatim: that module is `type: core`, so its
-/// generated wrapper is std-typed (StdLogosResult / std::string /
-/// std::vector<uint8_t>), whereas this app is `type: ui_qml` and gets a
-/// Qt-typed wrapper (LogosResult / QString / QByteArray). Every method is
-/// still a 1:1 forwarder; the only additions are the conversions at the
-/// boundary.
+/// Two modes. Plain relay (subscribe/send) is what Forumer uses: every
+/// message is delivered the moment it arrives, and reliability comes from
+/// Forumer's own digests (forumer_core/sync.h). Reliable channels (SDS) are
+/// kept as an option but OFF: SDS delivers a sender's messages in causal
+/// order, so when one message is lost for good (the receiver was offline and
+/// no store node has it), everything that sender sends afterwards — including
+/// the digest answer that would repair the gap — is held back as having
+/// "missing dependencies". Observed on delivery_module v0.2.1, 2026-10-04.
 ///
-/// The channel-vs-send *policy* lives in CloudDataEngine, not here. What this
-/// class does own is delivery_module's wire format: channelExists()'s verbatim
-/// "true"/"false" string, and the storeQuery request/response envelope decoded
-/// by fetchHistory().
-class DeliveryModuleTransport : public cloud_data_core::Transport {
+/// With channels on, the channel id is the content topic itself, so every
+/// peer agrees on it without coordination, and the node falls back to plain
+/// subscribe/send if it has no channel manager.
+///
+/// What travels is opaque bytes; framing and verification live in
+/// forumer_core (sync.h). Inbound messages are not routed here: delivery
+/// events are a node-wide stream the backend subscribes to directly.
+///
+/// Called from the backend's thread only.
+class DeliveryModuleTransport {
 public:
-    /// Called after every successful publish with the request id delivery_module
-    /// issued and the op payload it carried.
-    ///
-    /// The engine keys its own outbox by request id but reports nothing back
-    /// per-op, and delivery_module's messageSent/messageError events name only
-    /// the request id. This app still wants to show the delivery state of *one
-    /// post* (see the .rep's messageStateChanged), so it needs the request id →
-    /// message id mapping, and this is the only point where both are in hand.
-    /// Decoding the op to recover the message id is the embedder's job, not
-    /// this adapter's — hence a raw payload rather than a parsed op.
-    using PublishObserver = std::function<void(const std::string& requestId,
-                                               const std::vector<uint8_t>& payload)>;
+    struct SendResult {
+        bool ok = false;
+        std::string requestId;  // what messageSent / messageError later report
+        std::string error;
+    };
 
-    explicit DeliveryModuleTransport(LogosModules& modules);
+    /// `peerId` names this install inside reliable channels (SDS sender id).
+    /// Random, stable per install, and unrelated to any identity.
+    /// `useChannels` false means plain relay only (see above).
+    DeliveryModuleTransport(LogosModules& modules, std::string peerId, bool useChannels);
 
-    void setPublishObserver(PublishObserver observer);
+    /// Start receiving `contentTopic`. "" on success, else the reason.
+    std::string join(const std::string& contentTopic);
 
-    cloud_data_core::TransportSendResult send(const std::string& contentTopic,
-                                               const std::vector<uint8_t>& payload) override;
-    cloud_data_core::TransportResult subscribe(const std::string& contentTopic) override;
-    cloud_data_core::TransportResult unsubscribe(const std::string& contentTopic) override;
+    /// Publish one payload on `contentTopic` (joined or not).
+    SendResult publish(const std::string& contentTopic, const std::vector<uint8_t>& payload);
 
-    bool channelExists(const std::string& channelId) override;
-    bool channelCreate(const std::string& channelId, const std::string& contentTopic,
-                        const std::string& peerId) override;
-    cloud_data_core::TransportSendResult channelSend(const std::string& channelId,
-                                                       const std::vector<uint8_t>& payload) override;
+    /// False when channels are off, or once the node has refused one.
+    bool usingChannels() const { return channelsAvailable_; }
 
+    /// Historical payloads for `contentTopic` from the store node at
+    /// `peerAddr`, newest last. Empty on any failure: storeQuery is flagged
+    /// upstream as unstable. Not used until a store node is configured.
     std::vector<std::vector<uint8_t>> fetchHistory(const std::string& contentTopic,
-                                                    const std::string& peerAddr,
-                                                    const std::string& requestId,
-                                                    int64_t timeoutMs) override;
+                                                   const std::string& peerAddr,
+                                                   const std::string& requestId,
+                                                   int64_t timeoutMs);
 
 private:
+    // Opens (or re-opens after a restart) the channel for `topic`. False when
+    // the node has no reliable-channel manager; that is latched.
+    bool ensureChannel(const std::string& topic);
+
     LogosModules& modules_;
-    PublishObserver publishObserver_;
+    std::string peerId_;
+    std::set<std::string> channels_;
+    bool channelsAvailable_ = true;
 };

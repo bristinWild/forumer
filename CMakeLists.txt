@@ -12,14 +12,9 @@ file(READ "${CMAKE_CURRENT_SOURCE_DIR}/metadata.json" METADATA_JSON)
 string(JSON MODULE_NAME GET ${METADATA_JSON} name)
 string(JSON MODULE_VERSION GET ${METADATA_JSON} version)
 
-# cloud_data_core: the local-first CRDT/sync/durability engine, vendored from
-# cloud-data-module's lib/ (see its README's "Reusing the engine"). An ordinary
-# internal CMake static library, not the Logos external_libraries/vendor_path
-# mechanism — it is first-party source compiled in this tree.
-add_subdirectory(lib)
-
-# forumer_core: Forumer's own engine (identity, crypto, envelopes, policy).
-# Qt- and SDK-free so it is unit-testable standalone (scripts/test-core.sh).
+# forumer_core: Forumer's own engine (identity, crypto, signed posts, the post
+# log, the sync protocol). Qt- and SDK-free so it is unit-testable standalone
+# (scripts/test-core.sh).
 add_subdirectory(lib/forumer_core)
 
 # Universal UI module: you write the .rep + the *Backend class. REP_FILE runs
@@ -34,12 +29,9 @@ logos_module(
         src/base64.cpp
         src/delivery_module_transport.h
         src/delivery_module_transport.cpp
-        src/storage_module_blob_store.h
-        src/storage_module_blob_store.cpp
     INCLUDE_DIRS
         src
     LINK_LIBRARIES
-        cloud_data_core
         forumer_core
 )
 

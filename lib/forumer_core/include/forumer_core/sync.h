@@ -122,6 +122,13 @@ Digest makeDigest(const std::vector<PostSummary>& held, int64_t sinceMs,
 std::vector<std::string> missingFrom(const Digest& digest, const std::vector<PostSummary>& held,
                                      size_t max = kMaxAnswer);
 
+/// Whether the digest lists any post not in `held` — i.e. its sender has
+/// something we lack. We then send our own digest promptly so the sender
+/// answers it, instead of waiting for our next periodic one. Pass `held` for
+/// the digest's whole window (PostStore::recent(digest.sinceMs)), or posts we
+/// hold but dated before our own window would look unknown.
+bool listsUnknown(const Digest& digest, const std::vector<PostSummary>& held);
+
 /// Whether a post's author timestamp is plausible relative to our clock.
 bool acceptTimestamp(int64_t postMs, int64_t nowMs);
 

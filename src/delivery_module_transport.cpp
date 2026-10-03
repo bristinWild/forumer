@@ -14,7 +14,6 @@
 #include "logos_types.h"
 
 using json = nlohmann::json;
-using namespace cloud_data_core;
 
 namespace {
 
@@ -25,105 +24,97 @@ QByteArray qba(const std::vector<uint8_t>& bytes) {
                       static_cast<qsizetype>(bytes.size()));
 }
 
-// LogosResult::getError() throws when the result is a success, and
-// getString()/getValue() throw when it is a failure — so never reach for
-// either without checking .success first. These two keep that discipline in
-// one place rather than at every call site below.
+// LogosResult::getError() throws on a success and getString() throws on a
+// failure, so never reach for either without checking .success first.
 std::string errorOf(const LogosResult& r) {
     return r.success ? std::string() : r.getError().toStdString();
 }
 
 std::string stringOf(const LogosResult& r) {
-    if (!r.success) return {};
-    return r.getString().toStdString();
+    return r.success ? r.getString().toStdString() : std::string();
 }
 
 } // namespace
 
-DeliveryModuleTransport::DeliveryModuleTransport(LogosModules& modules) : modules_(modules) {}
+DeliveryModuleTransport::DeliveryModuleTransport(LogosModules& modules, std::string peerId,
+                                                 bool useChannels)
+    : modules_(modules), peerId_(std::move(peerId)), channelsAvailable_(useChannels) {}
 
-void DeliveryModuleTransport::setPublishObserver(PublishObserver observer) {
-    publishObserver_ = std::move(observer);
+bool DeliveryModuleTransport::ensureChannel(const std::string& topic) {
+    if (!channelsAvailable_)
+        return false;
+    if (channels_.count(topic) != 0)
+        return true;
+
+    // channelExists() answers with the literal string "true"/"false", and an
+    // unknown id is not an error — it just means "not open on this node yet",
+    // including after a restart, where channelCreate() re-opens the persisted
+    // channel state rather than starting over.
+    LogosResult exists = modules_.delivery_module.channelExists(qs(topic));
+    const bool open = exists.success && stringOf(exists) == "true";
+    if (!open && !modules_.delivery_module.channelCreate(qs(topic), qs(topic), qs(peerId_)).success) {
+        // A kernel-only node (or one another app configured without the
+        // channels layer) fails every channel call. Stop asking.
+        channelsAvailable_ = false;
+        return false;
+    }
+    channels_.insert(topic);
+    return true;
 }
 
-TransportSendResult DeliveryModuleTransport::send(const std::string& contentTopic,
-                                                    const std::vector<uint8_t>& payload) {
-    LogosResult res = modules_.delivery_module.send(qs(contentTopic), qba(payload));
-    if (!res.success) return {false, "", errorOf(res)};
-    const std::string requestId = stringOf(res);
-    if (publishObserver_) publishObserver_(requestId, payload);
-    return {true, requestId, ""};
+std::string DeliveryModuleTransport::join(const std::string& contentTopic) {
+    if (ensureChannel(contentTopic))
+        return {};  // a channel receives as soon as it is open
+    LogosResult r = modules_.delivery_module.subscribe(qs(contentTopic));
+    return r.success ? std::string() : errorOf(r);
 }
 
-TransportResult DeliveryModuleTransport::subscribe(const std::string& contentTopic) {
-    LogosResult res = modules_.delivery_module.subscribe(qs(contentTopic));
-    return {res.success, errorOf(res)};
+DeliveryModuleTransport::SendResult DeliveryModuleTransport::publish(
+    const std::string& contentTopic, const std::vector<uint8_t>& payload) {
+    LogosResult r = ensureChannel(contentTopic)
+                        ? modules_.delivery_module.channelSend(qs(contentTopic), qba(payload))
+                        : modules_.delivery_module.send(qs(contentTopic), qba(payload));
+    if (!r.success)
+        return {false, {}, errorOf(r)};
+    return {true, stringOf(r), {}};
 }
 
-TransportResult DeliveryModuleTransport::unsubscribe(const std::string& contentTopic) {
-    LogosResult res = modules_.delivery_module.unsubscribe(qs(contentTopic));
-    return {res.success, errorOf(res)};
-}
-
-bool DeliveryModuleTransport::channelExists(const std::string& channelId) {
-    // channelExists() answers with the verbatim FFI string "true"/"false", and
-    // an unknown channel id is not an error — so anything that isn't a literal
-    // "true" means "not open on this node yet".
-    LogosResult res = modules_.delivery_module.channelExists(qs(channelId));
-    if (!res.success) return false;
-    return stringOf(res) == "true";
-}
-
-bool DeliveryModuleTransport::channelCreate(const std::string& channelId,
-                                             const std::string& contentTopic,
-                                             const std::string& peerId) {
-    return modules_.delivery_module.channelCreate(qs(channelId), qs(contentTopic), qs(peerId)).success;
-}
-
-TransportSendResult DeliveryModuleTransport::channelSend(const std::string& channelId,
-                                                           const std::vector<uint8_t>& payload) {
-    LogosResult res = modules_.delivery_module.channelSend(qs(channelId), qba(payload));
-    if (!res.success) return {false, "", errorOf(res)};
-    const std::string requestId = stringOf(res);
-    if (publishObserver_) publishObserver_(requestId, payload);
-    return {true, requestId, ""};
-}
-
-std::vector<std::vector<uint8_t>> DeliveryModuleTransport::fetchHistory(const std::string& contentTopic,
-                                                                          const std::string& peerAddr,
-                                                                          const std::string& requestId,
-                                                                          int64_t timeoutMs) {
+std::vector<std::vector<uint8_t>> DeliveryModuleTransport::fetchHistory(
+    const std::string& contentTopic, const std::string& peerAddr, const std::string& requestId,
+    int64_t timeoutMs) {
     std::vector<std::vector<uint8_t>> out;
 
-    json storeQueryReq;
-    storeQueryReq["requestId"] = requestId;
-    storeQueryReq["includeData"] = true;
-    storeQueryReq["paginationForward"] = true;
-    storeQueryReq["contentTopics"] = json::array({contentTopic});
+    json req;
+    req["requestId"] = requestId;
+    req["includeData"] = true;
+    req["paginationForward"] = true;
+    req["contentTopics"] = json::array({contentTopic});
 
-    LogosResult res = modules_.delivery_module.storeQuery(qs(storeQueryReq.dump()), qs(peerAddr),
+    LogosResult res = modules_.delivery_module.storeQuery(qs(req.dump()), qs(peerAddr),
                                                           static_cast<int>(timeoutMs));
-    if (!res.success) return out; // best-effort: storeQuery is explicitly unstable upstream
+    if (!res.success)
+        return out;
 
     // StoreQueryResponseHex: { "messages": [ { "message": { "payload": base64 } } ] }.
-    // The Qt wrapper hands the FFI payload back as a QVariant, which may carry
-    // the response either as a JSON string or as an already-structured
-    // map/list — normalise both to JSON text before parsing.
-    QString responseText = res.value.toString();
-    if (responseText.isEmpty())
-        responseText = QString::fromUtf8(QJsonDocument::fromVariant(res.value).toJson(QJsonDocument::Compact));
+    // The Qt wrapper may hand the response back as a JSON string or as an
+    // already-structured map/list; normalise both to JSON text.
+    QString text = res.value.toString();
+    if (text.isEmpty())
+        text = QString::fromUtf8(QJsonDocument::fromVariant(res.value).toJson(QJsonDocument::Compact));
 
-    json response = json::parse(responseText.toStdString(), nullptr, false);
-    if (response.is_discarded() || !response.is_object() || !response.contains("messages")) return out;
-    const json& messages = response["messages"];
-    if (!messages.is_array()) return out;
+    const json response = json::parse(text.toStdString(), nullptr, false);
+    if (response.is_discarded() || !response.is_object())
+        return out;
+    auto messages = response.find("messages");
+    if (messages == response.end() || !messages->is_array())
+        return out;
 
-    for (const auto& entry : messages) {
-        if (!entry.is_object() || !entry.contains("message")) continue;
+    for (const auto& entry : *messages) {
+        if (!entry.is_object() || !entry.contains("message"))
+            continue;
         const json& message = entry["message"];
-        if (!message.is_object() || !message.contains("payload")) continue;
-        if (!message["payload"].is_string()) continue;
-
+        if (!message.is_object() || !message.contains("payload") || !message["payload"].is_string())
+            continue;
         const std::string decoded = base64Decode(message["payload"].get<std::string>());
         out.emplace_back(decoded.begin(), decoded.end());
     }

@@ -23,6 +23,8 @@ Item {
     readonly property bool   nodeReady:  backend ? backend.nodeReady  : false
     readonly property string topic:      backend ? backend.topic      : ""
     readonly property string appVersion: backend ? backend.appVersion : ""
+    readonly property int    unsentCount: backend ? backend.unsentCount : 0
+    readonly property string syncInfo:   backend ? backend.syncInfo   : ""
 
     readonly property string identityState:     backend ? backend.identityState     : "none"
     readonly property string accountsJson:      backend ? backend.accountsJson      : "[]"
@@ -64,7 +66,7 @@ Item {
         }
     }
 
-    // Verified posts, pushed by the backend (our own included, on put()).
+    // Verified posts, pushed by the backend (our own included, as they're saved).
     Connections {
         target: root.backend
         ignoreUnknownSignals: true
@@ -101,6 +103,8 @@ Item {
                     root.addTopic(e.id, e.title, e.body, e.author, e.domains || "", ts);
                 else if (e.kind === "reply")
                     root.addReply(e.id, e.topicId, e.body, e.author, ts);
+                if (e.state)
+                    root.markDelivery(e.id, e.state);   // our own post: Live / Sending… / Failed
             }
             root.log("backlog restored: " + list.length + " post(s)");
         }, function (err) {
@@ -230,14 +234,19 @@ Item {
     }
 
     function setMessageState(id, state, detail) {
+        root.markDelivery(id, state);
+        if (state === "failed")
+            root.lastError = detail.length > 0 ? "Not delivered yet (will retry): " + detail
+                                               : "Not delivered yet (will retry)";
+    }
+
+    function markDelivery(id, state) {
         var i = root.findTopicIndex(id);
         if (i >= 0) topicsModel.setProperty(i, "delivery", state);
         for (var j = 0; j < repliesModel.count; ++j)
             if (repliesModel.get(j).rid === id) { repliesModel.setProperty(j, "delivery", state); break; }
         for (var k = 0; k < threadModel.count; ++k)
             if (threadModel.get(k).rid === id) { threadModel.setProperty(k, "delivery", state); break; }
-        if (state === "failed")
-            root.lastError = detail.length > 0 ? "Not delivered: " + detail : "Not delivered";
     }
 
     // Post status, as agreed: Sending… → Live, or Failed to publish.
@@ -458,6 +467,12 @@ Item {
     // ── Identity menu + dialogs ───────────────────────────────────────────────
     LogosMenu {
         id: identityMenu
+        LogosMenuItem { text: "Catch up now"; onTriggered: root.simpleCall(backend.catchUp()) }
+        LogosMenuItem {
+            text: "Retry unsent (" + root.unsentCount + ")"
+            enabled: root.unsentCount > 0
+            onTriggered: root.simpleCall(backend.retryUnsent())
+        }
         LogosMenuItem { text: "Show recovery phrase…"; onTriggered: { revealPasswordField.text = ""; revealDialog.open(); } }
         LogosMenuItem { text: "Rename account…"; onTriggered: { renameField.text = root.myLabel; renameDialog.open(); } }
         LogosMenuItem { text: "Change password…"; onTriggered: passwordDialog.open() }
@@ -596,13 +611,15 @@ Item {
             color: Theme.palette.text
         }
         LogosText {
-            text: "Topics: " + (root.topic.length > 0 ? root.topic : "—")
+            text: "Forum topic: " + (root.topic.length > 0 ? root.topic : "—")
             color: Theme.palette.textSecondary
             font.pixelSize: Theme.typography.secondaryText
             font.family: root.monoFont
         }
         LogosText {
             text: (root.nodeReady ? "● " : "○ ") + (root.status.length > 0 ? root.status : "Connecting to backend…")
+                  + (root.syncInfo.length > 0 ? " · " + root.syncInfo : "")
+                  + (root.unsentCount > 0 ? " · " + root.unsentCount + " unsent" : "")
             color: root.nodeReady ? Theme.palette.success : Theme.palette.warning
             font.pixelSize: Theme.typography.secondaryText
         }

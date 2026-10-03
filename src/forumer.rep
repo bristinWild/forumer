@@ -17,12 +17,24 @@ class Forumer
     // first and oldest first within each kind:
     //   [{"kind":"topic","id":…,"title":…,"body":…,"author":…,"domains":…,"ts":…}, …]
     // `author` is the display form (fingerprint, alias, or "Anonymous").
+    // Posts this device wrote also carry "state": "pending" | "sent" | "failed".
     //
     // A SLOT rather than a startup SIGNAL on purpose. The backend finishes its
     // bootstrap long before this view's replica has connected, and QtRO
     // forwards a signal only to replicas attached at the moment it is emitted
     // — there is no replay for a late joiner.
     SLOT(QString loadBacklog())
+
+    // ── Sync ──────────────────────────────────────────────────────────────────
+    // Posts travel on one content topic per forum; gaps are repaired by
+    // digests (forumer_core/sync.h). Both run automatically — these are the
+    // "do it now" buttons.
+
+    // Send a digest now, so peers re-send any posts this device is missing.
+    SLOT(QString catchUp())
+
+    // Re-send every post of ours not yet confirmed, ignoring the retry backoff.
+    SLOT(QString retryUnsent())
 
     // ── Identity ──────────────────────────────────────────────────────────────
     // Accounts are master secrets kept in password-protected vaults on this
@@ -70,8 +82,14 @@ class Forumer
     // True once the local store is open (composing works offline).
     PROP(bool nodeReady=false READONLY)
 
-    // The content topics this forum runs on (for display).
+    // The content topic this forum runs on (for display).
     PROP(QString topic="" READONLY)
+
+    // Posts of ours not yet confirmed by the network (pending or failed).
+    PROP(int unsentCount=0 READONLY)
+
+    // One line about sync for the status bar, e.g. "synced 14:02 · 3 recovered".
+    PROP(QString syncInfo="" READONLY)
 
     // App version, from metadata.json.
     PROP(QString appVersion="" READONLY)
@@ -104,6 +122,7 @@ class Forumer
     SIGNAL(replyReceived(QString id, QString topicId, QString body, QString author, qint64 timestamp))
 
     // Delivery state of a post *this* install made: "pending", "propagated",
-    // "sent" or "failed" (reason in `detail`).
+    // "sent" or "failed" (reason in `detail`). Failed posts stay in the outbox
+    // and are retried automatically, so "failed" can later become "sent".
     SIGNAL(messageStateChanged(QString id, QString state, QString detail))
 }

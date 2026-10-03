@@ -2,19 +2,15 @@
 
 #include <string>
 
-/// Minimal RFC 4648 base64 decoder, shared by both module adapters.
+/// Minimal RFC 4648 base64 decoder.
 ///
-/// Both of this module's dependencies base64-encode payloads on the wire:
-/// storage_module's downloadChunks() delivers each chunk independently
-/// encoded (see storage_module_plugin.h's storageDownloadProgress payload),
-/// and delivery_module's storeQuery() returns message payloads encoded the
-/// same way. Decoding each chunk on arrival and concatenating raw bytes is
-/// correct regardless of where chunk boundaries fall, whereas concatenating
-/// the base64 text first would break if an interior chunk's encoding happens
-/// to include padding.
+/// Logos modules base64-encode payloads in some responses: delivery_module's
+/// storeQuery() returns message payloads that way (and storage_module's
+/// downloadChunks() encodes each chunk independently — decode each chunk on
+/// arrival and concatenate the raw bytes, never the base64 text, which breaks
+/// when an interior chunk carries padding).
 ///
-/// Lives in src/ rather than lib/ deliberately: this is wire-format
-/// knowledge about two specific Logos modules, not something
-/// cloud_data_core should carry (the library's Transport/BlobStore
-/// interfaces are raw bytes in, raw bytes out).
+/// Lives in src/ rather than lib/forumer_core deliberately: this is
+/// wire-format knowledge about specific Logos modules, and forumer_core deals
+/// only in raw bytes.
 std::string base64Decode(const std::string& input);
