@@ -14,7 +14,7 @@ Item {
 
     function log(msg) { console.log("[forumer qml] " + msg); }
 
-    // Typed replica of the C++ backend — auto-synced properties and callable slots.
+    // Typed replica of the C++ backend - auto-synced properties and callable slots.
     readonly property var backend: logos.module("forumer")
     property bool ready: false
 

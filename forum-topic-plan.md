@@ -1,4 +1,4 @@
-# Plan — forum-topic functionality in `example_forum`
+# Plan - forum-topic functionality in `example_forum`
 
 Scope: **`example_forum` only.** No changes to `delivery_module`, the dependency
 wiring, or the hard-coded delivery topic `kTopic` (the single forum channel).
@@ -16,7 +16,7 @@ published on `kTopic`, disambiguated by the envelope.
 
 ## 1. Message envelope + encode/decode (the metadata layer)
 
-New file `src/forum_message.h` (+ optional `src/forum_message.cpp`) — a struct and
+New file `src/forum_message.h` (+ optional `src/forum_message.cpp`) - a struct and
 two functions that own the wire format, isolated from both transport and UI.
 
 ```cpp
@@ -41,10 +41,10 @@ Wire format (UTF-8 JSON, replaces the current raw-text payload):
 ```
 
 `decode` returns `false` for malformed JSON, unknown `type`, or missing required
-fields (a topic needs `title`; a reply needs `topicId`) — so any non-forum traffic
+fields (a topic needs `title`; a reply needs `topicId`) - so any non-forum traffic
 on the channel is safely ignored.
 
-## 2. `.rep` contract — `src/example_forum.rep`
+## 2. `.rep` contract - `src/example_forum.rep`
 
 Replace the single `sendMessage` slot and `messageReceived` signal with
 forum-aware ones; keep the `status` / `nodeReady` / `topic` PROPs.
@@ -58,10 +58,10 @@ SIGNAL(replyReceived(QString id, QString topicId, QString body, qint64 timestamp
 ```
 
 Two typed signals (vs one signal with a `type` arg) keep the QML mapping clean.
-Slots return `""` on success / an error string on failure — same convention as the
+Slots return `""` on success / an error string on failure - same convention as the
 current `sendMessage`.
 
-## 3. Backend — `src/example_forum_backend.{h,cpp}`
+## 3. Backend - `src/example_forum_backend.{h,cpp}`
 
 - **Receive:** in the existing `delivery_module.on("messageReceived", …)` handler,
   `decodeForumMessage(data[2].toByteArray(), …)`; on success
@@ -75,7 +75,7 @@ current `sendMessage`.
   it back). The id makes QML dedupe idempotent if the network ever does echo.
 - Remove `sendMessage`; add `#include <QUuid>` and `#include "forum_message.h"`.
 
-## 4. QML — `src/qml/Main.qml`
+## 4. QML - `src/qml/Main.qml`
 
 Replace the flat message list with a **master-detail forum** (recommended layout):
 
@@ -90,13 +90,13 @@ Replace the flat message list with a **master-detail forum** (recommended layout
   `selectedTopicId`. `Connections` on `backend` route
   `onTopicReceived` / `onReplyReceived` into the models, **deduping by `id`**.
 
-*Alternative:* a single stacked column with inline replies under each topic —
+*Alternative:* a single stacked column with inline replies under each topic -
 simpler but less forum-like. Default is master-detail.
 
-## 5. Build wiring — `CMakeLists.txt`
+## 5. Build wiring - `CMakeLists.txt`
 
 Add `src/forum_message.h` (and `.cpp` if split) to `SOURCES`. No `metadata.json`
-or `flake.nix` changes — `delivery_module` is already a dependency.
+or `flake.nix` changes - `delivery_module` is already a dependency.
 
 ## Decisions & assumptions
 
@@ -108,7 +108,7 @@ or `flake.nix` changes — `delivery_module` is already a dependency.
 
 ## Out of scope
 
-- Persistence / history — no Waku store query, so late joiners see only messages
+- Persistence / history - no Waku store query, so late joiners see only messages
   received while running.
 - Author identity / auth / signatures.
 - Multiple forums, topic edit/delete, pagination, rich text/attachments.
@@ -116,7 +116,7 @@ or `flake.nix` changes — `delivery_module` is already a dependency.
 ## Verification
 
 - `nix build` in `example_forum` (the real check; IDE/clangd errors here are the known
-  false positives — Qt headers aren't on clangd's path outside the nix build).
+  false positives - Qt headers aren't on clangd's path outside the nix build).
 - Manual end-to-end: two `nix run` instances → create a topic in A, see it in B;
   reply in B, see it in A.
 - Optional: a round-trip unit check for `encode`/`decode` (no test harness exists
@@ -126,7 +126,7 @@ or `flake.nix` changes — `delivery_module` is already a dependency.
 
 | File | Change |
 |---|---|
-| `src/forum_message.h` (+ `.cpp`?) | **new** — `ForumMessage` + encode/decode |
+| `src/forum_message.h` (+ `.cpp`?) | **new** - `ForumMessage` + encode/decode |
 | `src/example_forum.rep` | new slots/signals; drop `sendMessage`/`messageReceived` |
 | `src/example_forum_backend.h` | declare `createTopic`/`replyToTopic`; includes |
 | `src/example_forum_backend.cpp` | encode on send, decode on receive, local echo, QUuid |

@@ -33,14 +33,14 @@ class QTimer;
  * per-post disclosure. Nothing about identity touches the network.
  *
  * Post log (forumer_core::PostStore): every verified post this device knows,
- * append-only — the first valid copy of a post is kept and nothing can change
- * or remove it afterwards — plus the outbox of posts this device wrote.
+ * append-only - the first valid copy of a post is kept and nothing can change
+ * or remove it afterwards - plus the outbox of posts this device wrote.
  *
  * Sync (forumer_core::sync over delivery_module): one content topic for the
  * public forum carrying signed posts and digests. Inbound posts are verified
  * (signature, id, proof-of-work, timestamp) before they are stored or shown.
- * Our own posts are retried until the network confirms them, and digests —
- * sent shortly after joining, periodically, and on "Catch up" — make peers
+ * Our own posts are retried until the network confirms them, and digests -
+ * sent shortly after joining, periodically, and on "Catch up" - make peers
  * re-send whatever either side missed.
  *
  * The C++ backend runs in its own isolated `ui-host` process; lifecycle hooks
@@ -156,7 +156,7 @@ private:
   void saveAccount();
 
   // ── Constants ──────────────────────────────────────────────────────────────
-  static const char kForum[];  // "public" — private forums come later
+  static const char kForum[];  // "public" - private forums come later
 
   // Proof-of-work: what we mine when sending, and the minimum we accept.
   static constexpr int kPowBits = 16;

@@ -140,7 +140,7 @@ Item {
                     Text {
                         Layout.fillWidth: true
                         visible: thread.topic !== null && thread.topic.placeholder
-                        text: "Replies to this topic reached you before the topic itself. It will appear here as soon as it syncs — try “catch up now” under missed."
+                        text: "Replies to this topic reached you before the topic itself. It will appear here as soon as it syncs - try “catch up now” under missed."
                         wrapMode: Text.WordWrap
                         font.family: Ui.sans
                         font.pixelSize: Ui.size.body

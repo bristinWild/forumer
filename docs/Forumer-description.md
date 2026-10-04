@@ -2,7 +2,7 @@
 
 **A private, serverless discussion forum for Logos Basecamp.**
 
-Forumer lets people discuss any topic — politics, privacy, campus life, technology — without a central server, without an account tied to their real identity, and without a single profile that links everything they say. It runs entirely on the Logos stack: **Logos Delivery** for messaging, **Logos Storage** for media and history, and **Basecamp** as the app host.
+Forumer lets people discuss any topic - politics, privacy, campus life, technology - without a central server, without an account tied to their real identity, and without a single profile that links everything they say. It runs entirely on the Logos stack: **Logos Delivery** for messaging, **Logos Storage** for media and history, and **Basecamp** as the app host.
 
 Built as a submission for [λPrize LP-0026: Forum App](https://github.com/logos-co/lambda-prize/blob/master/prizes/LP-0026.md). Forked from and inspired by [jzaki/forum-sample-app](https://github.com/jzaki/forum-sample-app).
 
@@ -44,10 +44,10 @@ Built as a submission for [λPrize LP-0026: Forum App](https://github.com/logos-
 |---|---|
 | **Master identity** | One secret per account, password-protected on disk, never shown publicly. |
 | **Personas** | Public identities derived from the master. Others only ever see personas. |
-| **Identity rotation** | *Keep* one persona, rotate *Manually*, or *Auto* — a fresh persona for every post. |
+| **Identity rotation** | *Keep* one persona, rotate *Manually*, or *Auto* - a fresh persona for every post. |
 | **Disclosure choice per post** | Post under your persona, under an alias, or fully anonymously. |
 | **Multiple accounts** | Hold several master identities and switch between them. |
-| **Domains** | Posts are tagged with up to 3 domains — prebuilt or typed in, comma-separated. |
+| **Domains** | Posts are tagged with up to 3 domains - prebuilt or typed in, comma-separated. |
 | **Threads** | Posts → comments → nested replies. |
 | **Feed** | Two columns: *All domains* and *Followed domains*. |
 | **Search** | Full-text search over everything synced to your device. |
@@ -83,8 +83,8 @@ Built as a submission for [λPrize LP-0026: Forum App](https://github.com/logos-
 | Failed sends stay available to retry | Persistent outbox with Retry | [§9.1](#91-outbox) |
 | Does not flood the network | Single shared channel, caps, rate limits, PoW, RLN | [§10](#10-anti-flood-and-spam-resistance) |
 | CI green on default branch | GitHub Actions: build + unit tests | [§18](#18-testing-and-ci) |
-| README with deployment & usage | This document | — |
-| "Program addresses" | **N/A — Forumer deploys no on-chain programs** (blockchain is out of scope for LP-0026). Content topics and catalog URL are listed instead. | [§8](#8-network-layout-content-topics), [§17.5](#175-module-catalog) |
+| README with deployment & usage | This document | - |
+| "Program addresses" | **N/A - Forumer deploys no on-chain programs** (blockchain is out of scope for LP-0026). Content topics and catalog URL are listed instead. | [§8](#8-network-layout-content-topics), [§17.5](#175-module-catalog) |
 | Narrated video demo | Covers setup, all core flows, failure handling, design choices | [§19](#19-roadmap) |
 | FURPS self-assessment | In the solution PR, per the λPrize template | [§19](#19-roadmap) |
 | MIT + Apache-2.0 dual license | `LICENSE-MIT`, `LICENSE-APACHE-v2` | [§23](#23-credits-and-license) |
@@ -156,7 +156,7 @@ Forumer ships as **two Logos modules**:
 | **`forumer_core`** | `core` module, C++ (`interface: universal`) | All logic: identity, crypto, envelopes, storage, sync, reliability, anti-flood, DMs, media. Has no UI and can be used by other apps. |
 | **`forumer_ui`** | `ui_qml` module | Basecamp app: QML views + a thin C++ backend that forwards calls to `forumer_core` and exposes state to QML. |
 
-Splitting the engine from the UI is a deliberate supportability choice: the forum protocol becomes a reusable component (another app — a bot, a CLI, a different UI — can depend on `forumer_core`).
+Splitting the engine from the UI is a deliberate supportability choice: the forum protocol becomes a reusable component (another app - a bot, a CLI, a different UI - can depend on `forumer_core`).
 
 > ⚠ verify: a `ui_qml` module depending on a custom `core` module, both packaged and released through the catalog. Fallback: one `ui_qml` module whose backend links `forumer_core` as a static library, with the same internal boundary.
 
@@ -206,7 +206,7 @@ Reused from the sample app (adapted): the `cloud_data_core` sync/storage library
 
 | Dependency | Use | Version |
 |---|---|---|
-| `delivery_module` | Publish/subscribe, store queries, reliable channels (SDS), RLN state | v0.3.0 (sample pinned v0.2.1 — upgrade ⚠ verify) |
+| `delivery_module` | Publish/subscribe, store queries, reliable channels (SDS), RLN state | v0.3.0 (sample pinned v0.2.1 - upgrade ⚠ verify) |
 | `storage_module` | Media and snapshot blobs by CID | v2.1.x |
 | `logos-module-builder` | Nix build, codegen, `.lgx` packaging | as pinned |
 | `logos-design-system` | QML components and styling | as pinned |
@@ -388,9 +388,9 @@ All topics follow [LIP-23](https://lip.logos.co/messaging/informational/23/topic
 | `/forumer/1/dm-{bucket}/json` | Persona DMs | 256 buckets by `H(recipient_pk)[0]`; recipients trial-decrypt their bucket. |
 | `/forumer/1/snap/json` | Snapshot pointers (CID + range) | Lets late joiners fetch history from Storage. |
 
-**Scaling note:** if public traffic grows beyond what every client should receive, the public topic can be split into N buckets by `H(post id)` with clients subscribing to all buckets — no protocol change for envelopes.
+**Scaling note:** if public traffic grows beyond what every client should receive, the public topic can be split into N buckets by `H(post id)` with clients subscribing to all buckets - no protocol change for envelopes.
 
-**Network preset:** `{ "mode": "Core", "preset": "logos.test" }` (layered config shape; no bare `WakuNodeConf` keys at the top level — see the sample's delivery notes).
+**Network preset:** `{ "mode": "Core", "preset": "logos.test" }` (layered config shape; no bare `WakuNodeConf` keys at the top level - see the sample's delivery notes).
 
 ---
 
@@ -447,9 +447,9 @@ Personas are free, so spam must cost something other than identity.
 | Media per post | 4 files, 5 MB each |
 | Envelope size | 16 KB (media is by reference) |
 | Client send rate limit | 5 messages per minute per account, burst 3 |
-| PoW — persona/alias posts and replies | 16 bits |
-| PoW — anonymous messages | 20 bits |
-| PoW — DMs | 16 bits |
+| PoW - persona/alias posts and replies | 16 bits |
+| PoW - anonymous messages | 20 bits |
+| PoW - DMs | 16 bits |
 | Network RLN | Used automatically when the network preset enables it (`rlnState`) |
 | Relay behaviour | Clients never re-publish received messages; history is fetched on demand, never rebroadcast |
 
@@ -507,7 +507,7 @@ Group chats are out of scope for this version.
 
 - **Search:** SQLite **FTS5** over title, body and domains of everything stored locally (including caught-up history). Results link into threads. Private forum content is searchable only on members' devices (it is stored decrypted locally).
 - **Hide:** hide a post or a whole thread from your own view.
-- **Mute persona:** hide everything from a persona. (Less effective against Auto-rotating posters — hence per-post/thread hide.)
+- **Mute persona:** hide everything from a persona. (Less effective against Auto-rotating posters - hence per-post/thread hide.)
 - All moderation is **local**: Forumer has no global moderators, consistent with its no-central-authority design.
 
 ---
@@ -669,8 +669,8 @@ Variants built: `darwin-arm64`, `linux-amd64`, `linux-arm64` (+ `windows-x86_64`
 | Layer | What | How |
 |---|---|---|
 | Unit | codec (canonical bytes, ids), signatures, PoW, KDF/persona derivation, vault, mnemonic round-trip, tag normalization, outbox state machine, thread tree building, sealed DM round-trip | C++ tests in `modules/forumer_core/tests`, run by `nix flake check` |
-| Integration | Two instances on `logos.test`: post → receive; reply tree; offline → catch-up; outbox retry; private forum; DM | `scripts/two-instances.sh` (manual / self-hosted runner — needs live network) |
-| UI | Manual checklist in `docs/demo-script.md`; non-expert walkthrough with real users before submission | — |
+| Integration | Two instances on `logos.test`: post → receive; reply tree; offline → catch-up; outbox retry; private forum; DM | `scripts/two-instances.sh` (manual / self-hosted runner - needs live network) |
+| UI | Manual checklist in `docs/demo-script.md`; non-expert walkthrough with real users before submission | - |
 | Clean-environment check | Fresh machine/VM: clone → build → run without modification | Before every submission |
 
 **CI (`.github/workflows/ci.yml`):** Nix build of both modules, unit tests, `.lgx` build. Must be green on `main`.
@@ -679,7 +679,7 @@ Variants built: `darwin-arm64`, `linux-amd64`, `linux-arm64` (+ `windows-x86_64`
 
 ## 19. Roadmap
 
-### P0 — LP requirements
+### P0 - LP requirements
 - [ ] Fork builds and runs; bump `delivery_module` to v0.3.0
 - [ ] `forumer_core` / `forumer_ui` split
 - [ ] Master identity, password vault, recovery phrase, accounts + switcher
@@ -693,7 +693,7 @@ Variants built: `darwin-arm64`, `linux-amd64`, `linux-arm64` (+ `windows-x86_64`
 - [ ] Anti-flood limits
 - [ ] Catalog release, CI green, README, protocol + threat-model docs
 
-### P1 — Differentiators
+### P1 - Differentiators
 - [ ] Search (FTS5)
 - [ ] Media with metadata stripping
 - [ ] My posts + restore with gap-limit scan
@@ -701,7 +701,7 @@ Variants built: `darwin-arm64`, `linux-amd64`, `linux-arm64` (+ `windows-x86_64`
 - [ ] Private forums + invite links
 - [ ] Missed tab polish, offline banner, error copy
 
-### P2 — Advanced
+### P2 - Advanced
 - [ ] Persona DMs
 
 ### Submission
@@ -719,7 +719,7 @@ Variants built: `darwin-arm64`, `linux-amd64`, `linux-arm64` (+ `windows-x86_64`
 | **Group chats** | Deferred; DMs first. |
 | **Edit / delete posts** | Cannot be enforced peer-to-peer; offering it would mislead users. |
 | **DM forward secrecy** | Needs a ratchet; future work. |
-| **Membership proofs (ZK/RLN-based anonymous credentials)** | Would allow "verified member, unknown who" — natural follow-up with LEZ. |
+| **Membership proofs (ZK/RLN-based anonymous credentials)** | Would allow "verified member, unknown who" - natural follow-up with LEZ. |
 | **Mobile** | Basecamp is desktop-first. |
 
 ---

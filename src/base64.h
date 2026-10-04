@@ -6,7 +6,7 @@
 ///
 /// Logos modules base64-encode payloads in some responses: delivery_module's
 /// storeQuery() returns message payloads that way (and storage_module's
-/// downloadChunks() encodes each chunk independently — decode each chunk on
+/// downloadChunks() encodes each chunk independently - decode each chunk on
 /// arrival and concatenate the raw bytes, never the base64 text, which breaks
 /// when an interior chunk carries padding).
 ///

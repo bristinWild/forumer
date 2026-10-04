@@ -1,6 +1,6 @@
 #pragma once
 
-// Thin, typed wrappers over libsodium — the only cryptography Forumer uses.
+// Thin, typed wrappers over libsodium - the only cryptography Forumer uses.
 //
 // We never implement primitives ourselves. Each wrapper fixes one algorithm
 // and its sizes so the rest of the code can't mix them up:
@@ -51,7 +51,7 @@ struct SigningKeyPair {
 };
 
 /// Deterministic key pair from a 32-byte seed. The same seed always yields the
-/// same key pair — this is what lets personas be re-derived from the master
+/// same key pair - this is what lets personas be re-derived from the master
 /// secret instead of being stored.
 std::optional<SigningKeyPair> signingKeyPairFromSeed(const SecretBytes& seed);
 

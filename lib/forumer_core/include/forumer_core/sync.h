@@ -23,7 +23,7 @@
 // (the receiver had only just joined, was offline, or the network dropped
 // it); the next digest from the receiver names what it holds, and whoever
 // has the missing post re-sends it. No server is involved and nobody needs to
-// be online at the same time as the author — only someone who has the post.
+// be online at the same time as the author - only someone who has the post.
 //
 // Everything here is pure (no I/O), so the rules are unit-tested.
 
@@ -118,11 +118,11 @@ Digest makeDigest(const std::vector<PostSummary>& held, int64_t sinceMs,
 
 /// Which of our posts the digest's sender is missing: those in `held`
 /// (newest first) dated at or after its `since` and not listed in it. At
-/// most `max`, newest first — full post ids.
+/// most `max`, newest first - full post ids.
 std::vector<std::string> missingFrom(const Digest& digest, const std::vector<PostSummary>& held,
                                      size_t max = kMaxAnswer);
 
-/// Whether the digest lists any post not in `held` — i.e. its sender has
+/// Whether the digest lists any post not in `held` - i.e. its sender has
 /// something we lack. We then send our own digest promptly so the sender
 /// answers it, instead of waiting for our next periodic one. Pass `held` for
 /// the digest's whole window (PostStore::recent(digest.sinceMs)), or posts we

@@ -4,7 +4,7 @@
 //
 //   password --Argon2id(salt, cost)--> 32-byte key --XChaCha20-Poly1305--> ciphertext
 //
-// The vault is a small JSON document (text in, text out — writing it to disk
+// The vault is a small JSON document (text in, text out - writing it to disk
 // is the caller's job):
 //
 //   { "v": 1, "kdf": "argon2id13", "ops": 3, "mem": 268435456,

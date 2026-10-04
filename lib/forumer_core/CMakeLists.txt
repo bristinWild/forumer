@@ -1,4 +1,4 @@
-# forumer_core — Forumer's engine: identity, crypto, envelopes, the post log, sync.
+# forumer_core - Forumer's engine: identity, crypto, envelopes, the post log, sync.
 #
 # A plain C++20 static library with no Qt and no Logos SDK, so it can be unit
 # tested on its own (see tests/) and later promoted to a standalone Logos core

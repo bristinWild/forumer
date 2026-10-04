@@ -9,7 +9,7 @@
 // silently producing a different identity.
 //
 // Only the encoding is BIP-39. Forumer uses the 32 bytes directly as its
-// master secret — there is no BIP-39 passphrase/seed stretching and no wallet
+// master secret - there is no BIP-39 passphrase/seed stretching and no wallet
 // derivation, so a Forumer phrase is not a crypto-wallet phrase.
 
 #include <optional>

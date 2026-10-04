@@ -1,6 +1,6 @@
 import QtQuick
 
-// A row of mutually exclusive options in one box — "post as", rotation.
+// A row of mutually exclusive options in one box - "post as", rotation.
 //   Segmented {
 //       options: [{ value: "persona", label: "persona" }, …]
 //       value: "persona"

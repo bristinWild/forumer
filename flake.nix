@@ -1,15 +1,15 @@
 {
-  description = "Forumer — Logos ui_qml module (C++ backend + QML view)";
+  description = "Forumer - Logos ui_qml module (C++ backend + QML view)";
 
   inputs = {
     # Pinned to 0.2.6: the builder this app is built and tested against.
     logos-module-builder.url = "github:logos-co/logos-module-builder/0.2.6";
-    # Core module dependency — must match metadata.json "dependencies".
+    # Core module dependency - must match metadata.json "dependencies".
     # Pinned to v0.2.1: v0.1.x publishes no LIDL contract, which current
     # logos-module-builder requires to generate the consumer wrapper.
     delivery_module.url = "github:logos-co/logos-delivery-module/v0.2.1";
     delivery_module.inputs.logos-module-builder.follows = "logos-module-builder";
-    # Core module dependency — must match metadata.json "dependencies".
+    # Core module dependency - must match metadata.json "dependencies".
     # For media attachments (files stored by CID). Not called yet.
     storage_module.url = "github:logos-co/logos-storage-module/v2.1.2";
     storage_module.inputs.logos-module-builder.follows = "logos-module-builder";

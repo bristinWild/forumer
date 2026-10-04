@@ -26,7 +26,7 @@
 #include <QVariantList>
 
 // Generated umbrella: LogosModules (behind modules()) built from
-// metadata.json#dependencies — the typed delivery_module wrapper.
+// metadata.json#dependencies - the typed delivery_module wrapper.
 // logos_types.h provides LogosResult.
 #include "logos_sdk.h"
 #include "logos_types.h"
@@ -60,9 +60,9 @@ qint64 nowMs() { return QDateTime::currentMSecsSinceEpoch(); }
 constexpr int kJoinRetryMs = 5000;
 constexpr int kMaxJoinAttempts = 5;
 
-// Digest schedule. The first two go out soon after joining — the first may
+// Digest schedule. The first two go out soon after joining - the first may
 // leave before the node has found its peers on the topic, the second catches
-// what the first missed — then one every few minutes, jittered so peers that
+// what the first missed - then one every few minutes, jittered so peers that
 // started together don't sync in lockstep.
 constexpr int kFirstDigestMs = 15'000;
 constexpr int kSecondDigestMs = 60'000;
@@ -71,7 +71,7 @@ constexpr int kDigestJitterMs = 30'000;
 constexpr int kMinDigestGapMs = 5'000;  // "Catch up" mashed repeatedly
 
 // When a peer's digest lists posts we don't have, send our own digest soon
-// (so it answers) rather than waiting for our next periodic one — at most
+// (so it answers) rather than waiting for our next periodic one - at most
 // once per kPromptedDigestGapMs, so two peers can never ping-pong digests.
 constexpr int kPromptedDigestDelayMs = 1'000;
 constexpr int kPromptedDigestJitterMs = 2'000;
@@ -81,7 +81,7 @@ constexpr qint64 kPromptedDigestGapMs = 30'000;
 constexpr int kRetryTickMs = 5'000;
 
 // Digest answers. Wait a moment before re-sending, and skip any post someone
-// else re-sent (or that we saw at all) within kSeenWindowMs — so one digest
+// else re-sent (or that we saw at all) within kSeenWindowMs - so one digest
 // in a busy forum doesn't trigger the same post from every peer at once.
 constexpr int kAnswerDelayMinMs = 500;
 constexpr int kAnswerDelayMaxMs = 2'500;
@@ -133,20 +133,20 @@ const char ForumerBackend::kForum[] = "public";
 
 ForumerBackend::ForumerBackend() {
   // Runs in the ui-host process before the context is wired.
-  logEvent("ctor — backend constructed (context not yet wired)");
+  logEvent("ctor - backend constructed (context not yet wired)");
   if (!fc::crypto::initCrypto())
-    logEvent("libsodium failed to initialise — signing and unlocking will fail");
+    logEvent("libsodium failed to initialise - signing and unlocking will fail");
   setAppVersion(QStringLiteral(FORUMER_VERSION));
   m_topic = fc::sync::contentTopic(kForum);
   setTopic(qs(m_topic));
 }
 
 ForumerBackend::~ForumerBackend() {
-  logEvent("dtor — backend destroyed");
+  logEvent("dtor - backend destroyed");
 }
 
 void ForumerBackend::onContextReady() {
-  logEvent("onContextReady — context wired, scheduling node bootstrap");
+  logEvent("onContextReady - context wired, scheduling node bootstrap");
 
   // Accounts are purely local, so they're available before the network is.
   m_accounts = std::make_unique<fc::AccountStore>(
@@ -187,7 +187,7 @@ void ForumerBackend::bootstrap() {
   });
 
   // Node startup. start() is dispatch-only in delivery_module v0.2.1, so this
-  // event — not start()'s return — says whether the node came up. The join
+  // event - not start()'s return - says whether the node came up. The join
   // does not hang off it (see the ordering below); this re-drives a join that
   // failed while the node was still booting.
   modules().delivery_module.on("nodeStarted", [this](const QVariantList &data) {
@@ -229,10 +229,10 @@ void ForumerBackend::bootstrap() {
 
   // --- Open the post log -----------------------------------------------------
   // Before the node, deliberately: reading and composing never touch the
-  // network, so the forum is usable while the node bootstraps — or if it
+  // network, so the forum is usable while the node bootstraps - or if it
   // never comes up at all. Unsent posts wait in the outbox.
   if (!openStore()) {
-    setStatus(QStringLiteral("Local store unavailable — posts can't be saved"));
+    setStatus(QStringLiteral("Local store unavailable - posts can't be saved"));
     return;
   }
 
@@ -241,7 +241,7 @@ void ForumerBackend::bootstrap() {
   // parser consumes, which earns ephemeral p2p ports and the host's
   // per-instance localStoragePath. Any bare WakuNodeConf key at the top level
   // (logLevel, tcpPort, …) reclassifies the whole config as the legacy flat
-  // shape, which binds fixed ports — two instances on one machine collide.
+  // shape, which binds fixed ports - two instances on one machine collide.
   const QJsonObject cfg{
       {"mode", "Core"},
       {"preset", "logos.test"},
@@ -252,7 +252,7 @@ void ForumerBackend::bootstrap() {
   if (!created.success) {
     // delivery_module is a singleton shared across Basecamp apps, so another
     // app may have created and started the node already. No nodeStarted will
-    // fire for us then — join directly.
+    // fire for us then - join directly.
     logEvent("createNode failed (node may already be running): " +
              created.getError().toStdString());
     joinForum();
@@ -272,7 +272,7 @@ void ForumerBackend::bootstrap() {
     logEvent("start failed: " + started.getError().toStdString());
     return;
   }
-  logEvent("start dispatched — waiting for nodeStarted");
+  logEvent("start dispatched - waiting for nodeStarted");
 }
 
 bool ForumerBackend::openStore() {
@@ -320,7 +320,7 @@ void ForumerBackend::joinForum() {
     setStatus(QStringLiteral("Couldn't join the forum: %1").arg(qs(error)));
     logEvent("join attempt " + std::to_string(m_joinAttempts) + " failed: " + error);
     // The common failure is a timeout while the node bootstraps, which passes
-    // on its own. Composing is unaffected — posts wait in the outbox.
+    // on its own. Composing is unaffected - posts wait in the outbox.
     if (m_joinAttempts < kMaxJoinAttempts)
       QTimer::singleShot(kJoinRetryMs, this, [this]() { joinForum(); });
     return;
@@ -347,9 +347,9 @@ void ForumerBackend::refreshStatus() {
     return; // bootstrap's own progress messages own the status until then
 
   if (m_connectionState.isEmpty()) {
-    // Joined locally, but nothing has said we have peers yet — and a node
+    // Joined locally, but nothing has said we have peers yet - and a node
     // with none receives nothing while still publishing happily.
-    setStatus(QStringLiteral("Joined — waiting for peers"));
+    setStatus(QStringLiteral("Joined - waiting for peers"));
     return;
   }
   setStatus(m_connectionState);
@@ -638,7 +638,7 @@ QString ForumerBackend::replyToPost(QString postId, QString body, QString disclo
     return QStringLiteral("Store not ready");
 
   // Where the reply goes follows from what it answers (two levels at most,
-  // see forumer_core/thread.h) — so we need that post.
+  // see forumer_core/thread.h) - so we need that post.
   auto answering = m_posts->get(postId.toStdString());
   if (!answering)
     return QStringLiteral("That post isn't on this device yet");
@@ -677,7 +677,7 @@ QString ForumerBackend::publish(fc::post::Draft draft, const QString &disclosure
     const qint64 now = nowMs();
     const size_t recent = m_posts->countOwn(m_account->state().id, draft.kind, now - fc::flood::kWindowMs);
     if (!fc::flood::withinLimit(draft.kind, recent))
-      return QStringLiteral("That's %1 %2 in the last hour — the most one account can post. Try again a little later.")
+      return QStringLiteral("That's %1 %2 in the last hour, the most one account can post. Try again a little later.")
           .arg(fc::flood::maxPerWindow(draft.kind))
           .arg(draft.kind == fc::post::Kind::Post ? QStringLiteral("topics") : QStringLiteral("replies"));
   }
@@ -731,7 +731,7 @@ QString ForumerBackend::loadBacklog() {
   for (const auto &e : m_posts->outbox())
     states.insert(qs(e.postId), QLatin1String(fc::toString(e.state)));
 
-  // all() is topics first, oldest first — so the view never has to stand up a
+  // all() is topics first, oldest first - so the view never has to stand up a
   // placeholder for a topic a few entries further down.
   QJsonArray backlog;
   for (const auto &p : m_posts->all()) {
@@ -764,7 +764,7 @@ QString ForumerBackend::loadBacklog() {
 
 void ForumerBackend::handlePayload(const QString &topic, const QByteArray &payload) {
   if (!m_posts || topic.toStdString() != m_topic)
-    return; // another app's traffic — delivery_module is shared
+    return; // another app's traffic - delivery_module is shared
 
   const std::vector<uint8_t> bytes(payload.begin(), payload.end());
   fc::sync::DecodeResult decoded = fc::sync::decode(bytes);
@@ -806,7 +806,7 @@ std::string ForumerBackend::checkPost(const fc::post::Post &post) const {
 }
 
 void ForumerBackend::handlePost(fc::post::Post post) {
-  // Seen on the wire, valid or not — a peer about to answer a digest with
+  // Seen on the wire, valid or not - a peer about to answer a digest with
   // this post can skip it.
   m_lastSeenOnWire.insert(qs(post.id), nowMs());
 
@@ -855,7 +855,7 @@ void ForumerBackend::handleDigest(const fc::sync::Digest &digest) {
   if (now - m_lastPromptedDigestMs >= kPromptedDigestGapMs &&
       fc::sync::listsUnknown(digest, m_posts->recent(since))) {
     m_lastPromptedDigestMs = now;
-    logEvent("digest: peer holds posts we don't — sending ours");
+    logEvent("digest: peer holds posts we don't - sending ours");
     QTimer::singleShot(kPromptedDigestDelayMs + jitter(kPromptedDigestJitterMs), this, [this]() {
       if (nowMs() - m_lastDigestMs >= kMinDigestGapMs)
         sendDigest("prompted");

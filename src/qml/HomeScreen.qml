@@ -3,7 +3,7 @@ import QtQuick.Controls.Basic as B
 import QtQuick.Layouts
 
 // Home: page title, "new topic", domain chips (filter / follow), and two
-// columns side by side — every domain, and only the ones you follow. Narrow
+// columns side by side - every domain, and only the ones you follow. Narrow
 // windows stack the columns.
 Item {
     id: home

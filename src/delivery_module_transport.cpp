@@ -47,7 +47,7 @@ bool DeliveryModuleTransport::ensureChannel(const std::string& topic) {
         return true;
 
     // channelExists() answers with the literal string "true"/"false", and an
-    // unknown id is not an error — it just means "not open on this node yet",
+    // unknown id is not an error - it just means "not open on this node yet",
     // including after a restart, where channelCreate() re-opens the persisted
     // channel state rather than starting over.
     LogosResult exists = modules_.delivery_module.channelExists(qs(topic));

@@ -1,6 +1,6 @@
 ---
 name: use-delivery-module
-description: Use the Logos delivery_module (liblogosdelivery / Waku messaging) from another module — bootstrap a node, subscribe to a content topic, send a payload, and handle the message events. Covers the createNode config, the synchronous-call + async-event model, and the plain-text send/receive recipe. Use when a module needs to send/receive messages over the Logos messaging network (e.g. example_forum broadcasting on a topic).
+description: Use the Logos delivery_module (liblogosdelivery / Waku messaging) from another module - bootstrap a node, subscribe to a content topic, send a payload, and handle the message events. Covers the createNode config, the synchronous-call + async-event model, and the plain-text send/receive recipe. Use when a module needs to send/receive messages over the Logos messaging network (e.g. example_forum broadcasting on a topic).
 ---
 
 # Use the delivery_module
@@ -12,7 +12,7 @@ events**. This repo pins it to **v0.1.3** (`ref-repos/logos-delivery-module`,
 `metadata.json#version` `0.1.3`).
 
 This is a concrete instance of [use-another-module](../use-another-module/SKILL.md)
-— read that for the dependency-wiring mechanics. The canonical usage reference is
+- read that for the dependency-wiring mechanics. The canonical usage reference is
 [ref-repos/logos-delivery-demo](../../ref-repos/logos-delivery-demo) (a ui_qml demo) and
 the full API in [delivery_module_plugin.h](../../ref-repos/logos-delivery-module/src/delivery_module_plugin.h).
 A worked universal-ui_qml implementation lives in [example_forum](../../src/example_forum_backend.cpp).
@@ -40,10 +40,10 @@ createNode(cfgJson)  →  start()  →  subscribe(topic) / send(topic, payload) 
 read `.getError()` on failure, `.getString()` for the value (e.g. `send`'s
 request id). `createNode` is called **once per node**; subsequent calls fail.
 
-### `createNode` config — use the *layered* shape
+### `createNode` config - use the *layered* shape
 
 Only non-default keys are needed. A `preset` auto-populates cluster id, entry
-nodes, sharding and RLN. Minimal, network-ready — this is the "App developer"
+nodes, sharding and RLN. Minimal, network-ready - this is the "App developer"
 shape from `delivery_module.lidl`:
 
 ```json
@@ -59,7 +59,7 @@ shape from `delivery_module.lidl`:
 **Keep bare `WakuNodeConf` keys out of the top level.** `logLevel`, `tcpPort`,
 `relay` and friends flip delivery's `isFlatShape()` check, which reclassifies the
 whole config as the pre-layered flat shape. That shape still parses and boots,
-but since delivery v0.2.0 it no longer zeroes the listening ports — it binds
+but since delivery v0.2.0 it no longer zeroes the listening ports - it binds
 upstream's fixed defaults (tcp 60000), so **two instances on one machine
 collide**. Ephemeral ports and the host's per-instance `localStoragePath` are
 structured defaults you only get on the layered path.
@@ -81,7 +81,7 @@ sends to.
 
 ## Send / receive **plain text**
 
-`send`'s payload is **raw bytes**, and `messageReceived` delivers raw bytes — not
+`send`'s payload is **raw bytes**, and `messageReceived` delivers raw bytes - not
 text. For a plain-text app, encode/decode UTF-8 yourself (the demo instead uses
 hex; that's a UI choice, not a requirement):
 
@@ -105,8 +105,8 @@ Wire these **before** `start()`. For v0.1.3, the Qt-marshalled positions are:
 | Event | `data[…]` positions |
 |---|---|
 | `messageReceived` | `[0]` messageHash · `[1]` contentTopic · `[2]` payload **(QByteArray, raw bytes)** · `[3]` timestamp **(qint64, ns since epoch)** |
-| `messageSent` | `[0]` requestId · `[1]` messageHash · `[2]` timestamp (qint64) — message confirmed by network |
-| `messagePropagated` | `[0]` requestId · `[1]` messageHash · `[2]` timestamp — reached network, not yet validated |
+| `messageSent` | `[0]` requestId · `[1]` messageHash · `[2]` timestamp (qint64) - message confirmed by network |
+| `messagePropagated` | `[0]` requestId · `[1]` messageHash · `[2]` timestamp - reached network, not yet validated |
 | `messageError` | `[0]` requestId · `[1]` messageHash · `[2]` error · `[3]` timestamp |
 | `connectionStateChanged` | `[0]` status (`Connected`/`PartiallyConnected`/`Disconnected`) · `[1]` timestamp |
 
@@ -127,7 +127,7 @@ modules().delivery_module.on("messageReceived", [this](const QVariantList& data)
 ## Node info
 
 The peer id and lib version are only exposed via `getNodeInfo`:
-`getNodeInfo("MyPeerId")` (poll ~3s — it can change) and `getNodeInfo("Version")`
+`getNodeInfo("MyPeerId")` (poll ~3s - it can change) and `getNodeInfo("Version")`
 (fixed; read once). Both return the value via `LogosResult.getString()`.
 
 ## Shared-singleton bootstrap (important)
@@ -135,7 +135,7 @@ The peer id and lib version are only exposed via `getNodeInfo`:
 `delivery_module` is a **singleton shared across all Basecamp apps**
 ([module-considerations.md](../../helper-mds/module-considerations.md)). Another app may have
 already created and started the node, so your `createNode`/`start` will fail with
-"already created". Don't abort — fall through to `subscribe` so you still receive
+"already created". Don't abort - fall through to `subscribe` so you still receive
 on your topic:
 
 ```cpp
@@ -143,7 +143,7 @@ LogosResult created = modules().delivery_module.createNode(cfgJson);
 if (created.success) {
     modules().delivery_module.start();        // check its result too
 } else {
-    // node likely already running (shared singleton) — proceed to subscribe
+    // node likely already running (shared singleton) - proceed to subscribe
 }
 LogosResult sub = modules().delivery_module.subscribe(topic);
 ```
@@ -163,17 +163,17 @@ cd example_forum && nix run        # terminal B
 ```
 
 Needs the live `logos.test` network. Bootstrapping is synchronous and can block
-briefly — in a UI backend, defer it off `onContextReady()` (e.g.
+briefly - in a UI backend, defer it off `onContextReady()` (e.g.
 `QTimer::singleShot(0, …)`) so the QML replica comes up promptly.
 
 ## Gotchas
 
-- **Bytes, not text** on both `send` and `messageReceived` — encode/decode UTF-8
+- **Bytes, not text** on both `send` and `messageReceived` - encode/decode UTF-8
   for plain text, or you'll publish/render mojibake.
-- **`createNode` once** — guard against the shared-singleton case above instead
+- **`createNode` once** - guard against the shared-singleton case above instead
   of assuming a fresh node.
 - **Subscribe before `start()`**, and wire event `.on(...)` handlers before
   triggering sends, or you'll miss early events.
-- **Send is async after return** — `send` returning a request id only means it was
+- **Send is async after return** - `send` returning a request id only means it was
   accepted locally; track real delivery via `messageSent` / `messagePropagated` /
   `messageError`.

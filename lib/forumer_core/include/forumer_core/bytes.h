@@ -60,7 +60,7 @@ std::string toHex(const Bytes& bytes);
 /// Accepts upper or lower case; returns nullopt on odd length or bad digits.
 std::optional<Bytes> fromHex(std::string_view hex);
 
-/// URL-safe base64 without padding (RFC 4648 §5) — the encoding used for
+/// URL-safe base64 without padding (RFC 4648 §5) - the encoding used for
 /// keys, signatures and nonces in Forumer envelopes.
 std::string toBase64Url(const uint8_t* data, size_t size);
 std::string toBase64Url(const Bytes& bytes);

@@ -6,7 +6,7 @@
 //
 //   topic
 //   ├─ reply                  level 1: answers the topic
-//   │  ├─ reply               level 2: answers a level-1 reply — its sub-thread
+//   │  ├─ reply               level 2: answers a level-1 reply - its sub-thread
 //   │  └─ reply               level 2 (answering a level-2 reply lands here too)
 //   └─ reply                  level 1
 //

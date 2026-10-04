@@ -18,8 +18,8 @@ struct LogosModules;
 /// Forumer's own digests (forumer_core/sync.h). Reliable channels (SDS) are
 /// kept as an option but OFF: SDS delivers a sender's messages in causal
 /// order, so when one message is lost for good (the receiver was offline and
-/// no store node has it), everything that sender sends afterwards — including
-/// the digest answer that would repair the gap — is held back as having
+/// no store node has it), everything that sender sends afterwards - including
+/// the digest answer that would repair the gap - is held back as having
 /// "missing dependencies". Observed on delivery_module v0.2.1, 2026-10-04.
 ///
 /// With channels on, the channel id is the content topic itself, so every

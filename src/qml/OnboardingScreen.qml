@@ -175,7 +175,7 @@ Rectangle {
                     }
                     Text {
                         Layout.fillWidth: true
-                        text: "others only ever see the personas it makes — never the identity itself."
+                        text: "others only ever see the personas it makes - never the identity itself."
                         wrapMode: Text.WordWrap
                         font.family: Ui.sans
                         font.pixelSize: Ui.size.ui

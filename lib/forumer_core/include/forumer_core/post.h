@@ -1,6 +1,6 @@
 #pragma once
 
-// Signed post envelopes — the unit of content in Forumer.
+// Signed post envelopes - the unit of content in Forumer.
 //
 // Every post and reply is an immutable, self-authenticating document:
 //
@@ -119,7 +119,7 @@ std::optional<Post> sign(Draft draft, const identity::Persona& persona,
 /// `minPowBits`), signature and id. Anything not Error::None must be dropped.
 Error verify(const Post& post, int minPowBits);
 
-/// Leading zero bits of BLAKE2b(canonical || nonce) — exposed for tests and
+/// Leading zero bits of BLAKE2b(canonical || nonce) - exposed for tests and
 /// for benchmarking PoW cost on a device.
 int workBits(const Post& post);
 

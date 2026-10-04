@@ -1,11 +1,11 @@
 ---
 name: use-design-system
-description: Restyle a Logos ui_qml module's QML view with the Logos design system — swap raw QtQuick.Controls + hardcoded hex colors for Logos.Controls components and Theme.palette/spacing/typography tokens. Covers the import path (no flake.nix change), the control swaps, the color/spacing/typography token mapping, and the LogosTextField API differences. Use when a module's Main.qml is styled with bespoke colors and you want it to match the design system.
+description: Restyle a Logos ui_qml module's QML view with the Logos design system - swap raw QtQuick.Controls + hardcoded hex colors for Logos.Controls components and Theme.palette/spacing/typography tokens. Covers the import path (no flake.nix change), the control swaps, the color/spacing/typography token mapping, and the LogosTextField API differences. Use when a module's Main.qml is styled with bespoke colors and you want it to match the design system.
 ---
 
 # Use the Logos design system in a QML view
 
-The design system ships two QML modules — `Logos.Theme` (design tokens:
+The design system ships two QML modules - `Logos.Theme` (design tokens:
 `Theme.palette`, `Theme.spacing`, `Theme.typography`) and `Logos.Controls`
 (themed components: `LogosText`, `LogosButton`, `LogosTextField`, …). Adopting
 it means **replacing raw `QtQuick.Controls` + hardcoded hex** with these.
@@ -33,7 +33,7 @@ import Logos.Controls
 ```
 
 > `nix build .` compiles/packages the C++ plugin but does **not** resolve QML
-> imports — those bind at runtime in the host. To actually see the restyle,
+> imports - those bind at runtime in the host. To actually see the restyle,
 > launch via the standalone host app / Basecamp, not `nix build`.
 
 ## Paint the background
@@ -52,9 +52,9 @@ Rectangle {
 
 | Raw | Design system | Notes |
 |---|---|---|
-| `Text` | `LogosText` | `Text` subclass — `font.*`, `wrapMode`, `elide`, `color` all still work |
+| `Text` | `LogosText` | `Text` subclass - `font.*`, `wrapMode`, `elide`, `color` all still work |
 | `TextField` | `LogosTextField` | wraps a `TextInput`; see API differences below |
-| `Button` | `LogosButton` | `text`, `onClicked`, `enabled`, `radius`; default 200×50 — override `implicitWidth/Height` for compact buttons |
+| `Button` | `LogosButton` | `text`, `onClicked`, `enabled`, `radius`; default 200×50 - override `implicitWidth/Height` for compact buttons |
 | `ComboBox` | `LogosComboBox` | `model`, `currentIndex`, `currentText` |
 
 Full designed set: `LogosButton`, `LogosCheckbox`, `LogosComboBox`,
@@ -69,16 +69,16 @@ It's a `Control` wrapping an inner `TextInput`, not a `TextField`. So:
 ```qml
 LogosTextField { id: titleField; placeholderText: "…"; enabled: root.nodeReady }
 
-// Enter/Return: NO onAccepted on the control — handle it on the inner input.
+// Enter/Return: NO onAccepted on the control - handle it on the inner input.
 Connections {
     target: titleField.textInput
     function onAccepted() { bodyField.textInput.forceActiveFocus() }
 }
 ```
 
-- **Text**: `titleField.text` (read/write alias) works. There is **no `clear()`** —
+- **Text**: `titleField.text` (read/write alias) works. There is **no `clear()`** -
   use `titleField.text = ""`.
-- **Focus**: focus the inner input — `titleField.textInput.forceActiveFocus()`,
+- **Focus**: focus the inner input - `titleField.textInput.forceActiveFocus()`,
   not `titleField.forceActiveFocus()`.
 - **Inner input**: `textInput` is a read-only alias for advanced use
   (`cursorPosition`, `select`, `onAccepted`, …).
@@ -144,18 +144,18 @@ readonly property string monoFont: "monospace"   // Qt maps to platform fixed-pi
 ## Rectangle borders
 
 Setting `border.color` alone renders a 1px border, but the design-system code
-sets `border.width: 1` explicitly alongside `border.color` — match that.
+sets `border.width: 1` explicitly alongside `border.color` - match that.
 
 ## Gotchas
 
-- **`LogosTextField` ≠ `TextField`** — no `onAccepted`/`clear()` on the control;
+- **`LogosTextField` ≠ `TextField`** - no `onAccepted`/`clear()` on the control;
   go through `.textInput` (and set `.text = ""` to clear). Focus the inner input.
-- **Paint your own background** — the host is transparent; without the fill rect
+- **Paint your own background** - the host is transparent; without the fill rect
   the view renders on whatever's behind it.
-- **No flake.nix input** for the design system — it arrives via the host. Adding
+- **No flake.nix input** for the design system - it arrives via the host. Adding
   it as a flake input is unnecessary and not the established pattern.
-- **`nix build` won't catch QML import typos** — QML binds at runtime. Verify by
+- **`nix build` won't catch QML import typos** - QML binds at runtime. Verify by
   running in the host, and copy component/token names from the storybook or an
   existing worked view rather than guessing.
-- **Semantic over raw** — reference `Theme.palette.surfaceRaised`, never a raw
+- **Semantic over raw** - reference `Theme.palette.surfaceRaised`, never a raw
   `Theme.colors.grayNNN`; the semantic layer is the consumer-facing contract.

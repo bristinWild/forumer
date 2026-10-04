@@ -20,7 +20,7 @@
 //      not stored yet, and the next digest exchange offers it again.
 //
 //   4. Per account, on the sender (honest clients): the same hourly limits,
-//      counted over everything the account posted from this device — so
+//      counted over everything the account posted from this device - so
 //      rotating personas or posting anonymously doesn't lift them.
 //
 //   5. Re-sending to repair other peers' gaps is capped (kResendPerMinute), so

@@ -7,7 +7,7 @@ else()
     message(FATAL_ERROR "LogosModule.cmake not found. Set LOGOS_MODULE_BUILDER_ROOT.")
 endif()
 
-# Derive the module name + version from metadata.json — single source of truth.
+# Derive the module name + version from metadata.json - single source of truth.
 file(READ "${CMAKE_CURRENT_SOURCE_DIR}/metadata.json" METADATA_JSON)
 string(JSON MODULE_NAME GET ${METADATA_JSON} name)
 string(JSON MODULE_VERSION GET ${METADATA_JSON} version)

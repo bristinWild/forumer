@@ -1,9 +1,9 @@
 import QtQuick
 
 // Forumer's button. Three looks:
-//   "primary" — the one white (dark mode) / black (light) action on a screen
-//   "outline" — a quiet bordered action
-//   "ghost"   — text only, for row actions ("reply", "copy link")
+//   "primary" - the one white (dark mode) / black (light) action on a screen
+//   "outline" - a quiet bordered action
+//   "ghost"   - text only, for row actions ("reply", "copy link")
 // Keyboard: Tab focuses it (with a ring), Enter/Space presses it.
 //   FButton { text: "post"; kind: "primary"; icon: "plus"; onClicked: … }
 Rectangle {

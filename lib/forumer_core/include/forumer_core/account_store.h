@@ -47,7 +47,7 @@ public:
     };
 
     /// New account with a fresh master secret, sealed under `password` and
-    /// selected. On success `phrase` receives the 24-word recovery phrase —
+    /// selected. On success `phrase` receives the 24-word recovery phrase -
     /// show it once, then mnemonic::wipe() it.
     Result create(const std::string& label, const std::string& password, std::string& phrase);
 
@@ -63,7 +63,7 @@ public:
                    const std::string& password,
                    const std::function<bool(const Bytes&)>& isKnown);
 
-    /// Persist an account's state (call after anything that changes it —
+    /// Persist an account's state (call after anything that changes it -
     /// settings, rotation, or a post that allocated a new persona).
     bool save(const identity::Account& account);
 

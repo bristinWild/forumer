@@ -20,7 +20,7 @@ Page {
 
     Section {
         title: "account name"
-        caption: "only you see it — it's never published"
+        caption: "only you see it - it's never published"
 
         RowLayout {
             Layout.fillWidth: true
@@ -95,7 +95,7 @@ Page {
             Repeater {
                 model: [
                     ["forum topic", settings.store.topic],
-                    ["sync", settings.store.syncInfo.length > 0 ? settings.store.syncInfo : "—"],
+                    ["sync", settings.store.syncInfo.length > 0 ? settings.store.syncInfo : "-"],
                     ["unsent", String(settings.store.unsentCount)],
                     ["version", settings.store.appVersion]
                 ]

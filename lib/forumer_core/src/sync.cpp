@@ -132,7 +132,7 @@ Digest makeDigest(const std::vector<PostSummary>& held, int64_t sinceMs, size_t 
         oldestListed = p.timestampMs;
     }
     // Out of room: claim only the window we listed in full. A post sharing the
-    // cut-off timestamp but left out may get re-sent to us — harmless.
+    // cut-off timestamp but left out may get re-sent to us - harmless.
     if (truncated)
         d.sinceMs = std::max(sinceMs, oldestListed);
     return d;

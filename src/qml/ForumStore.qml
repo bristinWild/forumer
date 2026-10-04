@@ -124,7 +124,7 @@ Item {
 
     // Posts already on this device. Asked for only once the backend has opened
     // its post log (nodeReady): asked any earlier, the answer is an empty list
-    // and the forum would look empty until restart. Safe to repeat — posts are
+    // and the forum would look empty until restart. Safe to repeat - posts are
     // de-duplicated by id.
     property bool backlogLoaded: false
     property bool viewReady: false          // set by Main once the replica is connected
@@ -349,7 +349,7 @@ Item {
     readonly property var myPosts: { store.rev; store.tick; return store.ownPosts(false); }
 
     // Posts that reached us during this session but were written before it
-    // started — i.e. what we missed while away and caught up on.
+    // started - i.e. what we missed while away and caught up on.
     readonly property var missed: {
         store.rev; store.tick;
         var cutoff = store.sessionStartMs - 60000;

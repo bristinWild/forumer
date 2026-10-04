@@ -12,7 +12,7 @@
 //
 // Personas are independent: without the master secret nobody can tell that two
 // personas belong to the same account. Because they are derived, nothing about
-// them needs storing — the recovery phrase brings every one of them back.
+// them needs storing - the recovery phrase brings every one of them back.
 //
 // The account hands out personas according to its ROTATION POLICY:
 //
@@ -52,7 +52,7 @@ std::optional<RotationPolicy> rotationPolicyFrom(std::string_view text);
 std::optional<Disclosure> disclosureFrom(std::string_view text);
 
 /// Short, readable form of a persona public key, e.g. "fr:7Q4K-M2XD".
-/// 40 bits of BLAKE2b(public key) in Crockford base32 — for people to tell
+/// 40 bits of BLAKE2b(public key) in Crockford base32 - for people to tell
 /// personas apart at a glance, not a security identifier (the full public key
 /// is what signatures are checked against).
 std::string fingerprint(const Bytes& publicKey);
@@ -130,7 +130,7 @@ public:
 
     /// The persona to sign the next post or reply with, applying the rotation
     /// policy and the disclosure. Allocates a new index for Auto and for
-    /// Anonymous — the caller must save state() afterwards.
+    /// Anonymous - the caller must save state() afterwards.
     Persona personaForPost(Disclosure disclosure);
     Persona personaForPost() { return personaForPost(state_.defaultDisclosure); }
 

@@ -2,7 +2,7 @@ import QtQuick
 import QtQuick.Controls.Basic as B
 
 // A labelled multi-line input that grows with its text (up to maxHeight, then
-// scrolls). `bare: true` drops the box — for inputs that sit inside a panel
+// scrolls). `bare: true` drops the box - for inputs that sit inside a panel
 // that already draws one (the reply composer).
 Column {
     id: area

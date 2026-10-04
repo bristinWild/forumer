@@ -10,7 +10,7 @@ Page {
     property string message: ""
 
     title: "profile"
-    subtitle: "your identity never leaves this device. people only ever see personas made from it — or nothing at all."
+    subtitle: "your identity never leaves this device. people only ever see personas made from it - or nothing at all."
 
     Section {
         title: "current persona"
