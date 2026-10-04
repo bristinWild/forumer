@@ -6,7 +6,7 @@ Forumer lets people discuss any topic - politics, privacy, campus life, technolo
 
 Built as a submission for [λPrize LP-0026: Forum App](https://github.com/logos-co/lambda-prize/blob/master/prizes/LP-0026.md). Forked from and inspired by [jzaki/forum-sample-app](https://github.com/jzaki/forum-sample-app).
 
-> **Status: in development.** This README is the design reference for building Forumer. Sections describe the target system; anything marked **⚠ verify** depends on behaviour of the Logos stack that has not yet been confirmed in testing.
+> **This is the original design document**, written before building. Several decisions changed during development (plain relay with digest repair instead of SDS and store queries, one module with a reusable `forumer_core` library instead of two modules, two-level threads). For what is built today, see the [README](../README.md).
 
 ---
 
