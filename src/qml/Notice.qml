@@ -3,6 +3,7 @@ import QtQuick
 // A one-line message: an error (red) or a note (grey). Hidden when empty.
 //   Notice { message: store.lastError }
 Text {
+    textFormat: Text.PlainText
     id: notice
 
     property string message: ""

@@ -40,7 +40,7 @@ Sheet {
         composer.store.createTopic(titleField.text.trim(), bodyArea.text, domainsField.text, composer.disclosure,
             function () {
                 composer.sending = false;
-                titleField.text = ""; bodyArea.text = ""; domainsField.text = "";
+                titleField.text = ""; bodyArea.text = ""; bodyArea.previewing = false; domainsField.text = "";
                 composer.close();
                 composer.store.open("home");
             },
@@ -62,12 +62,14 @@ Sheet {
         onAccepted: bodyArea.focusInput()
     }
 
-    FArea {
+    MdEditor {
         id: bodyArea
+        objectName: "composerBody"
         Layout.fillWidth: true
         label: "opening message"
-        placeholder: "Add details (optional)"
-        minHeight: 110
+        placeholder: "Add details (optional). Headings, bold, lists and links are welcome."
+        minHeight: 140
+        maxHeight: 300
     }
 
     ColumnLayout {
@@ -103,6 +105,7 @@ Sheet {
         Layout.fillWidth: true
         spacing: 10
         Text {
+            textFormat: Text.PlainText
             text: "post as"
             font.family: Ui.sans
             font.pixelSize: Ui.size.small
@@ -115,6 +118,7 @@ Sheet {
             onPicked: (v) => composer.disclosure = v
         }
         Text {
+            textFormat: Text.PlainText
             Layout.fillWidth: true
             text: composer.store.disclosureHint(composer.disclosure)
             wrapMode: Text.WordWrap

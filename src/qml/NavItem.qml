@@ -37,6 +37,7 @@ Rectangle {
             color: item.active ? Ui.text : Ui.text2
         }
         Text {
+            textFormat: Text.PlainText
             anchors.verticalCenter: parent.verticalCenter
             text: item.text
             font.family: item.mono ? Ui.mono : Ui.sans
@@ -45,6 +46,7 @@ Rectangle {
         }
     }
     Text {
+        textFormat: Text.PlainText
         anchors.right: parent.right
         anchors.rightMargin: 12
         anchors.verticalCenter: parent.verticalCenter
@@ -64,6 +66,7 @@ Rectangle {
         radius: 10
         color: Ui.unread
         Text {
+            textFormat: Text.PlainText
             id: pill
             anchors.centerIn: parent
             text: item.badge

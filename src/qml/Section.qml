@@ -21,6 +21,7 @@ ColumnLayout {
         Layout.bottomMargin: 12
         spacing: 12
         Text {
+            textFormat: Text.PlainText
             text: section.title
             font.family: Ui.sans
             font.pixelSize: Ui.size.section
@@ -28,6 +29,7 @@ ColumnLayout {
             color: Ui.text
         }
         Text {
+            textFormat: Text.PlainText
             Layout.alignment: Qt.AlignBaseline
             text: section.caption
             font.family: Ui.mono
@@ -40,6 +42,7 @@ ColumnLayout {
     Rectangle { Layout.fillWidth: true; implicitHeight: 1; color: Ui.border }
 
     Text {
+        textFormat: Text.PlainText
         Layout.fillWidth: true
         Layout.topMargin: 14
         Layout.maximumWidth: 640

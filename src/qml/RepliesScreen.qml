@@ -26,6 +26,7 @@ Page {
         ]
 
         Text {
+            textFormat: Text.PlainText
             Layout.fillWidth: true
             Layout.topMargin: 18
             visible: screen.store.inbox.length === 0

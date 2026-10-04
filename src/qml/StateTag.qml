@@ -20,6 +20,7 @@ Row {
         color: Ui.deliveryColor(tag.delivery)
     }
     Text {
+        textFormat: Text.PlainText
         anchors.verticalCenter: parent.verticalCenter
         text: Ui.deliveryLabel(tag.delivery) + (tag.detail.length > 0 ? " · " + tag.detail : "")
         font.family: Ui.mono

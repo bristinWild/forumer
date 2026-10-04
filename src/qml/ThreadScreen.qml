@@ -40,6 +40,7 @@ Item {
         thread.store.sendReply(body, thread.disclosure, function () {
             thread.sending = false;
             composerArea.text = "";
+            composerArea.previewing = false;
             thread.store.replyTargetId = "";
         }, function (err) {
             thread.sending = false;
@@ -78,6 +79,7 @@ Item {
                     Row {
                         spacing: 8
                         Text {
+                            textFormat: Text.PlainText
                             text: "home"
                             font.family: Ui.mono
                             font.pixelSize: Ui.size.small
@@ -91,12 +93,14 @@ Item {
                             }
                         }
                         Text {
+                            textFormat: Text.PlainText
                             text: "/"
                             font.family: Ui.mono
                             font.pixelSize: Ui.size.small
                             color: Ui.text3
                         }
                         Text {
+                            textFormat: Text.PlainText
                             text: thread.topic && thread.topic.domains.length > 0 ? "#" + thread.topic.domains[0] : "topic"
                             font.family: Ui.mono
                             font.pixelSize: Ui.size.small
@@ -126,6 +130,7 @@ Item {
                             spacing: 10
                             visible: thread.topic !== null && !thread.topic.placeholder
                             Text {
+                                textFormat: Text.PlainText
                                 text: !thread.topic ? "" : [thread.topic.author, thread.store.ago(thread.topic.tsMs),
                                                            thread.store.domainsText(thread.topic.domains)]
                                                           .filter(function (s) { return s.length > 0; }).join(" · ")
@@ -138,6 +143,7 @@ Item {
                     }
 
                     Text {
+                        textFormat: Text.PlainText
                         Layout.fillWidth: true
                         visible: thread.topic !== null && thread.topic.placeholder
                         text: "Replies to this topic reached you before the topic itself. It will appear here as soon as it syncs — try “catch up now” under missed."
@@ -147,19 +153,12 @@ Item {
                         color: Ui.text2
                     }
 
-                    // Body
-                    TextEdit {
+                    // Body (Markdown)
+                    MdText {
                         Layout.fillWidth: true
-                        visible: text.length > 0
-                        text: thread.topic && !thread.topic.placeholder ? thread.topic.body : ""
-                        readOnly: true
-                        selectByMouse: true
-                        textFormat: TextEdit.PlainText
-                        wrapMode: TextEdit.Wrap
-                        font.family: Ui.sans
+                        visible: source.length > 0
+                        source: thread.topic && !thread.topic.placeholder ? thread.topic.body : ""
                         font.pixelSize: 17
-                        color: Ui.textBody
-                        selectionColor: Ui.borderStrong
                     }
 
                     // Topic actions
@@ -191,6 +190,7 @@ Item {
 
                     // Replies
                     Text {
+                        textFormat: Text.PlainText
                         Layout.fillWidth: true
                         Layout.topMargin: 16
                         text: thread.store.thread.length === 0 ? "no replies yet"
@@ -254,6 +254,7 @@ Item {
                                     onClicked: thread.scrollTo(thread.store.replyTargetId)
                                 }
                                 Text {
+                                    textFormat: Text.PlainText
                                     Layout.fillWidth: true
                                     text: thread.store.replyTargetNote(thread.store.replyTargetId)
                                     elide: Text.ElideRight
@@ -263,10 +264,11 @@ Item {
                                 }
                             }
 
-                            FArea {
+                            MdEditor {
                                 id: composerArea
                                 Layout.fillWidth: true
                                 bare: true
+                                compact: true
                                 minHeight: 72
                                 placeholder: thread.store.canPost ? "Write a reply…" : "Unlock and connect to reply"
                                 editable: thread.store.canPost
@@ -278,6 +280,7 @@ Item {
                                 Layout.fillWidth: true
                                 spacing: 12
                                 Text {
+                                    textFormat: Text.PlainText
                                     text: "post as"
                                     font.family: Ui.sans
                                     font.pixelSize: Ui.size.small
@@ -301,6 +304,7 @@ Item {
                                 }
                             }
                             Text {
+                                textFormat: Text.PlainText
                                 Layout.fillWidth: true
                                 text: thread.store.disclosureHint(thread.disclosure)
                                 wrapMode: Text.WordWrap
@@ -335,6 +339,7 @@ Item {
                             spacing: 10
                             Icon { anchors.verticalCenter: parent.verticalCenter; name: "list"; size: 16; color: Ui.text2 }
                             Text {
+                                textFormat: Text.PlainText
                                 text: "in this thread"
                                 font.family: Ui.sans
                                 font.pixelSize: Ui.size.body
@@ -342,6 +347,7 @@ Item {
                             }
                         }
                         Text {
+                            textFormat: Text.PlainText
                             visible: thread.store.thread.length === 0
                             text: "no replies yet"
                             font.family: Ui.sans
@@ -381,6 +387,7 @@ Item {
                                             color: Ui.text
                                         }
                                         Text {
+                                            textFormat: Text.PlainText
                                             x: 14
                                             anchors.verticalCenter: parent.verticalCenter
                                             width: parent.width - 14
@@ -408,6 +415,7 @@ Item {
                         spacing: 10
                         visible: thread.store.participants.length > 0
                         Text {
+                            textFormat: Text.PlainText
                             text: "people"
                             font.family: Ui.sans
                             font.pixelSize: Ui.size.body
@@ -420,6 +428,7 @@ Item {
                                 required property int index
                                 Layout.fillWidth: true
                                 text: modelData + (index === 0 ? "  op" : "")
+                                textFormat: Text.PlainText
                                 elide: Text.ElideRight
                                 font.family: Ui.mono
                                 font.pixelSize: Ui.size.caption
@@ -433,5 +442,5 @@ Item {
     }
 
     // Off-screen helper for "copy id" (QML has no clipboard API of its own).
-    TextEdit { id: clipboard; visible: false }
+    TextEdit { id: clipboard; visible: false; textFormat: TextEdit.PlainText }
 }

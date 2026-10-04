@@ -47,6 +47,7 @@ Rectangle {
                 Accessible.checked: on
 
                 Text {
+                    textFormat: Text.PlainText
                     anchors.centerIn: parent
                     text: opt.modelData.label
                     font.family: Ui.sans

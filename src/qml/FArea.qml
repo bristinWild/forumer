@@ -18,9 +18,15 @@ Column {
 
     function focusInput() { edit.forceActiveFocus(); }
 
+    // Every key press in the input, before the input handles it (set
+    // event.accepted to take it over). The Markdown editor uses this for its
+    // shortcuts and list continuation.
+    signal keyPressed(var event)
+
     spacing: 8
 
     Text {
+        textFormat: Text.PlainText
         visible: area.label.length > 0
         text: area.label
         font.family: Ui.sans
@@ -49,6 +55,7 @@ Column {
             topPadding: area.bare ? 4 : 12
             bottomPadding: area.bare ? 4 : 12
             Accessible.name: area.label.length > 0 ? area.label : area.placeholder
+            Keys.onPressed: function (event) { area.keyPressed(event); }
             background: Rectangle {
                 visible: !area.bare
                 radius: Ui.radius.l

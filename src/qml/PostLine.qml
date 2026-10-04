@@ -44,6 +44,7 @@ Item {
             Layout.fillWidth: true
             spacing: 6
             Text {
+                textFormat: Text.PlainText
                 Layout.fillWidth: true
                 text: line.title
                 elide: Text.ElideRight
@@ -53,6 +54,7 @@ Item {
                 color: Ui.text
             }
             Text {
+                textFormat: Text.PlainText
                 Layout.fillWidth: true
                 visible: line.body.length > 0
                 text: line.body.replace(/\s+/g, " ")
@@ -62,6 +64,7 @@ Item {
                 color: Ui.text2
             }
             Text {
+                textFormat: Text.PlainText
                 Layout.fillWidth: true
                 visible: line.meta.length > 0
                 text: line.meta

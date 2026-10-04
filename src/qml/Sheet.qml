@@ -67,6 +67,7 @@ Rectangle {
                 RowLayout {
                     Layout.fillWidth: true
                     Text {
+                        textFormat: Text.PlainText
                         Layout.fillWidth: true
                         text: sheet.title
                         font.family: Ui.sans

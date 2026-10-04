@@ -39,6 +39,7 @@ Rectangle {
         anchors.centerIn: parent
         spacing: 6
         Text {
+            textFormat: Text.PlainText
             id: label
             anchors.verticalCenter: parent.verticalCenter
             text: chip.text

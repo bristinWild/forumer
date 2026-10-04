@@ -54,6 +54,7 @@ Rectangle {
                 color: Ui.unread
             }
             Text {
+                textFormat: Text.PlainText
                 text: toast.note ? toast.note.text : ""
                 font.family: Ui.sans
                 font.pixelSize: Ui.size.ui
@@ -62,6 +63,7 @@ Rectangle {
             }
         }
         Text {
+            textFormat: Text.PlainText
             Layout.fillWidth: true
             text: toast.note ? toast.note.body : ""
             elide: Text.ElideRight

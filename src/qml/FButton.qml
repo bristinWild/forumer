@@ -50,6 +50,7 @@ Rectangle {
             color: label.color
         }
         Text {
+            textFormat: Text.PlainText
             id: label
             anchors.verticalCenter: parent.verticalCenter
             visible: button.text.length > 0

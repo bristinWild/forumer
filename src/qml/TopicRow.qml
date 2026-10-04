@@ -26,6 +26,7 @@ Item {
         spacing: 6
 
         Text {
+            textFormat: Text.PlainText
             width: parent.width
             text: row.item.title || ""
             wrapMode: Text.WordWrap
@@ -39,6 +40,7 @@ Item {
             lineHeight: 1.15
         }
         Text {
+            textFormat: Text.PlainText
             width: parent.width
             visible: text.length > 0
             text: row.item.excerpt || ""
@@ -52,6 +54,7 @@ Item {
             width: parent.width
             spacing: 10
             Text {
+                textFormat: Text.PlainText
                 text: row.item.meta || ""
                 elide: Text.ElideRight
                 width: Math.min(implicitWidth, parent.width - (stateTag.visible ? stateTag.width + 10 : 0))

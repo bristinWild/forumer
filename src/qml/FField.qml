@@ -26,6 +26,7 @@ Column {
         width: parent.width
         visible: field.label.length > 0 || field.hint.length > 0
         Text {
+            textFormat: Text.PlainText
             id: labelText
             text: field.label
             font.family: Ui.sans
@@ -34,6 +35,7 @@ Column {
         }
         Item { width: Math.max(0, parent.width - labelText.width - hintText.width); height: 1 }
         Text {
+            textFormat: Text.PlainText
             id: hintText
             text: field.hint
             font.family: Ui.mono

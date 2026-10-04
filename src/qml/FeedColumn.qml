@@ -18,6 +18,7 @@ ColumnLayout {
         Layout.fillWidth: true
         Layout.bottomMargin: 12
         Text {
+            textFormat: Text.PlainText
             text: column.title
             font.family: Ui.sans
             font.pixelSize: Ui.size.body
@@ -26,6 +27,7 @@ ColumnLayout {
         }
         Item { Layout.fillWidth: true }
         Text {
+            textFormat: Text.PlainText
             Layout.maximumWidth: column.width * 0.6
             text: column.caption
             elide: Text.ElideLeft
@@ -37,6 +39,7 @@ ColumnLayout {
     Rectangle { Layout.fillWidth: true; implicitHeight: 1; color: Ui.border }
 
     Text {
+        textFormat: Text.PlainText
         Layout.fillWidth: true
         Layout.topMargin: 20
         visible: column.items.length === 0

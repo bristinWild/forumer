@@ -26,6 +26,7 @@ Page {
         ]
 
         Text {
+            textFormat: Text.PlainText
             Layout.fillWidth: true
             Layout.topMargin: 18
             visible: missed.store.outbox.length === 0
@@ -72,6 +73,7 @@ Page {
         Timer { id: askTimer; interval: 4000; onTriggered: missed.asking = false }
 
         Text {
+            textFormat: Text.PlainText
             Layout.fillWidth: true
             Layout.topMargin: 18
             visible: missed.store.missed.length === 0

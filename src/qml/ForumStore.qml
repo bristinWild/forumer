@@ -1,4 +1,5 @@
 import QtQuick
+import "markdown.js" as Md
 
 // The view's single source of truth: mirrors the backend's properties, keeps
 // every post the backend has shown us, and derives what each screen lists
@@ -230,7 +231,7 @@ Item {
             id: t.id,
             title: t.placeholder ? "Topic still arriving…" : t.title,
             excerpt: t.placeholder ? "Its replies got here first; the topic will appear once it syncs."
-                                   : t.body.replace(/\s+/g, " "),
+                                   : Md.plain(t.body),
             meta: t.placeholder ? (n + (n === 1 ? " reply" : " replies")) : parts.join(" · "),
             delivery: t.delivery,
             placeholder: t.placeholder
@@ -359,7 +360,7 @@ Item {
             out.push({
                 id: p.id, kind: isTopic ? "topic" : "reply",
                 title: isTopic ? p.title : "reply in “" + (topic && !topic.placeholder ? topic.title : "a topic") + "”",
-                body: isTopic ? "" : p.body,
+                body: isTopic ? "" : Md.plain(p.body),
                 delivery: p.delivery,
                 time: store.ago(p.tsMs),
                 tsMs: p.tsMs,
@@ -419,7 +420,7 @@ Item {
             if (!r) return;                       // not shown to the view yet
             var t = store.topics[it.topicId];
             out.push({
-                id: it.id, topicId: it.topicId, author: r.author, body: r.body,
+                id: it.id, topicId: it.topicId, author: r.author, body: Md.plain(r.body),
                 title: t && !t.placeholder ? t.title : "a topic",
                 time: store.ago(r.tsMs), direct: it.direct, inMyTopic: it.inMyTopic === true, read: it.read
             });
@@ -485,7 +486,7 @@ Item {
             store.toast = {
                 id: newest.id, topicId: newest.topicId,
                 text: (r ? r.author : "someone") + store.inboxVerb(newest),
-                body: r ? r.body.replace(/\s+/g, " ") : ""
+                body: r ? Md.plain(r.body) : ""
             };
         }
     }

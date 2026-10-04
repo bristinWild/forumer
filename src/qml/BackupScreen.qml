@@ -23,6 +23,7 @@ Page {
             Layout.topMargin: 20
             spacing: 12
             Text {
+                textFormat: Text.PlainText
                 Layout.fillWidth: true
                 text: "enter your password to show the phrase. anyone who sees it can post as you, so check nobody is looking."
                 wrapMode: Text.WordWrap

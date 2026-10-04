@@ -43,6 +43,7 @@ Rectangle {
                 Layout.rightMargin: 14
                 spacing: 8
                 Text {
+                    textFormat: Text.PlainText
                     text: "forumer"
                     font.family: Ui.sans
                     font.pixelSize: 18
@@ -50,6 +51,7 @@ Rectangle {
                     color: Ui.text
                 }
                 Text {
+                    textFormat: Text.PlainText
                     Layout.alignment: Qt.AlignBaseline
                     text: sidebar.store.appVersion.length > 0 ? "v" + sidebar.store.appVersion : ""
                     font.family: Ui.mono
@@ -99,6 +101,7 @@ Rectangle {
                     Keys.onEscapePressed: { sidebar.store.searchText = ""; focus = false; }
                     Accessible.name: "Search posts, domains and people"
                     Text {
+                        textFormat: Text.PlainText
                         anchors.verticalCenter: parent.verticalCenter
                         visible: searchInput.text.length === 0
                         text: "Search"
@@ -124,6 +127,7 @@ Rectangle {
                             border.width: 1
                             border.color: Ui.borderStrong
                             Text {
+                                textFormat: Text.PlainText
                                 id: keyText
                                 anchors.centerIn: parent
                                 text: parent.modelData
@@ -153,6 +157,7 @@ Rectangle {
                     color: sidebar.store.connected ? Ui.live : Ui.sending
                 }
                 Text {
+                    textFormat: Text.PlainText
                     Layout.fillWidth: true
                     text: {
                         var s = sidebar.store.status.length > 0 ? sidebar.store.status : "starting…";
@@ -218,6 +223,7 @@ Rectangle {
                 Layout.rightMargin: 14
                 spacing: 2
                 Text {
+                    textFormat: Text.PlainText
                     Layout.leftMargin: 10
                     Layout.bottomMargin: 4
                     text: "followed domains"
@@ -227,6 +233,7 @@ Rectangle {
                     color: Ui.text
                 }
                 Text {
+                    textFormat: Text.PlainText
                     Layout.fillWidth: true
                     Layout.leftMargin: 10
                     visible: sidebar.store.followed.length === 0
@@ -257,6 +264,7 @@ Rectangle {
                 Layout.rightMargin: 14
                 spacing: 2
                 Text {
+                    textFormat: Text.PlainText
                     Layout.leftMargin: 10
                     Layout.bottomMargin: 4
                     text: "you"
@@ -312,6 +320,7 @@ Rectangle {
                         border.width: 1
                         border.color: Ui.borderStrong
                         Text {
+                            textFormat: Text.PlainText
                             anchors.centerIn: parent
                             text: sidebar.store.myLabel.length > 0 ? sidebar.store.myLabel.charAt(0).toUpperCase() : "?"
                             font.family: Ui.sans
@@ -324,6 +333,7 @@ Rectangle {
                         Layout.fillWidth: true
                         spacing: 2
                         Text {
+                            textFormat: Text.PlainText
                             Layout.fillWidth: true
                             text: sidebar.store.myLabel
                             elide: Text.ElideRight
@@ -333,6 +343,7 @@ Rectangle {
                             color: Ui.text
                         }
                         Text {
+                            textFormat: Text.PlainText
                             Layout.fillWidth: true
                             text: sidebar.store.myPersona
                             elide: Text.ElideRight

@@ -48,6 +48,7 @@ Item {
         spacing: 6
 
         Text {
+            textFormat: Text.PlainText
             Layout.fillWidth: true
             text: (line.item.author || "") + (line.item.direct ? " replied to you"
                                               : line.item.inMyTopic ? " replied in your topic"
@@ -59,6 +60,7 @@ Item {
             color: Ui.text
         }
         Text {
+            textFormat: Text.PlainText
             Layout.fillWidth: true
             text: (line.item.body || "").replace(/\s+/g, " ")
             elide: Text.ElideRight
@@ -69,6 +71,7 @@ Item {
             color: line.unread ? Ui.textBody : Ui.text2
         }
         Text {
+            textFormat: Text.PlainText
             Layout.fillWidth: true
             text: "in “" + (line.item.title || "") + "” · " + (line.item.time || "")
             elide: Text.ElideRight

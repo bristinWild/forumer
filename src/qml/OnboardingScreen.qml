@@ -82,6 +82,7 @@ Rectangle {
                     Layout.fillWidth: true
                     spacing: 12
                     Text {
+                        textFormat: Text.PlainText
                         text: "forumer"
                         font.family: Ui.sans
                         font.pixelSize: Ui.size.page
@@ -90,6 +91,7 @@ Rectangle {
                         color: Ui.text
                     }
                     Text {
+                        textFormat: Text.PlainText
                         Layout.fillWidth: true
                         text: "a private forum with no accounts on any server. your identity lives only on this device, locked with your password."
                         wrapMode: Text.WordWrap
@@ -107,6 +109,7 @@ Rectangle {
                     spacing: 16
 
                     Text {
+                        textFormat: Text.PlainText
                         text: "unlock"
                         font.family: Ui.sans
                         font.pixelSize: Ui.size.section
@@ -130,6 +133,7 @@ Rectangle {
                         }
                     }
                     Text {
+                        textFormat: Text.PlainText
                         visible: onboarding.accounts.length === 1
                         text: onboarding.selectedLabel
                         font.family: Ui.sans
@@ -167,6 +171,7 @@ Rectangle {
                     spacing: 16
 
                     Text {
+                        textFormat: Text.PlainText
                         text: "create an identity"
                         font.family: Ui.sans
                         font.pixelSize: Ui.size.section
@@ -174,6 +179,7 @@ Rectangle {
                         color: Ui.text
                     }
                     Text {
+                        textFormat: Text.PlainText
                         Layout.fillWidth: true
                         text: "others only ever see the personas it makes - never the identity itself."
                         wrapMode: Text.WordWrap
@@ -185,6 +191,7 @@ Rectangle {
                     FField { id: createPw; Layout.fillWidth: true; label: "password"; hint: "8+ characters"; password: true }
                     FField { id: createPw2; Layout.fillWidth: true; label: "repeat password"; password: true; onAccepted: onboarding.create() }
                     Text {
+                        textFormat: Text.PlainText
                         Layout.fillWidth: true
                         text: "there is no password reset. if you forget it, only your recovery phrase can bring this identity back."
                         wrapMode: Text.WordWrap
@@ -219,6 +226,7 @@ Rectangle {
                     spacing: 16
 
                     Text {
+                        textFormat: Text.PlainText
                         text: "restore from recovery phrase"
                         font.family: Ui.sans
                         font.pixelSize: Ui.size.section

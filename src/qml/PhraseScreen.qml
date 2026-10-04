@@ -33,6 +33,7 @@ Rectangle {
                 spacing: 24
 
                 Text {
+                    textFormat: Text.PlainText
                     text: "your recovery phrase"
                     font.family: Ui.sans
                     font.pixelSize: Ui.size.thread
@@ -41,6 +42,7 @@ Rectangle {
                     color: Ui.text
                 }
                 Text {
+                    textFormat: Text.PlainText
                     Layout.fillWidth: true
                     text: "write these 24 words down, in order, and keep them somewhere safe and offline. they are the only way back in if you forget your password or lose this device. anyone who sees them can post as you."
                     wrapMode: Text.WordWrap
@@ -73,6 +75,7 @@ Rectangle {
                                 Layout.fillWidth: true
                                 spacing: 8
                                 Text {
+                                    textFormat: Text.PlainText
                                     width: 22
                                     horizontalAlignment: Text.AlignRight
                                     text: (index + 1)
@@ -82,6 +85,7 @@ Rectangle {
                                     anchors.baseline: word.baseline
                                 }
                                 Text {
+                                    textFormat: Text.PlainText
                                     id: word
                                     text: modelData
                                     font.family: Ui.mono

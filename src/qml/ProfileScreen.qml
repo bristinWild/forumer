@@ -21,6 +21,7 @@ Page {
             Layout.topMargin: 20
             spacing: 14
             Text {
+                textFormat: Text.PlainText
                 text: profile.store.myPersona
                 font.family: Ui.mono
                 font.pixelSize: 28
@@ -28,6 +29,7 @@ Page {
                 color: Ui.text
             }
             Text {
+                textFormat: Text.PlainText
                 Layout.fillWidth: true
                 text: "a persona is a key made from your identity. anyone can check a post was signed by it; nobody can tell two of your personas belong to the same person."
                 wrapMode: Text.WordWrap
@@ -70,6 +72,7 @@ Page {
                 }
             }
             Text {
+                textFormat: Text.PlainText
                 Layout.fillWidth: true
                 text: profile.store.rotationPolicy === "keep" ? "always the same persona, so people can follow what you write."
                     : profile.store.rotationPolicy === "auto" ? "every post gets a persona of its own, so no two of your posts can be linked."
@@ -124,6 +127,7 @@ Page {
                 onPicked: (v) => profile.store.call(profile.store.backend.chooseDefaultDisclosure(v))
             }
             Text {
+                textFormat: Text.PlainText
                 Layout.fillWidth: true
                 text: profile.store.disclosureHint(profile.store.defaultDisclosure)
                 wrapMode: Text.WordWrap

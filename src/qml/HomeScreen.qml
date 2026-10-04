@@ -33,6 +33,7 @@ Item {
                     Layout.fillWidth: true
                     spacing: 10
                     Text {
+                        textFormat: Text.PlainText
                         text: "home"
                         font.family: Ui.sans
                         font.pixelSize: Ui.size.page
@@ -41,6 +42,7 @@ Item {
                         color: Ui.text
                     }
                     Text {
+                        textFormat: Text.PlainText
                         Layout.fillWidth: true
                         text: "the public forum. sign as a persona, an alias, or no one at all."
                         wrapMode: Text.WordWrap
@@ -93,6 +95,7 @@ Item {
                 visible: home.store.domainFilter.length > 0 || home.store.searchText.length > 0
                 spacing: 12
                 Text {
+                    textFormat: Text.PlainText
                     text: {
                         var parts = [];
                         if (home.store.domainFilter.length > 0) parts.push("#" + home.store.domainFilter);

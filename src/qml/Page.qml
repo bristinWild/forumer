@@ -30,6 +30,7 @@ Item {
                 Layout.topMargin: Ui.space.page
                 spacing: 10
                 Text {
+                    textFormat: Text.PlainText
                     text: page.title
                     font.family: Ui.sans
                     font.pixelSize: Ui.size.page
@@ -38,6 +39,7 @@ Item {
                     color: Ui.text
                 }
                 Text {
+                    textFormat: Text.PlainText
                     Layout.fillWidth: true
                     visible: page.subtitle.length > 0
                     text: page.subtitle

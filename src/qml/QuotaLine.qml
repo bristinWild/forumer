@@ -54,6 +54,7 @@ Row {
     }
 
     Text {
+        textFormat: Text.PlainText
         anchors.verticalCenter: parent.verticalCenter
         text: line.remaining > 0
               ? line.remaining + " of " + line.limit + " " + line.nounPlural + " left this hour"

@@ -62,6 +62,7 @@ Item {
         Row {
             spacing: 10
             Text {
+                textFormat: Text.PlainText
                 text: reply.item.author + (reply.item.isOp ? " · op" : "") + " · " + reply.item.time
                 font.family: Ui.mono
                 font.pixelSize: Ui.size.small
@@ -69,6 +70,7 @@ Item {
             }
             StateTag { delivery: reply.item.delivery || "" }
             Text {
+                textFormat: Text.PlainText
                 visible: reply.item.fresh === true
                 text: "new"
                 font.family: Ui.mono
@@ -76,18 +78,9 @@ Item {
                 color: Ui.unread
             }
         }
-        TextEdit {
+        MdText {
             width: parent.width
-            text: reply.item.body || ""
-            readOnly: true
-            selectByMouse: true
-            textFormat: TextEdit.PlainText
-            wrapMode: TextEdit.Wrap
-            font.family: Ui.sans
-            font.pixelSize: Ui.size.reading
-            color: Ui.textBody
-            selectionColor: Ui.borderStrong
-            selectedTextColor: Ui.text
+            source: reply.item.body || ""
         }
         FButton {
             visible: reply.canReply

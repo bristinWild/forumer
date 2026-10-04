@@ -138,6 +138,7 @@ Item {
                 border.width: 1
                 border.color: Ui.failed
                 Text {
+                    textFormat: Text.PlainText
                     id: errorText
                     anchors.left: parent.left
                     anchors.right: closeError.left

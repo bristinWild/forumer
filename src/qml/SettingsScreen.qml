@@ -105,6 +105,7 @@ Page {
                     Layout.fillWidth: true
                     implicitHeight: 20
                     Text {
+                        textFormat: Text.PlainText
                         width: 140
                         text: parent.modelData[0]
                         font.family: Ui.sans
@@ -112,6 +113,7 @@ Page {
                         color: Ui.text2
                     }
                     Text {
+                        textFormat: Text.PlainText
                         x: 164
                         width: parent.width - x
                         text: parent.modelData[1]
@@ -134,6 +136,7 @@ Page {
             Layout.topMargin: 20
             spacing: 12
             Text {
+                textFormat: Text.PlainText
                 Layout.fillWidth: true
                 text: "deletes “" + settings.store.myLabel + "” from this device. posts already published stay on the network. make sure you have the recovery phrase first (backup & restore)."
                 wrapMode: Text.WordWrap

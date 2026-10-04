@@ -16,6 +16,7 @@ Page {
         caption: mine.store.myPosts.length === 1 ? "1 post" : mine.store.myPosts.length + " posts"
 
         Text {
+            textFormat: Text.PlainText
             Layout.fillWidth: true
             Layout.topMargin: 18
             visible: mine.store.myPosts.length === 0
