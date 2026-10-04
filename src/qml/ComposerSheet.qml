@@ -124,6 +124,12 @@ Sheet {
         }
     }
 
+    QuotaLine {
+        visible: composer.store.unlocked && limit > 0
+        quota: composer.store.quota.topics
+        noun: "topic"
+    }
+
     Notice { Layout.fillWidth: true; message: composer.error }
 
     actions: [
@@ -132,6 +138,7 @@ Sheet {
             kind: "primary"
             text: composer.sending ? "signing…" : "post"
             enabled: titleField.text.trim().length > 0 && !composer.sending && composer.store.canPost
+                     && composer.store.topicsLeft
             onClicked: composer.post()
         }
     ]

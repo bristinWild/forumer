@@ -34,6 +34,21 @@ Item {
     readonly property int    unsentCount:        hasBackend ? backend.unsentCount       : 0
     readonly property string syncInfo:           hasBackend ? backend.syncInfo          : ""
     readonly property string followedJson:       hasBackend ? backend.followedDomains   : "[]"
+    readonly property string quotaJson:          hasBackend && backend.quotaJson ? backend.quotaJson : "{}"
+
+    // What's left of this account's hourly limits:
+    //   { topics: {left, max, waitMin}, replies: {left, max, waitMin} }
+    // Empty objects until the backend reports (QuotaLine hides itself then).
+    readonly property var quota: {
+        try {
+            const q = JSON.parse(quotaJson);
+            return { topics: q.topics || ({}), replies: q.replies || ({}) };
+        } catch (e) {
+            return { topics: ({}), replies: ({}) };
+        }
+    }
+    readonly property bool topicsLeft:  quota.topics.left  === undefined || quota.topics.left  > 0
+    readonly property bool repliesLeft: quota.replies.left === undefined || quota.replies.left > 0
 
     readonly property bool unlocked: identityState === "unlocked"
     readonly property bool canPost: nodeReady && unlocked
@@ -124,7 +139,7 @@ Item {
 
     // Posts already on this device. Asked for only once the backend has opened
     // its post log (nodeReady): asked any earlier, the answer is an empty list
-    // and the forum would look empty until restart. Safe to repeat - posts are
+    // and the forum would look empty until restart. Safe to repeat — posts are
     // de-duplicated by id.
     property bool backlogLoaded: false
     property bool viewReady: false          // set by Main once the replica is connected
@@ -349,7 +364,7 @@ Item {
     readonly property var myPosts: { store.rev; store.tick; return store.ownPosts(false); }
 
     // Posts that reached us during this session but were written before it
-    // started - i.e. what we missed while away and caught up on.
+    // started — i.e. what we missed while away and caught up on.
     readonly property var missed: {
         store.rev; store.tick;
         var cutoff = store.sessionStartMs - 60000;

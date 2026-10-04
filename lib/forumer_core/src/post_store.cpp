@@ -259,6 +259,19 @@ size_t PostStore::countOwn(const std::string& accountId, post::Kind kind, int64_
     return s.step() == SQLITE_ROW ? static_cast<size_t>(s.colI64(0)) : 0;
 }
 
+std::vector<int64_t> PostStore::ownTimestamps(const std::string& accountId, post::Kind kind,
+                                              int64_t sinceMs) const {
+    std::lock_guard lock(mutex_);
+    std::vector<int64_t> out;
+    Stmt s(db_,
+           "SELECT p.ts FROM outbox o JOIN posts p ON p.id = o.post_id "
+           "WHERE o.account_id = ?1 AND p.kind = ?2 AND p.ts >= ?3 ORDER BY p.ts ASC;");
+    s.text(1, accountId).i64(2, kind == post::Kind::Post ? 0 : 1).i64(3, sinceMs);
+    while (s.step() == SQLITE_ROW)
+        out.push_back(s.colI64(0));
+    return out;
+}
+
 std::set<Bytes> PostStore::authors() const {
     std::lock_guard lock(mutex_);
     std::set<Bytes> out;

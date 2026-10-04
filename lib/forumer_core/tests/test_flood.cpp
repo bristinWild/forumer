@@ -128,4 +128,11 @@ TEST(flood_store_counts_own_posts_across_personas) {
     CHECK_EQ(store->countOwn("acct", post::Kind::Post, base - kWindowMs), size_t(3));
     CHECK_EQ(store->countOwn("acct", post::Kind::Post, base + 10), size_t(0));
     CHECK_EQ(store->countOwn("other", post::Kind::Post, 0), size_t(1));
+
+    const auto ts = store->ownTimestamps("acct", post::Kind::Post, base - kWindowMs);
+    CHECK_EQ(ts.size(), size_t(3));
+    if (ts.size() == 3) {
+        CHECK_EQ(ts[0], base);       // oldest first
+        CHECK_EQ(ts[2], base + 2);
+    }
 }

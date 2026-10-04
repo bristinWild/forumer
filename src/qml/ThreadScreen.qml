@@ -140,7 +140,7 @@ Item {
                     Text {
                         Layout.fillWidth: true
                         visible: thread.topic !== null && thread.topic.placeholder
-                        text: "Replies to this topic reached you before the topic itself. It will appear here as soon as it syncs - try “catch up now” under missed."
+                        text: "Replies to this topic reached you before the topic itself. It will appear here as soon as it syncs — try “catch up now” under missed."
                         wrapMode: Text.WordWrap
                         font.family: Ui.sans
                         font.pixelSize: Ui.size.body
@@ -296,6 +296,7 @@ Item {
                                     text: thread.sending ? "signing…" : "reply"
                                     implicitHeight: 38
                                     enabled: thread.store.canPost && composerArea.text.trim().length > 0 && !thread.sending
+                                             && thread.store.repliesLeft
                                     onClicked: thread.send()
                                 }
                             }
@@ -306,6 +307,12 @@ Item {
                                 font.family: Ui.mono
                                 font.pixelSize: Ui.size.caption
                                 color: Ui.text3
+                            }
+                            QuotaLine {
+                                visible: thread.store.unlocked && limit > 0
+                                quota: thread.store.quota.replies
+                                noun: "reply"
+                                nounPlural: "replies"
                             }
                             Notice { Layout.fillWidth: true; message: thread.error }
                         }

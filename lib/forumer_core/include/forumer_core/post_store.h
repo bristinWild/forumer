@@ -6,7 +6,7 @@
 // Posts are immutable and content-addressed (see post.h), so the log is
 // append-only: a post is stored once under its id and never changed or
 // removed by anything that arrives later. That is what makes it safe to fill
-// from untrusted peers - a stranger can add posts (which must still pass
+// from untrusted peers — a stranger can add posts (which must still pass
 // verify()), but cannot overwrite or delete anyone else's.
 //
 // The caller verifies before inserting; the store trusts what it is given.
@@ -103,9 +103,12 @@ public:
     bool hasAuthor(const Bytes& author) const;
 
     /// Posts of `kind` this device wrote for `accountId`, dated at or after
-    /// sinceMs - the sender-side limit, which also covers anonymous and
+    /// sinceMs — the sender-side limit, which also covers anonymous and
     /// auto-rotated posts (a fresh key each, so no per-key count sees them).
     size_t countOwn(const std::string& accountId, post::Kind kind, int64_t sinceMs) const;
+
+    /// The author timestamps of those same posts (for "next one in 23 min").
+    std::vector<int64_t> ownTimestamps(const std::string& accountId, post::Kind kind, int64_t sinceMs) const;
 
     // Outbox 
 

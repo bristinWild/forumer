@@ -13,7 +13,7 @@ class Forumer
     // Reply to a topic (by its id). `disclosure` as above.
     SLOT(QString replyToTopic(QString topicId, QString body, QString disclosure))
 
-    // Reply to any post - a topic or a reply - by its id. Threads are two
+    // Reply to any post — a topic or a reply — by its id. Threads are two
     // levels deep (forumer_core/thread.h): answering a topic makes a level-1
     // reply, answering a level-1 reply starts its sub-thread, and answering a
     // level-2 reply joins that same sub-thread.
@@ -29,12 +29,12 @@ class Forumer
     // A SLOT rather than a startup SIGNAL on purpose. The backend finishes its
     // bootstrap long before this view's replica has connected, and QtRO
     // forwards a signal only to replicas attached at the moment it is emitted
-    // - there is no replay for a late joiner.
+    // — there is no replay for a late joiner.
     SLOT(QString loadBacklog())
 
     // ── Sync ──────────────────────────────────────────────────────────────────
     // Posts travel on one content topic per forum; gaps are repaired by
-    // digests (forumer_core/sync.h). Both run automatically - these are the
+    // digests (forumer_core/sync.h). Both run automatically — these are the
     // "do it now" buttons.
 
     // Send a digest now, so peers re-send any posts this device is missing.
@@ -102,6 +102,13 @@ class Forumer
 
     // One line about sync for the status bar, e.g. "synced 14:02 · 3 recovered".
     PROP(QString syncInfo="" READONLY)
+
+    // What's left of the unlocked account's hourly posting limit
+    // (forumer_core/flood.h), for the composers:
+    //   {"topics":  {"left": 7, "max": 10, "waitMin": 0},
+    //    "replies": {"left": 60, "max": 60, "waitMin": 0}}
+    // waitMin: minutes until the next one is allowed, when left is 0.
+    PROP(QString quotaJson="{}" READONLY)
 
     // App version, from metadata.json.
     PROP(QString appVersion="" READONLY)
