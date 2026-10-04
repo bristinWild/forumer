@@ -80,6 +80,11 @@ Item {
                 visible: store.screen === "thread"
                 store: store
             }
+            RepliesScreen {
+                anchors.fill: parent
+                visible: store.screen === "replies"
+                store: store
+            }
             MissedScreen {
                 anchors.fill: parent
                 visible: store.screen === "missed"
@@ -110,6 +115,14 @@ Item {
                 visible: store.screen === "backup"
                 store: store
                 onRestoreRequested: { onboarding.reset("restore"); root.restoreOverlay = true; }
+            }
+
+            ReplyToast {
+                anchors.right: parent.right
+                anchors.bottom: parent.bottom
+                anchors.margins: 24
+                store: store
+                z: 5
             }
 
             // Errors from actions that have no screen of their own.

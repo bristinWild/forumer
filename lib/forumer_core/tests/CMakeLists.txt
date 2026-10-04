@@ -10,6 +10,7 @@ add_executable(forumer_core_tests
     test_sync.cpp
     test_thread.cpp
     test_flood.cpp
+    test_inbox.cpp
 )
 
 target_link_libraries(forumer_core_tests PRIVATE forumer_core)

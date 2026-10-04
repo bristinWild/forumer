@@ -414,6 +414,7 @@ void ForumerBackend::publishIdentityState() {
   }
 
   publishQuota();
+  publishInbox();
 
   // Last: the view switches screens on this, so everything it shows is ready.
   setIdentityState(m_account ? QStringLiteral("unlocked")
@@ -611,6 +612,52 @@ QString ForumerBackend::unfollowDomain(QString domain) {
   saveAccount();
   publishIdentityState();
   return QString();
+}
+
+// ── Replies to you ────────────────────────────────────────────────────────────
+
+QString ForumerBackend::markRepliesRead(QString ids) {
+  if (!m_account || !m_posts)
+    return QStringLiteral("Unlock first");
+  const std::string account = m_account->state().id;
+  bool ok = true;
+  if (ids.trimmed().isEmpty()) {
+    ok = m_posts->markAllRead(account, nowMs());
+  } else {
+    std::vector<std::string> list;
+    for (const QString &id : ids.split(QLatin1Char(','), Qt::SkipEmptyParts))
+      list.push_back(id.trimmed().toStdString());
+    ok = m_posts->markRead(account, list, nowMs());
+  }
+  publishInbox();
+  return ok ? QString() : QStringLiteral("Could not save that replies were read");
+}
+
+void ForumerBackend::scheduleInbox() {
+  if (m_inboxScheduled)
+    return;
+  m_inboxScheduled = true;
+  QTimer::singleShot(300, this, [this]() {
+    m_inboxScheduled = false;
+    publishInbox();
+  });
+}
+
+void ForumerBackend::publishInbox() {
+  constexpr size_t kInboxLimit = 200;
+  QJsonArray inbox;
+  if (m_account && m_posts) {
+    for (const auto &item : m_posts->inbox(m_account->state().id, kInboxLimit))
+      inbox.append(QJsonObject{{"id", qs(item.postId)},
+                               {"topicId", qs(item.rootId)},
+                               {"parentId", qs(item.parentId)},
+                               {"direct", item.direct},
+                               {"inMyTopic", item.inMyTopic},
+                               {"read", item.read}});
+  }
+  const QString json = QString::fromUtf8(QJsonDocument(inbox).toJson(QJsonDocument::Compact));
+  if (json != inboxJson())
+    setInboxJson(json);
 }
 
 // ── Posting ───────────────────────────────────────────────────────────────────
@@ -842,6 +889,8 @@ void ForumerBackend::handlePost(fc::post::Post post) {
     logEvent("received " + post.id);
     emitPost(post);
     publishSyncState();
+    if (post.content.kind == fc::post::Kind::Reply)
+      scheduleInbox();
     break;
   case fc::PostStore::Insert::Duplicate:
     break;

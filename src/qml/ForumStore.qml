@@ -35,6 +35,7 @@ Item {
     readonly property string syncInfo:           hasBackend ? backend.syncInfo          : ""
     readonly property string followedJson:       hasBackend ? backend.followedDomains   : "[]"
     readonly property string quotaJson:          hasBackend && backend.quotaJson ? backend.quotaJson : "{}"
+    readonly property string inboxJson:          hasBackend && backend.inboxJson ? backend.inboxJson : "[]"
 
     // What's left of this account's hourly limits:
     //   { topics: {left, max, waitMin}, replies: {left, max, waitMin} }
@@ -68,7 +69,7 @@ Item {
     }
 
     // ── Navigation & UI state ─────────────────────────────────────────────────
-    // "home" | "thread" | "missed" | "mine" | "chats" | "profile" | "settings" | "backup"
+    // "home" | "thread" | "replies" | "missed" | "mine" | "chats" | "profile" | "settings" | "backup"
     property string screen: "home"
     property string selectedTopicId: ""
     property string replyTargetId: ""        // "" = reply to the topic itself
@@ -87,6 +88,15 @@ Item {
         store.selectedTopicId = id;
         store.replyTargetId = "";
         store.open("thread");
+        // Replies to you in this thread: highlight them, and they are now read.
+        var fresh = {};
+        var ids = [];
+        store.inboxRaw.forEach(function (it) {
+            if (it.topicId === id && !it.read) { fresh[it.id] = true; ids.push(it.id); }
+        });
+        store.freshIds = fresh;
+        store.rev++;
+        store.markRepliesRead(ids);
     }
 
     // ── Posts ─────────────────────────────────────────────────────────────────
@@ -307,6 +317,7 @@ Item {
             return {
                 id: r.id, author: r.author, body: r.body, time: store.ago(r.tsMs),
                 depth: depth, delivery: r.delivery, subthread: subthread,
+                fresh: store.freshIds[r.id] === true,
                 isOp: t !== undefined && !t.placeholder && r.author === t.author && r.author !== "Anonymous"
             };
         }
@@ -385,6 +396,98 @@ Item {
         for (var b in store.replies) consider(store.replies[b], false);
         out.sort(function (x, y) { return y.arrivedMs - x.arrivedMs; });
         return out;
+    }
+
+    // ── Replies to you ────────────────────────────────────────────────────────
+    // The backend works out, on this device only, which replies answer this
+    // account's posts or sit in its topics (inboxJson); here they are joined
+    // with the posts we hold. Nothing about it goes on the network.
+    readonly property var inboxRaw: {
+        try { return JSON.parse(store.inboxJson); } catch (e) { return []; }
+    }
+    readonly property int unreadReplies: {
+        var n = 0;
+        store.inboxRaw.forEach(function (it) { if (!it.read) ++n; });
+        return n;
+    }
+    // [{ id, topicId, author, body, title, time, direct, read }], newest first.
+    readonly property var inbox: {
+        store.rev; store.tick;
+        var out = [];
+        store.inboxRaw.forEach(function (it) {
+            var r = store.replies[it.id];
+            if (!r) return;                       // not shown to the view yet
+            var t = store.topics[it.topicId];
+            out.push({
+                id: it.id, topicId: it.topicId, author: r.author, body: r.body,
+                title: t && !t.placeholder ? t.title : "a topic",
+                time: store.ago(r.tsMs), direct: it.direct, inMyTopic: it.inMyTopic === true, read: it.read
+            });
+        });
+        return out;
+    }
+
+    function inboxVerb(it) {
+        return it.direct ? " replied to you"
+             : it.inMyTopic === true ? " replied in your topic"
+             : " replied in a thread you joined";
+    }
+
+    // Replies highlighted in the open thread (unread when it was opened).
+    property var freshIds: ({})
+
+    function markRepliesRead(ids) {
+        if (!store.hasBackend || !store.unlocked || ids.length === 0) return;
+        store.call(store.backend.markRepliesRead(ids.join(",")), null, function (e) { store.log(e); });
+    }
+    function markAllRepliesRead() {
+        if (!store.hasBackend || !store.unlocked) return;
+        store.call(store.backend.markRepliesRead(""), null, function (e) { store.log(e); });
+    }
+
+    // A small notice for a reply that arrives while the app is open:
+    // { id, topicId, text, body }, or null.
+    property var toast: null
+    property var inboxKnown: ({})      // ids already in the inbox (no notice for those)
+    property bool inboxPrimed: false   // the first inbox after unlock is history, not news
+
+    onIdentityStateChanged: {
+        // The inbox for the newly unlocked account arrives before this change:
+        // what's in it is history, not news.
+        var known = {};
+        if (store.unlocked) store.inboxRaw.forEach(function (it) { known[it.id] = true; });
+        store.inboxKnown = known;
+        store.inboxPrimed = store.unlocked;
+        store.toast = null;
+        store.freshIds = {};
+    }
+    onInboxRawChanged: {
+        var known = store.inboxKnown;
+        var newest = null;
+        var readNow = [];
+        store.inboxRaw.forEach(function (it) {
+            if (known[it.id]) return;
+            known[it.id] = true;
+            if (!store.inboxPrimed || it.read) return;
+            if (store.screen === "thread" && store.selectedTopicId === it.topicId) {
+                // Already looking at it: highlight, and it's read.
+                store.freshIds[it.id] = true;
+                readNow.push(it.id);
+            } else if (!newest) {
+                newest = it;               // inboxRaw is newest first
+            }
+        });
+        store.inboxKnown = known;
+        if (store.unlocked) store.inboxPrimed = true;
+        if (readNow.length > 0) { store.rev++; store.markRepliesRead(readNow); }
+        if (newest) {
+            var r = store.replies[newest.id];
+            store.toast = {
+                id: newest.id, topicId: newest.topicId,
+                text: (r ? r.author : "someone") + store.inboxVerb(newest),
+                body: r ? r.body.replace(/\s+/g, " ") : ""
+            };
+        }
     }
 
     // ── Actions ───────────────────────────────────────────────────────────────

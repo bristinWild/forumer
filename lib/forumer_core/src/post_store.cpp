@@ -44,6 +44,16 @@ CREATE TABLE IF NOT EXISTS outbox (
     last_error   TEXT NOT NULL DEFAULT ''
 );
 CREATE INDEX IF NOT EXISTS idx_outbox_state ON outbox(state);
+CREATE INDEX IF NOT EXISTS idx_outbox_account ON outbox(account_id);
+CREATE INDEX IF NOT EXISTS idx_posts_parent ON posts(parent);
+
+-- Replies an account has seen in its "replies to you" list.
+CREATE TABLE IF NOT EXISTS inbox_read (
+    account_id TEXT NOT NULL,
+    post_id    TEXT NOT NULL,
+    read_at    INTEGER NOT NULL,
+    PRIMARY KEY (account_id, post_id)
+);
 )SQL";
 
 // RAII prepared statement. Binding helpers return *this for chaining.
@@ -270,6 +280,91 @@ std::vector<int64_t> PostStore::ownTimestamps(const std::string& accountId, post
     while (s.step() == SQLITE_ROW)
         out.push_back(s.colI64(0));
     return out;
+}
+
+//  Replies to you 
+
+namespace {
+
+// Replies (kind 1) that concern the account, ?1 = account id:
+//   - answering one of its posts (direct), or
+//   - in a thread it takes part in (it wrote the topic or a reply there),
+//     dated after its first post in that thread — joining a long thread
+//     doesn't flood the inbox with the replies that were already there.
+// Its own replies are never in its inbox.
+constexpr const char* kMine = "(SELECT post_id FROM outbox WHERE account_id = ?1)";
+
+std::string inboxWhere() {
+    return std::string("p.kind = 1 "
+                       "AND p.id NOT IN ") + kMine + " "
+           "AND (p.parent IN " + kMine + " "
+           "  OR p.ts > (SELECT MIN(q.ts) FROM posts q WHERE q.id IN " + kMine + " "
+           "             AND (q.id = p.root OR q.root = p.root)))";
+}
+
+} // namespace
+
+std::vector<InboxItem> PostStore::inbox(const std::string& accountId, size_t limit) const {
+    std::lock_guard lock(mutex_);
+    std::vector<InboxItem> out;
+    const std::string sql =
+        std::string("SELECT p.id, p.root, p.parent, p.ts, "
+                    "  p.parent IN ") + kMine + ", "
+                    "  p.root IN " + kMine + ", "
+                    "  EXISTS (SELECT 1 FROM inbox_read r WHERE r.account_id = ?1 AND r.post_id = p.id) "
+                    "FROM posts p WHERE " +
+        inboxWhere() + " ORDER BY p.ts DESC, p.id LIMIT ?2;";
+    Stmt s(db_, sql.c_str());
+    s.text(1, accountId).i64(2, static_cast<int64_t>(limit));
+    while (s.step() == SQLITE_ROW) {
+        InboxItem item;
+        item.postId = s.colText(0);
+        item.rootId = s.colText(1);
+        item.parentId = s.colText(2);
+        item.timestampMs = s.colI64(3);
+        item.direct = s.colI64(4) != 0;
+        item.inMyTopic = s.colI64(5) != 0;
+        item.read = s.colI64(6) != 0;
+        out.push_back(std::move(item));
+    }
+    return out;
+}
+
+size_t PostStore::unreadCount(const std::string& accountId) const {
+    std::lock_guard lock(mutex_);
+    const std::string sql =
+        std::string("SELECT COUNT(*) FROM posts p WHERE ") + inboxWhere() +
+        " AND NOT EXISTS (SELECT 1 FROM inbox_read r WHERE r.account_id = ?1 AND r.post_id = p.id);";
+    Stmt s(db_, sql.c_str());
+    s.text(1, accountId);
+    return s.step() == SQLITE_ROW ? static_cast<size_t>(s.colI64(0)) : 0;
+}
+
+bool PostStore::markRead(const std::string& accountId, const std::vector<std::string>& postIds,
+                         int64_t nowMs) {
+    std::lock_guard lock(mutex_);
+    const std::string sql =
+        std::string("INSERT OR IGNORE INTO inbox_read(account_id, post_id, read_at) "
+                    "SELECT ?1, p.id, ?3 FROM posts p WHERE p.id = ?2 AND ") +
+        inboxWhere() + ";";
+    bool ok = true;
+    for (const auto& id : postIds) {
+        Stmt s(db_, sql.c_str());
+        s.text(1, accountId).text(2, id).i64(3, nowMs);
+        ok = s.step() == SQLITE_DONE && ok;
+    }
+    return ok;
+}
+
+bool PostStore::markAllRead(const std::string& accountId, int64_t nowMs) {
+    std::lock_guard lock(mutex_);
+    const std::string sql =
+        std::string("INSERT OR IGNORE INTO inbox_read(account_id, post_id, read_at) "
+                    "SELECT ?1, p.id, ?2 FROM posts p WHERE ") +
+        inboxWhere() + ";";
+    Stmt s(db_, sql.c_str());
+    s.text(1, accountId).i64(2, nowMs);
+    return s.step() == SQLITE_DONE;
 }
 
 std::set<Bytes> PostStore::authors() const {

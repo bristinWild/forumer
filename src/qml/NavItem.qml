@@ -8,6 +8,7 @@ Rectangle {
     property string text: ""
     property string icon: ""
     property string badge: ""
+    property string badgeTone: ""      // "unread": a filled pill that stands out
     property bool active: false
     property bool mono: false
     signal clicked()
@@ -47,10 +48,30 @@ Rectangle {
         anchors.right: parent.right
         anchors.rightMargin: 12
         anchors.verticalCenter: parent.verticalCenter
+        visible: item.badgeTone !== "unread"
         text: item.badge
         font.family: Ui.mono
         font.pixelSize: Ui.size.caption
         color: Ui.text3
+    }
+    Rectangle {
+        anchors.right: parent.right
+        anchors.rightMargin: 10
+        anchors.verticalCenter: parent.verticalCenter
+        visible: item.badgeTone === "unread" && item.badge.length > 0
+        width: Math.max(20, pill.implicitWidth + 12)
+        height: 20
+        radius: 10
+        color: Ui.unread
+        Text {
+            id: pill
+            anchors.centerIn: parent
+            text: item.badge
+            font.family: Ui.mono
+            font.pixelSize: Ui.size.caption
+            font.weight: Ui.weight.semibold
+            color: "#ffffff"
+        }
     }
 
     MouseArea {

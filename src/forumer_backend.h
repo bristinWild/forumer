@@ -79,6 +79,9 @@ public:
   QString followDomain(QString domain) override;
   QString unfollowDomain(QString domain) override;
 
+  // ── .rep SLOTs: replies to you ─────────────────────────────────────────────
+  QString markRepliesRead(QString ids) override;
+
 protected:
   // Fired once after the context is wired (so modules() is live). Schedules
   // bootstrap() off the return path.
@@ -143,6 +146,11 @@ private:
   void publishSyncState();
   void publishQuota();
 
+  // Push the unlocked account's inbox ("replies to you") to the view, now or
+  // shortly (a catch-up can bring many posts at once: one update covers them).
+  void publishInbox();
+  void scheduleInbox();
+
   // ── Identity ───────────────────────────────────────────────────────────────
   // Base directory for this app's local data (accounts + posts), scoped to the
   // Basecamp instance's data tree (LOGOS_USER_DIR) when there is one.
@@ -200,6 +208,8 @@ private:
   // re-sends in answer to digests.
   forumer::flood::TokenBucket m_newKeyBudget{forumer::flood::kNewKeyPerMinute, forumer::flood::kNewKeyBurst};
   forumer::flood::TokenBucket m_resendBudget{forumer::flood::kResendPerMinute, forumer::flood::kResendBurst};
+
+  bool m_inboxScheduled = false;
 
   // For the status line.
   int m_receivedCount = 0;  // new posts that arrived from the network this session

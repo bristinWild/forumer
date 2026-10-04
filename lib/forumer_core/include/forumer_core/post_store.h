@@ -51,6 +51,17 @@ struct OutboxEntry {
     std::string lastError;
 };
 
+/// A reply to something this account wrote ("replies to you").
+struct InboxItem {
+    std::string postId;         // the reply
+    std::string rootId;         // its topic
+    std::string parentId;       // what it answers
+    bool direct = false;        // answers one of our posts
+    bool inMyTopic = false;     // sits in a topic we wrote (else: a thread we joined)
+    bool read = false;
+    int64_t timestampMs = 0;    // the author's clock
+};
+
 /// The minimum the sync protocol needs to know about a stored post.
 struct PostSummary {
     std::string id;
@@ -109,6 +120,26 @@ public:
 
     /// The author timestamps of those same posts (for "next one in 23 min").
     std::vector<int64_t> ownTimestamps(const std::string& accountId, post::Kind kind, int64_t sinceMs) const;
+
+    // Replies to you
+    //
+    // Worked out locally from the outbox: a reply is in an account's inbox
+    // when the account didn't write it and it either answers one of the
+    // account's posts, or is a newer reply in a thread the account takes part
+    // in (wrote the topic, or replied there). Nothing is published, so nobody
+    // else learns who was notified (everyone receives every post anyway).
+
+    /// The account's inbox, newest first, at most `limit` items.
+    std::vector<InboxItem> inbox(const std::string& accountId, size_t limit = 200) const;
+
+    /// Unread items in the account's inbox.
+    size_t unreadCount(const std::string& accountId) const;
+
+    /// Mark replies read for the account. Ids not in its inbox are ignored.
+    bool markRead(const std::string& accountId, const std::vector<std::string>& postIds, int64_t nowMs);
+
+    /// Mark everything currently in the account's inbox read.
+    bool markAllRead(const std::string& accountId, int64_t nowMs);
 
     // Outbox 
 

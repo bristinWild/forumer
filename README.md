@@ -45,6 +45,7 @@ Built for [λPrize LP-0026: Forum App](https://github.com/logos-co/lambda-prize/
 | **Post status** | Every post you write shows *sending… → live*, or *failed* with retry. |
 | **Outbox** | Posts that couldn't be sent are kept on disk and retried automatically, even after a restart. |
 | **Offline catch-up** | Posts written while you were offline arrive when you come back (last 48 hours). |
+| **Replies to you** | A badge and a list of replies to your posts and new replies in threads you started or joined, plus a notice when one arrives. Worked out on your device only — it even works for posts you made anonymously, and nobody can tell who was notified. |
 | **Missed tab** | Your unsent posts plus a *Catch up* button. |
 | **My posts** | Everything this account wrote, under any persona. Only you can see this list. |
 | **Flood control** | Proof-of-work on every post, hourly limits per persona and per account, with a counter in the composer. |
@@ -92,7 +93,7 @@ To start again from nothing: `rm -rf ~/forumer-test`.
 ./scripts/test-core.sh
 ```
 
-This builds `forumer_core` and runs its 100 unit tests. It needs only Nix; cmake, the compiler, libsodium, SQLite and nlohmann/json come from nixpkgs. Set `FORUMER_NO_NIX=1` to use the system's own instead.
+This builds `forumer_core` and runs its 104 unit tests. It needs only Nix; cmake, the compiler, libsodium, SQLite and nlohmann/json come from nixpkgs. Set `FORUMER_NO_NIX=1` to use the system's own instead.
 
 ### Install in Basecamp
 
@@ -361,7 +362,7 @@ forumer/
 │   ├── include/forumer_core/    account_store, bytes, crypto, flood, identity, mnemonic,
 │   │                            post, post_store, sync, thread, vault
 │   ├── src/
-│   └── tests/                   100 unit tests
+│   └── tests/                   104 unit tests
 ├── scripts/
 │   ├── test-core.sh             build and run the unit tests
 │   └── two-instances.sh         two isolated instances for end-to-end testing
@@ -417,6 +418,7 @@ Backend logs are prefixed `[forumer backend]` on the host's stderr.
 - [x] Outbox with automatic retry; offline catch-up through digests
 - [x] Flood control and quota counter
 - [x] Redesigned interface (light/dark)
+- [x] Replies to you: unread badge, list, in-thread highlight, notice
 - [ ] Media attachments through Logos Storage
 - [ ] Private messages between personas
 - [ ] Mute a persona / hide a post

@@ -39,6 +39,7 @@ QtObject {
     readonly property color sending:     pick("#fbbf24", "#b45309")
     readonly property color failed:      pick("#f87171", "#b91c1c")
     readonly property color failedText:  pick("#fca5a5", "#b91c1c")
+    readonly property color unread:      pick("#60a5fa", "#2563eb")   // new replies to you
     readonly property color focus:       pick("#7c7c7c", "#6b6b6b")
 
     // ── Type ──────────────────────────────────────────────────────────────────

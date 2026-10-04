@@ -181,6 +181,14 @@ Rectangle {
                 }
                 NavItem {
                     Layout.fillWidth: true
+                    text: "replies"; icon: "bell"
+                    badge: sidebar.store.unreadReplies > 0 ? String(sidebar.store.unreadReplies) : ""
+                    badgeTone: "unread"
+                    active: sidebar.store.screen === "replies"
+                    onClicked: sidebar.store.open("replies")
+                }
+                NavItem {
+                    Layout.fillWidth: true
                     text: "missed"; icon: "inbox"
                     badge: {
                         var n = sidebar.store.unsentCount + sidebar.store.missed.length;

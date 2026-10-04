@@ -87,6 +87,16 @@ class Forumer
     SLOT(QString followDomain(QString domain))
     SLOT(QString unfollowDomain(QString domain))
 
+    // ── Replies to you ────────────────────────────────────────────────────────
+    // Worked out on this device only (forumer_core/post_store.h): a reply is
+    // in the unlocked account's inbox when it answers one of the account's
+    // posts, or is a newer reply in a thread the account takes part in.
+    // Nothing about it is published.
+
+    // Mark replies read. `ids` is comma-separated post ids; "" marks the whole
+    // inbox read. "" on success.
+    SLOT(QString markRepliesRead(QString ids))
+
     // ── State (auto-synced to the view) ───────────────────────────────────────
     // Human-readable node/connection status.
     PROP(QString status="Starting…" READONLY)
@@ -133,6 +143,13 @@ class Forumer
 
     // The unlocked account's followed domains: ["privacy", "campus", …].
     PROP(QString followedDomains="[]" READONLY)
+
+    // The unlocked account's inbox, newest first (at most 200):
+    //   [{"id":…, "topicId":…, "parentId":…, "direct":true, "inMyTopic":true, "read":false}, …]
+    // direct: it answers one of the account's posts. inMyTopic: it is in a
+    // topic the account wrote (else in a thread the account replied in).
+    // "[]" while locked.
+    PROP(QString inboxJson="[]" READONLY)
 
     // ── Events ────────────────────────────────────────────────────────────────
     // A verified topic arrived (or was just created locally). `author` is the
