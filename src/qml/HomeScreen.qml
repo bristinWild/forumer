@@ -103,11 +103,17 @@ Item {
                     font.pixelSize: Ui.size.caption
                     color: Ui.text3
                 }
+                // A real button so it reads as one: filled "+ follow" when you
+                // don't follow the domain yet, outlined "✓ following" when you do
+                // (pressing it again unfollows).
                 FButton {
+                    readonly property bool following: home.store.isFollowed(home.store.domainFilter)
                     visible: home.store.domainFilter.length > 0
-                    compact: true
-                    kind: "ghost"
-                    text: home.store.isFollowed(home.store.domainFilter) ? "unfollow" : "follow #" + home.store.domainFilter
+                    implicitHeight: 32
+                    kind: following ? "outline" : "primary"
+                    icon: following ? "check" : "plus"
+                    text: (following ? "following #" : "follow #") + home.store.domainFilter
+                    tooltip: following ? "Unfollow #" + home.store.domainFilter : ""
                     onClicked: home.store.toggleFollow(home.store.domainFilter)
                 }
                 FButton {
