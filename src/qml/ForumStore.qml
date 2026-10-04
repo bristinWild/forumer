@@ -33,14 +33,20 @@ Item {
     readonly property string alias:              hasBackend ? backend.alias             : ""
     readonly property int    unsentCount:        hasBackend ? backend.unsentCount       : 0
     readonly property string syncInfo:           hasBackend ? backend.syncInfo          : ""
+    readonly property string followedJson:       hasBackend ? backend.followedDomains   : "[]"
 
     readonly property bool unlocked: identityState === "unlocked"
     readonly property bool canPost: nodeReady && unlocked
     readonly property bool connected: status === "Connected" || status === "PartiallyConnected"
 
-    // Nested replies need the backend's replyToPost (next step); until then
-    // every reply answers the topic itself.
+    // Replying to a reply needs the backend's replyToPost; an older backend
+    // only answers topics.
     readonly property bool canNestReplies: hasBackend && typeof backend.replyToPost === "function"
+
+    // Followed domains, saved with the unlocked account by the backend.
+    readonly property var followed: {
+        try { return JSON.parse(store.followedJson); } catch (e) { return []; }
+    }
 
     readonly property var accounts: {
         try { return JSON.parse(store.accountsJson); } catch (e) { return []; }
@@ -53,7 +59,6 @@ Item {
     property string replyTargetId: ""        // "" = reply to the topic itself
     property string searchText: ""
     property string domainFilter: ""         // "" = all domains
-    property var followed: []                // followed domain names (saved per account next step)
     property string lastError: ""
     property string pendingPhrase: ""        // shown full-screen until confirmed
     readonly property real sessionStartMs: Date.now()
@@ -117,9 +122,14 @@ Item {
         store.rev++;
     }
 
+    // Posts already on this device. Asked for only once the backend has opened
+    // its post log (nodeReady): asked any earlier, the answer is an empty list
+    // and the forum would look empty until restart. Safe to repeat — posts are
+    // de-duplicated by id.
     property bool backlogLoaded: false
+    property bool viewReady: false          // set by Main once the replica is connected
     function loadBacklog() {
-        if (store.backlogLoaded || !store.hasBackend) return;
+        if (store.backlogLoaded || !store.hasBackend || !store.viewReady || !store.nodeReady) return;
         store.backlogLoaded = true;
         logos.watch(store.backend.loadBacklog(), function (json) {
             var list = [];
@@ -142,14 +152,17 @@ Item {
         });
     }
 
+    onViewReadyChanged: store.loadBacklog()
+    onNodeReadyChanged: store.loadBacklog()
+
     Connections {
         target: store.backend
         ignoreUnknownSignals: true
         function onTopicReceived(id, title, body, author, domains, timestamp) {
             store.addTopic(id, title, body, author, domains, timestamp, true);
         }
-        function onReplyReceived(id, topicId, body, author, timestamp) {
-            store.addReply(id, topicId, topicId, body, author, timestamp, true);
+        function onReplyReceived(id, topicId, parentId, body, author, timestamp) {
+            store.addReply(id, topicId, parentId, body, author, timestamp, true);
         }
         function onMessageStateChanged(id, state, detail) {
             store.log("messageStateChanged -> " + id + " " + state + (detail.length > 0 ? " (" + detail + ")" : ""));
@@ -235,47 +248,68 @@ Item {
 
     function isFollowed(domain) { return store.followed.indexOf(domain) >= 0; }
     function toggleFollow(domain) {
-        var list = store.followed.slice();
-        var i = list.indexOf(domain);
-        if (i >= 0) list.splice(i, 1); else list.push(domain);
-        store.followed = list;
+        if (store.isFollowed(domain)) store.call(store.backend.unfollowDomain(domain));
+        else store.call(store.backend.followDomain(domain));
     }
 
-    // The open topic and its replies as a depth-first list:
-    // [{ id, author, body, time, depth, delivery, isOp, hasChildren }]
+    // The open topic and its replies, in reading order. Threads are two levels
+    // deep (forumer_core/thread.h): level-1 replies answer the topic (depth 0
+    // here), level-2 replies sit in the sub-thread under one (depth 1). A reply
+    // whose parent hasn't arrived yet shows at level 1 until it does.
+    // [{ id, author, body, time, depth, delivery, isOp, subthread }]
     readonly property var currentTopic: {
         store.rev; store.tick;
         var t = store.topics[store.selectedTopicId];
         return t ? t : null;
     }
 
+    // The level-1 reply a reply belongs under ("" = it is level 1 itself).
+    function subthreadOf(r, topicId) {
+        var seen = 0;
+        var cur = r;
+        while (cur.parentId !== topicId && store.replies[cur.parentId] && seen++ < 16)
+            cur = store.replies[cur.parentId];
+        return cur === r ? "" : cur.id;
+    }
+
     readonly property var thread: {
         store.rev; store.tick;
         var topicId = store.selectedTopicId;
         var t = store.topics[topicId];
-        var children = {};
+        var level1 = [];
+        var under = {};      // level-1 id -> [level-2 replies]
         for (var id in store.replies) {
             var r = store.replies[id];
             if (r.topicId !== topicId) continue;
-            var parent = store.replies[r.parentId] ? r.parentId : topicId;
-            (children[parent] = children[parent] || []).push(r);
+            var top = store.subthreadOf(r, topicId);
+            if (top === "") level1.push(r);
+            else (under[top] = under[top] || []).push(r);
         }
+        var byTime = function (a, b) { return a.tsMs - b.tsMs; };
+        level1.sort(byTime);
         var out = [];
-        function walk(parentId, depth) {
-            var list = children[parentId] || [];
-            list.sort(function (a, b) { return a.tsMs - b.tsMs; });
-            list.forEach(function (r) {
-                out.push({
-                    id: r.id, author: r.author, body: r.body, time: store.ago(r.tsMs),
-                    depth: depth, delivery: r.delivery,
-                    isOp: t !== undefined && !t.placeholder && r.author === t.author && r.author !== "Anonymous",
-                    hasChildren: (children[r.id] || []).length > 0
-                });
-                walk(r.id, depth + 1);
-            });
+        function item(r, depth, subthread) {
+            return {
+                id: r.id, author: r.author, body: r.body, time: store.ago(r.tsMs),
+                depth: depth, delivery: r.delivery, subthread: subthread,
+                isOp: t !== undefined && !t.placeholder && r.author === t.author && r.author !== "Anonymous"
+            };
         }
-        walk(topicId, 0);
+        level1.forEach(function (r) {
+            out.push(item(r, 0, r.id));
+            (under[r.id] || []).sort(byTime).forEach(function (c) { out.push(item(c, 1, r.id)); });
+        });
         return out;
+    }
+
+    // What the composer says it is answering.
+    function replyTargetNote(id) {
+        var r = store.replies[id];
+        if (!r) return "";
+        var top = store.subthreadOf(r, r.topicId);
+        if (top === "") return "starts a sub-thread under this reply";
+        var head = store.replies[top];
+        return "joins the sub-thread under " + (head ? head.author : "this reply");
     }
 
     // Who's talking in the open thread, in order of first appearance.
@@ -361,8 +395,10 @@ Item {
     }
 
     function sendReply(body, disclosure, onOk, onErr) {
-        if (store.canNestReplies && store.replyTargetId.length > 0)
-            store.call(store.backend.replyToPost(store.replyTargetId, body, disclosure), onOk, onErr);
+        if (store.canNestReplies)
+            store.call(store.backend.replyToPost(store.replyTargetId.length > 0 ? store.replyTargetId
+                                                                                  : store.selectedTopicId,
+                                                 body, disclosure), onOk, onErr);
         else
             store.call(store.backend.replyToTopic(store.selectedTopicId, body, disclosure), onOk, onErr);
     }

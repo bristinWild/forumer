@@ -149,3 +149,46 @@ TEST(identity_recover_next_index_with_nothing_known) {
     CHECK_EQ(recoverNextIndex(a.masterSecret(), [](const Bytes&) { return false; }, 10),
              uint64_t(0));
 }
+
+TEST(identity_followed_domains) {
+    Account a = Account::create("Main");
+    CHECK(a.state().followed.empty());
+    CHECK(a.follow("privacy"));
+    CHECK(a.follow("campus"));
+    CHECK(a.follow("privacy"));            // already there: no duplicate
+    CHECK(!a.follow(""));
+    CHECK_EQ(a.state().followed.size(), size_t(2));
+    CHECK(a.isFollowing("campus"));
+    a.unfollow("privacy");
+    a.unfollow("not-followed");
+    CHECK(!a.isFollowing("privacy"));
+    CHECK_EQ(a.state().followed.size(), size_t(1));
+
+    for (size_t i = 0; i < AccountState::kMaxFollowed + 5; ++i)
+        a.follow("d" + std::to_string(i));
+    CHECK_EQ(a.state().followed.size(), AccountState::kMaxFollowed);
+    CHECK(!a.follow("one-more"));
+}
+
+TEST(identity_followed_domains_survive_json) {
+    Account a = Account::create("Main");
+    a.follow("privacy");
+    a.follow("seminar-2026");
+    auto back = AccountState::fromJson(a.state().toJson());
+    CHECK(back.has_value());
+    if (back) {
+        CHECK(back->followed == a.state().followed);
+    }
+}
+
+TEST(identity_state_without_followed_still_loads) {
+    // A state file written before followed domains existed.
+    Account a = Account::create("Main");
+    std::string json = a.state().toJson();
+    const auto at = json.find(",\"followed\":[]");
+    CHECK(at != std::string::npos);
+    if (at != std::string::npos) json.erase(at, std::string(",\"followed\":[]").size());
+    auto back = AccountState::fromJson(json);
+    CHECK(back.has_value());
+    if (back) CHECK(back->followed.empty());
+}

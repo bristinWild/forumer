@@ -1,5 +1,7 @@
 #include "forumer_core/identity.h"
 
+#include <algorithm>
+
 #include <nlohmann/json.hpp>
 
 #include <utility>
@@ -83,6 +85,7 @@ std::string AccountState::toJson() const {
         {"alias", alias},
         {"current", currentIndex},
         {"next", nextIndex},
+        {"followed", followed},
     };
     return doc.dump();
 }
@@ -100,6 +103,17 @@ std::optional<AccountState> AccountState::fromJson(std::string_view text) {
         s.currentIndex = doc.at("current").get<uint64_t>();
         s.nextIndex = doc.at("next").get<uint64_t>();
 
+        // Added after v1 shipped: optional, and tolerant of junk entries.
+        if (auto f = doc.find("followed"); f != doc.end() && f->is_array()) {
+            for (const auto& d : *f) {
+                if (!d.is_string() || d.get<std::string>().empty()) continue;
+                if (s.followed.size() == AccountState::kMaxFollowed) break;
+                const std::string name = d.get<std::string>();
+                if (std::find(s.followed.begin(), s.followed.end(), name) == s.followed.end())
+                    s.followed.push_back(name);
+            }
+        }
+
         auto policy = rotationPolicyFrom(doc.value("policy", std::string("manual")));
         auto disclosure = disclosureFrom(doc.value("disclosure", std::string("persona")));
         if (!policy || !disclosure) return std::nullopt;
@@ -112,6 +126,26 @@ std::optional<AccountState> AccountState::fromJson(std::string_view text) {
     } catch (const json::exception&) {
         return std::nullopt;
     }
+}
+
+//  Followed domains 
+
+bool Account::follow(const std::string& domain) {
+    if (domain.empty()) return false;
+    if (isFollowing(domain)) return true;
+    if (state_.followed.size() >= AccountState::kMaxFollowed) return false;
+    state_.followed.push_back(domain);
+    return true;
+}
+
+void Account::unfollow(const std::string& domain) {
+    auto& f = state_.followed;
+    f.erase(std::remove(f.begin(), f.end(), domain), f.end());
+}
+
+bool Account::isFollowing(const std::string& domain) const {
+    const auto& f = state_.followed;
+    return std::find(f.begin(), f.end(), domain) != f.end();
 }
 
 //  Free functions 

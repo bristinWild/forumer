@@ -56,6 +56,7 @@ add_library(forumer_core STATIC
     src/post.cpp
     src/post_store.cpp
     src/sync.cpp
+    src/thread.cpp
 )
 
 target_include_directories(forumer_core PUBLIC

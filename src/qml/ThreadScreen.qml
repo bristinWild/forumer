@@ -242,13 +242,25 @@ Item {
                             anchors.margins: 16
                             spacing: 12
 
-                            Chip {
+                            RowLayout {
+                                Layout.fillWidth: true
                                 visible: thread.store.replyTargetId.length > 0
-                                text: "replying to " + thread.store.replyAuthor(thread.store.replyTargetId)
-                                closable: true
-                                implicitHeight: 28
-                                onClosed: thread.store.replyTargetId = ""
-                                onClicked: thread.scrollTo(thread.store.replyTargetId)
+                                spacing: 10
+                                Chip {
+                                    text: "replying to " + thread.store.replyAuthor(thread.store.replyTargetId)
+                                    closable: true
+                                    implicitHeight: 28
+                                    onClosed: thread.store.replyTargetId = ""
+                                    onClicked: thread.scrollTo(thread.store.replyTargetId)
+                                }
+                                Text {
+                                    Layout.fillWidth: true
+                                    text: thread.store.replyTargetNote(thread.store.replyTargetId)
+                                    elide: Text.ElideRight
+                                    font.family: Ui.mono
+                                    font.pixelSize: Ui.size.caption
+                                    color: Ui.text3
+                                }
                             }
 
                             FArea {

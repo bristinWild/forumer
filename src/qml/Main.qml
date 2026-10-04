@@ -32,12 +32,11 @@ Item {
         backend: root.backend
     }
 
-    onReadyChanged: if (root.ready) store.loadBacklog()
+    Binding { target: store; property: "viewReady"; value: root.ready }
 
     Component.onCompleted: {
         log("view created");
         root.ready = root.backend !== null && logos.isViewModuleReady("forumer");
-        if (root.ready) store.loadBacklog();
     }
 
     // Shown over the unlocked app when restoring another account from backup.

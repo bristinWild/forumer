@@ -8,6 +8,7 @@ add_executable(forumer_core_tests
     test_post.cpp
     test_post_store.cpp
     test_sync.cpp
+    test_thread.cpp
 )
 
 target_link_libraries(forumer_core_tests PRIVATE forumer_core)

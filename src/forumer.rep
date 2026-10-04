@@ -13,9 +13,16 @@ class Forumer
     // Reply to a topic (by its id). `disclosure` as above.
     SLOT(QString replyToTopic(QString topicId, QString body, QString disclosure))
 
+    // Reply to any post — a topic or a reply — by its id. Threads are two
+    // levels deep (forumer_core/thread.h): answering a topic makes a level-1
+    // reply, answering a level-1 reply starts its sub-thread, and answering a
+    // level-2 reply joins that same sub-thread.
+    SLOT(QString replyToPost(QString postId, QString body, QString disclosure))
+
     // Every post already in the local store, as a JSON array ordered topics
     // first and oldest first within each kind:
     //   [{"kind":"topic","id":…,"title":…,"body":…,"author":…,"domains":…,"ts":…}, …]
+    // Replies carry "topicId" and "parentId" (= topicId for level-1 replies).
     // `author` is the display form (fingerprint, alias, or "Anonymous").
     // Posts this device wrote also carry "state": "pending" | "sent" | "failed".
     //
@@ -75,6 +82,11 @@ class Forumer
     SLOT(QString chooseDefaultDisclosure(QString disclosure))
     SLOT(QString chooseAlias(QString alias))
 
+    // Followed domains, saved with the unlocked account. The name is
+    // normalised the way post domains are ("Campus Life" -> "campus-life").
+    SLOT(QString followDomain(QString domain))
+    SLOT(QString unfollowDomain(QString domain))
+
     // ── State (auto-synced to the view) ───────────────────────────────────────
     // Human-readable node/connection status.
     PROP(QString status="Starting…" READONLY)
@@ -112,14 +124,18 @@ class Forumer
     PROP(QString defaultDisclosure="persona" READONLY)
     PROP(QString alias="" READONLY)
 
+    // The unlocked account's followed domains: ["privacy", "campus", …].
+    PROP(QString followedDomains="[]" READONLY)
+
     // ── Events ────────────────────────────────────────────────────────────────
     // A verified topic arrived (or was just created locally). `author` is the
     // display form; `domains` comma-separated; `timestamp` ns since epoch
     // (the author's clock).
     SIGNAL(topicReceived(QString id, QString title, QString body, QString author, QString domains, qint64 timestamp))
 
-    // A verified reply to topic `topicId`.
-    SIGNAL(replyReceived(QString id, QString topicId, QString body, QString author, qint64 timestamp))
+    // A verified reply in topic `topicId`, answering `parentId` (the topic
+    // itself for a level-1 reply, a level-1 reply for a level-2 one).
+    SIGNAL(replyReceived(QString id, QString topicId, QString parentId, QString body, QString author, qint64 timestamp))
 
     // Delivery state of a post *this* install made: "pending", "propagated",
     // "sent" or "failed" (reason in `detail`). Failed posts stay in the outbox

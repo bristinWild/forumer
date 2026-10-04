@@ -34,6 +34,7 @@
 // Forumer's own engine (lib/forumer_core).
 #include "forumer_core/crypto.h"
 #include "forumer_core/mnemonic.h"
+#include "forumer_core/thread.h"
 
 // Injected by CMake from metadata.json#version.
 #ifndef FORUMER_VERSION
@@ -395,9 +396,14 @@ void ForumerBackend::publishIdentityState() {
     setRotationPolicy(qs(std::string(fc::identity::toString(s.policy))));
     setDefaultDisclosure(qs(std::string(fc::identity::toString(s.defaultDisclosure))));
     setAlias(qs(s.alias));
+    QJsonArray followed;
+    for (const auto &d : s.followed)
+      followed.append(qs(d));
+    setFollowedDomains(QString::fromUtf8(QJsonDocument(followed).toJson(QJsonDocument::Compact)));
     setMyPersona(qs(m_account->currentPersona().fingerprint()));
   } else {
     setMyPersona(QString());
+    setFollowedDomains(QStringLiteral("[]"));
   }
 
   // Last: the view switches screens on this, so everything it shows is ready.
@@ -572,6 +578,32 @@ QString ForumerBackend::chooseAlias(QString alias) {
 }
 
 
+// ── Followed domains ──────────────────────────────────────────────────────────
+
+QString ForumerBackend::followDomain(QString domain) {
+  if (!m_account)
+    return QStringLiteral("Unlock first");
+  const auto names = fc::post::normalizeDomains({domain.toStdString()});
+  if (names.empty())
+    return QStringLiteral("Not a valid domain");
+  if (!m_account->follow(names.front()))
+    return QStringLiteral("You can follow up to %1 domains").arg(fc::identity::AccountState::kMaxFollowed);
+  saveAccount();
+  publishIdentityState();
+  return QString();
+}
+
+QString ForumerBackend::unfollowDomain(QString domain) {
+  if (!m_account)
+    return QStringLiteral("Unlock first");
+  const auto names = fc::post::normalizeDomains({domain.toStdString()});
+  if (!names.empty())
+    m_account->unfollow(names.front());
+  saveAccount();
+  publishIdentityState();
+  return QString();
+}
+
 // ── Posting ───────────────────────────────────────────────────────────────────
 
 QString ForumerBackend::createTopic(QString title, QString body, QString domains,
@@ -593,16 +625,29 @@ QString ForumerBackend::createTopic(QString title, QString body, QString domains
 }
 
 QString ForumerBackend::replyToTopic(QString topicId, QString body, QString disclosure) {
-  if (topicId.isEmpty())
-    return QStringLiteral("No topic selected");
+  return replyToPost(topicId, body, disclosure);
+}
+
+QString ForumerBackend::replyToPost(QString postId, QString body, QString disclosure) {
+  if (postId.isEmpty())
+    return QStringLiteral("Nothing to reply to");
   if (body.trimmed().isEmpty())
     return QStringLiteral("A reply needs a body");
+  if (!m_posts)
+    return QStringLiteral("Store not ready");
+
+  // Where the reply goes follows from what it answers (two levels at most,
+  // see forumer_core/thread.h) — so we need that post.
+  auto answering = m_posts->get(postId.toStdString());
+  if (!answering)
+    return QStringLiteral("That post isn't on this device yet");
+  const fc::thread::Target target = fc::thread::replyTarget(*answering);
 
   fc::post::Draft draft;
   draft.kind = fc::post::Kind::Reply;
   draft.forum = kForum;
-  draft.root = topicId.toStdString();
-  draft.parent = topicId.toStdString(); // flat thread for now; nesting comes with the new UI
+  draft.root = target.root;
+  draft.parent = target.parent;
   draft.body = body.toStdString();
   draft.timestampMs = nowMs();
   return publish(std::move(draft), disclosure);
@@ -661,7 +706,7 @@ void ForumerBackend::emitPost(const fc::post::Post &post) {
     emit topicReceived(qs(post.id), qs(c.title), qs(c.body), qs(post.authorDisplay()),
                        joinDomains(c.domains), toNs(c.timestampMs));
   else
-    emit replyReceived(qs(post.id), qs(c.root), qs(c.body), qs(post.authorDisplay()),
+    emit replyReceived(qs(post.id), qs(c.root), qs(c.parent), qs(c.body), qs(post.authorDisplay()),
                        toNs(c.timestampMs));
 }
 
@@ -691,6 +736,7 @@ QString ForumerBackend::loadBacklog() {
       entry.insert(QStringLiteral("domains"), joinDomains(p.content.domains));
     } else {
       entry.insert(QStringLiteral("topicId"), qs(p.content.root));
+      entry.insert(QStringLiteral("parentId"), qs(p.content.parent));
     }
     const auto state = states.constFind(qs(p.id));
     if (state != states.constEnd())
@@ -729,6 +775,14 @@ std::string ForumerBackend::checkPost(const fc::post::Post &post) const {
     return fc::post::describe(err);
   if (!fc::sync::acceptTimestamp(post.content.timestampMs, nowMs()))
     return "dated in the future";
+  // A reply must sit where the thread rules allow, judged against its parent
+  // when we already hold it (a reply that arrives first is judged by the view,
+  // which shows it at level 1 until the parent turns up).
+  if (post.content.kind == fc::post::Kind::Reply) {
+    const auto placement = fc::thread::checkPlacement(post, m_posts->get(post.content.parent));
+    if (placement != fc::thread::Placement::Ok)
+      return fc::thread::describe(placement);
+  }
   return {};
 }
 

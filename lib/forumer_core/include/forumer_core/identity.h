@@ -28,13 +28,15 @@
 //
 // Persona indices are allocated from a counter: indices [0, nextIndex) have
 // been handed out. The non-secret bookkeeping (label, policy, counters, alias)
-// lives in AccountState, which the app saves next to the vault.
+// lives in AccountState (with followed domains), which the app saves next to
+// the vault.
 
 #include <cstdint>
 #include <functional>
 #include <optional>
 #include <string>
 #include <string_view>
+#include <vector>
 
 #include "forumer_core/bytes.h"
 #include "forumer_core/crypto.h"
@@ -75,6 +77,10 @@ struct AccountState {
     std::string alias;                    // name shown with Disclosure::Alias
     uint64_t currentIndex = 0;            // persona used by Keep / Manual
     uint64_t nextIndex = 1;               // first never-allocated index
+    std::vector<std::string> followed;    // followed domains, in the order followed
+
+    /// Most domains one account can follow.
+    static constexpr size_t kMaxFollowed = 64;
 
     std::string toJson() const;
     static std::optional<AccountState> fromJson(std::string_view json);
@@ -103,6 +109,14 @@ public:
     void setPolicy(RotationPolicy policy) { state_.policy = policy; }
     void setDefaultDisclosure(Disclosure d) { state_.defaultDisclosure = d; }
     void setAlias(std::string alias) { state_.alias = std::move(alias); }
+
+    /// Follow / unfollow a domain. The caller normalises it first (see
+    /// post::normalizeDomains). follow() returns false if the domain is empty
+    /// or the list is full; both are no-ops for a domain already in (or not
+    /// in) the list.
+    bool follow(const std::string& domain);
+    void unfollow(const std::string& domain);
+    bool isFollowing(const std::string& domain) const;
 
     /// The persona with a given index (pure derivation; changes no state).
     Persona persona(uint64_t index) const;

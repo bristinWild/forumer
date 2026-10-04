@@ -54,6 +54,7 @@ public:
   QString createTopic(QString title, QString body, QString domains,
                       QString disclosure) override;
   QString replyToTopic(QString topicId, QString body, QString disclosure) override;
+  QString replyToPost(QString postId, QString body, QString disclosure) override;
   QString loadBacklog() override;
   QString catchUp() override;
   QString retryUnsent() override;
@@ -74,6 +75,8 @@ public:
   QString chooseRotationPolicy(QString policy) override;
   QString chooseDefaultDisclosure(QString disclosure) override;
   QString chooseAlias(QString alias) override;
+  QString followDomain(QString domain) override;
+  QString unfollowDomain(QString domain) override;
 
 protected:
   // Fired once after the context is wired (so modules() is live). Schedules
