@@ -33,6 +33,7 @@
 
 // Forumer's own engine (lib/forumer_core).
 #include "forumer_core/crypto.h"
+#include "forumer_core/flood.h"
 #include "forumer_core/mnemonic.h"
 #include "forumer_core/thread.h"
 
@@ -670,6 +671,17 @@ QString ForumerBackend::publish(fc::post::Draft draft, const QString &disclosure
   if (disclosure == Disclosure::Alias && alias.empty())
     return QStringLiteral("Set an alias first, or post as persona / anonymous");
 
+  // Sender-side flood limit, per account (so rotating personas or posting
+  // anonymously doesn't lift it). Peers enforce the same numbers per persona.
+  {
+    const qint64 now = nowMs();
+    const size_t recent = m_posts->countOwn(m_account->state().id, draft.kind, now - fc::flood::kWindowMs);
+    if (!fc::flood::withinLimit(draft.kind, recent))
+      return QStringLiteral("That's %1 %2 in the last hour — the most one account can post. Try again a little later.")
+          .arg(fc::flood::maxPerWindow(draft.kind))
+          .arg(draft.kind == fc::post::Kind::Post ? QStringLiteral("topics") : QStringLiteral("replies"));
+  }
+
   // Picking the persona may allocate a new one (Auto, Anonymous); save at once
   // so a crash can never hand the same persona out twice.
   const fc::identity::Persona persona = m_account->personaForPost(disclosure);
@@ -783,6 +795,13 @@ std::string ForumerBackend::checkPost(const fc::post::Post &post) const {
     if (placement != fc::thread::Placement::Ok)
       return fc::thread::describe(placement);
   }
+  // Per-persona flood limit, on the post's own timestamps: no more than the
+  // hourly limit in the hour up to this post (see forumer_core/flood.h).
+  const int64_t ts = post.content.timestampMs;
+  const size_t inWindow = m_posts->countByAuthor(post.publicKey, post.content.kind,
+                                                 ts - fc::flood::kWindowMs, ts);
+  if (!fc::flood::withinLimit(post.content.kind, inWindow))
+    return "persona is over its hourly limit";
   return {};
 }
 
@@ -797,6 +816,15 @@ void ForumerBackend::handlePost(fc::post::Post post) {
   const std::string problem = checkPost(post);
   if (!problem.empty()) {
     logEvent("dropped " + post.id + ": " + problem);
+    return;
+  }
+
+  // Keys we've never seen (anonymous posts, fresh personas) share a budget.
+  // Over it, the post isn't stored yet; the next digest exchange offers it
+  // again, so this delays rather than loses.
+  if (!m_posts->hasAuthor(post.publicKey) && !m_newKeyBudget.take(nowMs())) {
+    m_lastSeenOnWire.remove(qs(post.id));   // let peers offer it again
+    logEvent("deferred " + post.id + ": new-key budget used up");
     return;
   }
 
@@ -879,19 +907,22 @@ void ForumerBackend::sendOwn(const std::string &id) {
   m_pendingSends.insert(qs(r.requestId), qs(id));
 }
 
-void ForumerBackend::resend(const std::string &id) {
+bool ForumerBackend::resend(const std::string &id) {
   const qint64 now = nowMs();
   const auto seen = m_lastSeenOnWire.constFind(qs(id));
   if (seen != m_lastSeenOnWire.constEnd() && now - seen.value() < kSeenWindowMs)
-    return; // someone (maybe us) just sent it
+    return true; // someone (maybe us) just sent it
+  if (!m_resendBudget.take(now))
+    return false; // over the re-send budget: keep it queued
 
   auto post = m_posts->get(id);
   if (!post)
-    return;
+    return true;
   m_lastSeenOnWire.insert(qs(id), now);
   const auto r = m_transport->publish(m_topic, fc::sync::encodePost(*post));
   if (!r.ok)
     logEvent("re-send of " + id + " failed: " + r.error);
+  return true;
 }
 
 void ForumerBackend::flushAnswers() {
@@ -904,7 +935,8 @@ void ForumerBackend::flushAnswers() {
   int sent = 0;
   auto it = m_answerQueue.begin();
   while (it != m_answerQueue.end() && sent < static_cast<int>(fc::sync::kMaxAnswer)) {
-    resend(it->toStdString());
+    if (!resend(it->toStdString()))
+      break; // re-send budget used up: the rest waits for the next batch
     it = m_answerQueue.erase(it);
     ++sent;
   }

@@ -31,6 +31,7 @@ CREATE TABLE IF NOT EXISTS posts (
 );
 CREATE INDEX IF NOT EXISTS idx_posts_ts   ON posts(ts);
 CREATE INDEX IF NOT EXISTS idx_posts_root ON posts(root);
+CREATE INDEX IF NOT EXISTS idx_posts_author ON posts(author, ts);
 
 -- Posts this device wrote, and how sending them is going.
 CREATE TABLE IF NOT EXISTS outbox (
@@ -232,6 +233,30 @@ std::vector<PostSummary> PostStore::recent(int64_t sinceMs) const {
     while (s.step() == SQLITE_ROW)
         out.push_back({s.colText(0), s.colI64(1)});
     return out;
+}
+
+size_t PostStore::countByAuthor(const Bytes& author, post::Kind kind, int64_t fromMs,
+                                int64_t toMs) const {
+    std::lock_guard lock(mutex_);
+    Stmt s(db_, "SELECT COUNT(*) FROM posts WHERE author = ?1 AND kind = ?2 AND ts >= ?3 AND ts <= ?4;");
+    s.blob(1, author).i64(2, kind == post::Kind::Post ? 0 : 1).i64(3, fromMs).i64(4, toMs);
+    return s.step() == SQLITE_ROW ? static_cast<size_t>(s.colI64(0)) : 0;
+}
+
+bool PostStore::hasAuthor(const Bytes& author) const {
+    std::lock_guard lock(mutex_);
+    Stmt s(db_, "SELECT 1 FROM posts WHERE author = ?1 LIMIT 1;");
+    s.blob(1, author);
+    return s.step() == SQLITE_ROW;
+}
+
+size_t PostStore::countOwn(const std::string& accountId, post::Kind kind, int64_t sinceMs) const {
+    std::lock_guard lock(mutex_);
+    Stmt s(db_,
+           "SELECT COUNT(*) FROM outbox o JOIN posts p ON p.id = o.post_id "
+           "WHERE o.account_id = ?1 AND p.kind = ?2 AND p.ts >= ?3;");
+    s.text(1, accountId).i64(2, kind == post::Kind::Post ? 0 : 1).i64(3, sinceMs);
+    return s.step() == SQLITE_ROW ? static_cast<size_t>(s.colI64(0)) : 0;
 }
 
 std::set<Bytes> PostStore::authors() const {

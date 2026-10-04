@@ -14,6 +14,7 @@ class QTimer;
 
 #include "delivery_module_transport.h"
 #include "forumer_core/account_store.h"
+#include "forumer_core/flood.h"
 #include "forumer_core/identity.h"
 #include "forumer_core/post.h"
 #include "forumer_core/post_store.h"
@@ -119,7 +120,8 @@ private:
 
   // Send a post again for someone else's benefit (digest answers). No
   // outbox bookkeeping; skipped if the post was seen on the wire recently.
-  void resend(const std::string &id);
+  // False only when the re-send budget is used up (the caller keeps it queued).
+  bool resend(const std::string &id);
 
   // Retry every unsent post that is due (or all of them, if `force`).
   void retryDue(bool force);
@@ -192,6 +194,11 @@ private:
 
   // Fires every few seconds once joined; retries whatever is due.
   QTimer *m_retryTimer = nullptr;
+
+  // Flood control (forumer_core/flood.h): posts from never-seen keys, and
+  // re-sends in answer to digests.
+  forumer::flood::TokenBucket m_newKeyBudget{forumer::flood::kNewKeyPerMinute, forumer::flood::kNewKeyBurst};
+  forumer::flood::TokenBucket m_resendBudget{forumer::flood::kResendPerMinute, forumer::flood::kResendBurst};
 
   // For the status line.
   int m_receivedCount = 0;  // new posts that arrived from the network this session

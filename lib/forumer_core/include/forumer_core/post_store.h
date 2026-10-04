@@ -95,6 +95,18 @@ public:
 
     size_t count() const;
 
+    /// Posts of `kind` signed by `author` whose author timestamp lies in
+    /// [fromMs, toMs]. The flood limits are counted with this.
+    size_t countByAuthor(const Bytes& author, post::Kind kind, int64_t fromMs, int64_t toMs) const;
+
+    /// Whether `author` has signed any stored post.
+    bool hasAuthor(const Bytes& author) const;
+
+    /// Posts of `kind` this device wrote for `accountId`, dated at or after
+    /// sinceMs — the sender-side limit, which also covers anonymous and
+    /// auto-rotated posts (a fresh key each, so no per-key count sees them).
+    size_t countOwn(const std::string& accountId, post::Kind kind, int64_t sinceMs) const;
+
     // Outbox 
 
     /// Record that this device wrote `postId` (state Pending, 0 attempts).

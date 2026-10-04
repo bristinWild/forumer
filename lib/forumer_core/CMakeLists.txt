@@ -57,6 +57,7 @@ add_library(forumer_core STATIC
     src/post_store.cpp
     src/sync.cpp
     src/thread.cpp
+    src/flood.cpp
 )
 
 target_include_directories(forumer_core PUBLIC
