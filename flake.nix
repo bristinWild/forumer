@@ -10,7 +10,9 @@
     delivery_module.url = "github:logos-co/logos-delivery-module/v0.2.1";
     delivery_module.inputs.logos-module-builder.follows = "logos-module-builder";
     # Core module dependency - must match metadata.json "dependencies".
-    # For media attachments (files stored by CID). Not called yet.
+    # Logos Storage: files by CID (forum history bundles). Pinned to v2.1.2:
+    # v3.x needs a newer Logos SDK (LogosShutdown) than logos-module-builder
+    # 0.2.6 provides; moving both together is a separate step.
     storage_module.url = "github:logos-co/logos-storage-module/v2.1.2";
     storage_module.inputs.logos-module-builder.follows = "logos-module-builder";
   };

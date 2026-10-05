@@ -37,6 +37,11 @@ Item {
     readonly property string followedJson:       hasBackend ? backend.followedDomains   : "[]"
     readonly property string quotaJson:          hasBackend && backend.quotaJson ? backend.quotaJson : "{}"
     readonly property string inboxJson:          hasBackend && backend.inboxJson ? backend.inboxJson : "[]"
+    readonly property string storageJson:        hasBackend && backend.storageJson ? backend.storageJson : "{}"
+    // The storage probe (Settings): see storageJson in forumer.rep.
+    readonly property var storage: {
+        try { return JSON.parse(store.storageJson); } catch (e) { return {}; }
+    }
 
     // What's left of this account's hourly limits:
     //   { topics: {left, max, waitMin}, replies: {left, max, waitMin} }

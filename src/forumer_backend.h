@@ -7,6 +7,7 @@
 #include <vector>
 
 #include <QHash>
+#include <QJsonObject>
 #include <QSet>
 #include <QString>
 
@@ -82,6 +83,11 @@ public:
   // ── .rep SLOTs: replies to you ─────────────────────────────────────────────
   QString markRepliesRead(QString ids) override;
 
+  // ── .rep SLOTs: storage probe ──────────────────────────────────────────────
+  QString storageStart() override;
+  QString storageShareTest() override;
+  QString storageFetch(QString code) override;
+
 protected:
   // Fired once after the context is wired (so modules() is live). Schedules
   // bootstrap() off the return path.
@@ -151,6 +157,16 @@ private:
   void publishInbox();
   void scheduleInbox();
 
+  // ── Storage probe ──────────────────────────────────────────────────────────
+  // Subscribe to storage_module's events (once).
+  void wireStorage();
+  // Peer id, reachability and peer count from the running node.
+  void refreshStorageInfo();
+  void publishStorage();
+  // A fetch: dial the holder (storageFetch), look up the manifest, download.
+  void storageFetchManifest();
+  void storageDownload();
+
   // ── Identity ───────────────────────────────────────────────────────────────
   // Base directory for this app's local data (accounts + posts), scoped to the
   // Basecamp instance's data tree (LOGOS_USER_DIR) when there is one.
@@ -210,6 +226,24 @@ private:
   forumer::flood::TokenBucket m_resendBudget{forumer::flood::kResendPerMinute, forumer::flood::kResendBurst};
 
   bool m_inboxScheduled = false;
+
+  // Storage probe state (see storageJson in forumer.rep).
+  bool m_storageWired = false;
+  bool m_storageAttached = false;
+  bool m_storageSharing = false;
+  QString m_storageState = QStringLiteral("off");
+  QString m_storageDetail;
+  QString m_storagePeerId;
+  QString m_storageReachability;
+  int m_storagePeers = 0;
+  QString m_storageLastCid;
+  QString m_storageShareCode;              // cid@peerId@addr,addr - what the other side pastes
+  QStringList m_storageAddrs;              // this node's listen addresses
+  int m_storageListenPort = 0;             // our node's TCP port (0: attached to another's)
+  QString m_storageUploadSession;          // upload in flight (session id)
+  QJsonObject m_storageFetch;              // last fetch
+  QString m_storageFetchPath;              // where that fetch is written
+  QTimer *m_storageTimer = nullptr;        // refreshes reachability while running
 
   // For the status line.
   int m_receivedCount = 0;  // new posts that arrived from the network this session

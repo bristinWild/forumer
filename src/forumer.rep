@@ -97,6 +97,17 @@ class Forumer
     // inbox read. "" on success.
     SLOT(QString markRepliesRead(QString ids))
 
+    // ── Storage (experiment) ──────────────────────────────────────────────────
+    // A probe of Logos Storage from inside Forumer, before history bundles are
+    // built on it: start (or attach to) the storage node, share a small test
+    // file, fetch one by its CID from another instance. All "" on success or
+    // an error; progress arrives in storageJson.
+    SLOT(QString storageStart())
+    SLOT(QString storageShareTest())
+    // `code` is a share code ("cid@peerId@addr,addr": the holder dials in
+    // first) or a bare CID.
+    SLOT(QString storageFetch(QString code))
+
     // ── State (auto-synced to the view) ───────────────────────────────────────
     // Human-readable node/connection status.
     PROP(QString status="Starting…" READONLY)
@@ -150,6 +161,14 @@ class Forumer
     // topic the account wrote (else in a thread the account replied in).
     // "[]" while locked.
     PROP(QString inboxJson="[]" READONLY)
+
+    // The storage probe, for Settings:
+    //   {"state": "off"|"starting"|"running"|"failed", "detail": "…",
+    //    "attached": bool, "peerId": "…", "reachability": "Reachable"|…,
+    //    "peers": n, "sharing": bool, "lastCid": "…", "shareCode": "…",
+    //    "fetch": {"cid", "state": "connecting"|"manifest"|"fetching"|"done"|"failed",
+    //              "text", "error", "connectError", "startedMs", "ms"}}
+    PROP(QString storageJson="{}" READONLY)
 
     // ── Events ────────────────────────────────────────────────────────────────
     // A verified topic arrived (or was just created locally). `author` is the

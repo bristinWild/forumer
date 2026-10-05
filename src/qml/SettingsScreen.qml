@@ -127,6 +127,10 @@ Page {
         }
     }
 
+    StorageProbe {
+        store: settings.store
+    }
+
     Section {
         title: "remove from this device"
         caption: "irreversible without the recovery phrase"

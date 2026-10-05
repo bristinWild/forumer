@@ -18,7 +18,10 @@
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QLatin1String>
+#include <QHostAddress>
+#include <QNetworkInterface>
 #include <QRandomGenerator>
+#include <QRegularExpression>
 #include <QStandardPaths>
 #include <QTextStream>
 #include <QTimer>
@@ -658,6 +661,400 @@ void ForumerBackend::publishInbox() {
   const QString json = QString::fromUtf8(QJsonDocument(inbox).toJson(QJsonDocument::Compact));
   if (json != inboxJson())
     setInboxJson(json);
+}
+
+// ── Storage probe ─────────────────────────────────────────────────────────────
+//
+// A first contact with Logos Storage from inside Forumer: does the node start
+// (or can we attach to Basecamp's), can one instance share a small file and
+// another fetch it by CID, and how long does that take. History bundles will
+// be built on exactly these calls.
+//
+// storage_module is shared like delivery_module: inside Basecamp its package
+// downloader already runs a node, so init() fails and we attach to that one.
+// Standalone (nix run), we create our own under this instance's data folder.
+//
+// Written against storage_module v2.1.2 (see flake.nix): uploadUrl(path,
+// chunk), downloadToUrl(cid, path, local, chunk), no isRunning().
+
+namespace {
+
+constexpr qint64 kStorageChunk = 64 * 1024;
+constexpr qint64 kStorageTestMaxRead = 4096;
+
+QJsonObject payloadOf(const QVariantList &data) {
+  return data.isEmpty() ? QJsonObject()
+                        : QJsonDocument::fromJson(data.at(0).toString().toUtf8()).object();
+}
+
+} // namespace
+
+void ForumerBackend::wireStorage() {
+  if (m_storageWired)
+    return;
+  m_storageWired = true;
+
+  modules().storage_module.on("storageStart", [this](const QVariantList &data) {
+    const QJsonObject p = payloadOf(data);
+    const bool ok = p.value("success").toBool();
+    logEvent("storage: started success=" + std::to_string(ok) + " " +
+             p.value("message").toString().toStdString());
+    m_storageState = ok ? QStringLiteral("running") : QStringLiteral("failed");
+    m_storageDetail = ok ? QString() : p.value("message").toString();
+    if (ok)
+      QTimer::singleShot(0, this, [this]() { refreshStorageInfo(); });  // not from inside the event
+    publishStorage();
+  });
+
+  // A dial-in to the file's holder finished (see storageFetch): download now,
+  // whether or not it worked - the network may still find another holder.
+  modules().storage_module.on("storageConnect", [this](const QVariantList &data) {
+    if (m_storageFetch.value("state").toString() != QLatin1String("connecting"))
+      return;
+    const QJsonObject p = payloadOf(data);
+    const bool ok = p.value("success").toBool();
+    logEvent("storage: dialed the holder success=" + std::to_string(ok) + " " +
+             p.value("message").toString().toStdString());
+    if (!ok)
+      m_storageFetch.insert("connectError", p.value("message").toString());
+    QTimer::singleShot(0, this, [this]() { storageFetchManifest(); });
+  });
+
+  modules().storage_module.on("storageUploadDone", [this](const QVariantList &data) {
+    const QJsonObject p = payloadOf(data);
+    const QString session = p.value("sessionId").toString();
+    // A tiny file can finish before uploadUrl() has even returned its session
+    // id: while we're sharing and don't know the id yet, the first done is ours.
+    if (!m_storageSharing ||
+        (!m_storageUploadSession.isEmpty() && session != m_storageUploadSession))
+      return;  // someone else's upload (the module is shared)
+    m_storageUploadSession.clear();
+    m_storageSharing = false;
+    if (p.value("success").toBool()) {
+      m_storageLastCid = p.value("cid").toString();
+      m_storageDetail.clear();
+      logEvent("storage: shared test file as " + m_storageLastCid.toStdString());
+      // What the other side pastes: the CID plus how to reach us, so it can
+      // dial in directly. Asked off this callback: calling the module from
+      // inside its own event dispatch stalls.
+      QTimer::singleShot(0, this, [this]() {
+        refreshStorageInfo();
+        m_storageShareCode = m_storageLastCid + QLatin1Char('@') + m_storagePeerId +
+                             QLatin1Char('@') + m_storageAddrs.join(QLatin1Char(','));
+        logEvent("storage: share code addresses " + m_storageAddrs.join(QLatin1Char(' ')).toStdString());
+        publishStorage();
+      });
+    } else {
+      m_storageDetail = QStringLiteral("Upload failed: %1").arg(p.value("error").toString());
+      logEvent("storage: upload failed " + p.value("error").toString().toStdString());
+    }
+    publishStorage();
+  });
+
+  // Step 1 of a fetch done: we now hold the manifest, so the download's own
+  // (3 s) manifest lookup is local. Step 2: the download itself.
+  modules().storage_module.on("storageDownloadManifestDone", [this](const QVariantList &data) {
+    const QJsonObject p = payloadOf(data);
+    const QString cid = p.value("cid").toString();
+    if (cid != m_storageFetch.value("cid").toString() ||
+        m_storageFetch.value("state").toString() != QLatin1String("manifest"))
+      return;
+    if (!p.value("success").toBool()) {
+      m_storageFetch.insert("state", "failed");
+      m_storageFetch.insert("error", QStringLiteral("manifest not found: %1").arg(p.value("error").toString()));
+      m_storageFetch.insert("ms", nowMs() - static_cast<qint64>(m_storageFetch.value("startedMs").toDouble()));
+      logEvent("storage: manifest failed for " + cid.toStdString() + ": " +
+               p.value("error").toString().toStdString());
+      publishStorage();
+      return;
+    }
+    logEvent("storage: got manifest for " + cid.toStdString() + " after " +
+             std::to_string(nowMs() - static_cast<qint64>(m_storageFetch.value("startedMs").toDouble())) + " ms");
+    QTimer::singleShot(0, this, [this]() { storageDownload(); });
+  });
+
+  modules().storage_module.on("storageDownloadDone", [this](const QVariantList &data) {
+    const QJsonObject p = payloadOf(data);
+    const QString cid = p.value("sessionId").toString();  // a download's session id is its CID
+    if (cid != m_storageFetch.value("cid").toString() ||
+        m_storageFetch.value("state").toString() != QLatin1String("fetching"))
+      return;
+    const qint64 took = nowMs() - static_cast<qint64>(m_storageFetch.value("startedMs").toDouble());
+    m_storageFetch.insert("ms", took);
+    if (p.value("success").toBool()) {
+      QFile file(m_storageFetchPath);
+      QString text;
+      if (file.open(QIODevice::ReadOnly))
+        text = QString::fromUtf8(file.read(kStorageTestMaxRead));
+      m_storageFetch.insert("state", "done");
+      m_storageFetch.insert("text", text);
+      logEvent("storage: fetched " + cid.toStdString() + " in " + std::to_string(took) + " ms");
+    } else {
+      m_storageFetch.insert("state", "failed");
+      m_storageFetch.insert("error", p.value("error").toString());
+      logEvent("storage: fetch failed " + cid.toStdString() + ": " +
+               p.value("error").toString().toStdString());
+    }
+    publishStorage();
+  });
+}
+
+QString ForumerBackend::storageStart() {
+  wireStorage();
+  if (m_storageState == QLatin1String("running")) {
+    refreshStorageInfo();
+    return QString();
+  }
+
+  // Our own node keeps its blocks under this instance's data folder, so two
+  // instances on one machine don't share a repository. We pick the TCP port
+  // ourselves (rather than 0 = any) so we know it: a node that isn't
+  // reachable from outside announces no address, so share codes are built
+  // from this port and the machine's own addresses (see localStorageAddrs).
+  // The discovery (UDP) port defaults to a fixed 8090: draw one per instance.
+  m_storageListenPort = 30000 + static_cast<int>(QRandomGenerator::global()->bounded(20000));
+  const int discPort = 20000 + static_cast<int>(QRandomGenerator::global()->bounded(10000));
+  const QJsonObject cfg{
+      {"data-dir", dataDir() + QStringLiteral("/storage")},
+      {"listen-port", m_storageListenPort},
+      {"disc-port", discPort},
+      {"log-level", "info"},
+  };
+  const QString cfgJson = QString::fromUtf8(QJsonDocument(cfg).toJson(QJsonDocument::Compact));
+
+  const bool created = modules().storage_module.init(cfgJson);
+  // init() fails when a node already exists (Basecamp's): attach to it.
+  // dataDir() only answers when there is a node to ask.
+  m_storageAttached = !created && modules().storage_module.dataDir().success;
+  if (m_storageAttached)
+    m_storageListenPort = 0;  // not our config: we don't know that node's port
+  if (!created && !m_storageAttached) {
+    m_storageState = QStringLiteral("failed");
+    m_storageDetail = QStringLiteral("Could not create a storage node");
+    publishStorage();
+    return m_storageDetail;
+  }
+  logEvent(std::string("storage: ") + (created ? "created node" : "attached to the running node"));
+
+  m_storageState = QStringLiteral("starting");
+  m_storageDetail.clear();
+  publishStorage();
+  if (!modules().storage_module.start()) {
+    if (m_storageAttached) {
+      // Basecamp's node is most likely up already (start() refuses then):
+      // if it answers, use it; otherwise its storageStart event completes this.
+      if (modules().storage_module.peerId().success) {
+        m_storageState = QStringLiteral("running");
+        refreshStorageInfo();
+      }
+    } else {
+      m_storageState = QStringLiteral("failed");
+      m_storageDetail = QStringLiteral("The storage node refused to start");
+      publishStorage();
+      return m_storageDetail;
+    }
+  }
+
+  if (!m_storageTimer) {
+    m_storageTimer = new QTimer(this);
+    m_storageTimer->setInterval(30'000);
+    connect(m_storageTimer, &QTimer::timeout, this, [this]() {
+      if (m_storageState == QLatin1String("running"))
+        refreshStorageInfo();
+    });
+    m_storageTimer->start();
+  }
+  return QString();
+}
+
+void ForumerBackend::refreshStorageInfo() {
+  LogosResult peer = modules().storage_module.peerId();
+  if (peer.success)
+    m_storagePeerId = peer.getString();
+  LogosResult info = modules().storage_module.debug();
+  if (info.success) {
+    const QVariantMap map = info.getMap();
+    // v2.1.2's debug() has no NAT report; show it when a later version does.
+    m_storageReachability = map.value("nat").toMap().value("reachability").toString();
+    if (m_storageReachability.isEmpty())
+      m_storageReachability = QStringLiteral("not reported");
+    m_storagePeers = map.value("table").toMap().value("nodes").toList().size();
+    // Announced addresses (empty while NotReachable), then the ones we can
+    // vouch for ourselves: this machine's interfaces on our listen port.
+    QStringList addrs = map.value("addrs").toStringList();
+    if (m_storageListenPort > 0) {
+      for (const QHostAddress &a : QNetworkInterface::allAddresses()) {
+        if (a.protocol() != QAbstractSocket::IPv4Protocol)
+          continue;
+        const QString ma = QStringLiteral("/ip4/%1/tcp/%2").arg(a.toString()).arg(m_storageListenPort);
+        if (!addrs.contains(ma))
+          addrs.append(ma);
+      }
+    }
+    m_storageAddrs = addrs;
+  }
+  publishStorage();
+}
+
+QString ForumerBackend::storageShareTest() {
+  if (m_storageState != QLatin1String("running"))
+    return QStringLiteral("Start storage first");
+  if (m_storageSharing)
+    return QStringLiteral("Already sharing one");
+
+  // A small file that says nothing about who made it: just when, and a
+  // random tag so every test is a new CID.
+  const QString dir = dataDir() + QStringLiteral("/storage-test");
+  QDir().mkpath(dir);
+  const qint64 now = nowMs();
+  const QString path = dir + QStringLiteral("/hello-%1.txt").arg(now);
+  QFile file(path);
+  if (!file.open(QIODevice::WriteOnly | QIODevice::Truncate))
+    return QStringLiteral("Could not write the test file");
+  const QString tag = QString::number(QRandomGenerator::global()->generate64(), 16);
+  file.write(QStringLiteral("Forumer storage test\nshared at %1\ntag %2\n")
+                 .arg(QDateTime::fromMSecsSinceEpoch(now).toUTC().toString(Qt::ISODate), tag)
+                 .toUtf8());
+  file.close();
+
+  // Sharing before the call: the done event may beat uploadUrl()'s return.
+  m_storageSharing = true;
+  m_storageUploadSession.clear();
+  m_storageLastCid.clear();
+  m_storageShareCode.clear();
+  LogosResult r = modules().storage_module.uploadUrl(path, kStorageChunk);
+  if (!r.success) {
+    m_storageSharing = false;
+    return QStringLiteral("Upload refused: %1").arg(r.getError());
+  }
+  if (m_storageSharing)  // still waiting: remember which upload is ours
+    m_storageUploadSession = r.value.value<QString>();
+  QTimer::singleShot(60'000, this, [this]() {
+    if (!m_storageSharing)
+      return;
+    m_storageSharing = false;
+    m_storageUploadSession.clear();
+    m_storageDetail = QStringLiteral("Sharing didn't finish within 60 s");
+    logEvent("storage: upload timed out");
+    publishStorage();
+  });
+  logEvent("storage: sharing " + path.toStdString());
+  publishStorage();
+  return QString();
+}
+
+QString ForumerBackend::storageFetch(QString code) {
+  // A share code is cid@peerId@addr,addr; a bare CID also works (the
+  // network is then asked who holds it).
+  const QStringList parts = code.trimmed().split(QLatin1Char('@'));
+  QString cid = parts.value(0).trimmed();
+  const QString peer = parts.value(1).trimmed();
+  const QStringList addrs = parts.value(2).split(QLatin1Char(','), Qt::SkipEmptyParts);
+  if (m_storageState != QLatin1String("running"))
+    return QStringLiteral("Start storage first");
+  if (cid.isEmpty())
+    return QStringLiteral("Paste a CID first");
+  // A Forumer post id (32 hex chars, from "copy id" on a topic) is the
+  // likeliest mix-up: say so instead of letting the download fail.
+  static const QRegularExpression postId(QStringLiteral("^[0-9a-f]{32}$"));
+  if (postId.match(cid).hasMatch())
+    return QStringLiteral("That's a post id (from \"copy id\" on a topic). Use the id shown after "
+                          "\"share a test file\" in the other window - it starts with z.");
+  // Storage CIDs are base58 (z…, Qm…) or base32 (b…) text.
+  static const QRegularExpression cidShape(QStringLiteral("^[A-Za-z0-9]{20,128}$"));
+  if (!cidShape.match(cid).hasMatch())
+    return QStringLiteral("That doesn't look like a storage id");
+
+  const QString dir = dataDir() + QStringLiteral("/storage-test");
+  QDir().mkpath(dir);
+  m_storageFetchPath = dir + QStringLiteral("/fetched-%1.txt").arg(cid.right(16));
+  QFile::remove(m_storageFetchPath);
+
+  m_storageFetch = QJsonObject{{"cid", cid}, {"state", "fetching"}, {"startedMs", nowMs()}};
+
+  if (!peer.isEmpty() && peer != m_storagePeerId) {
+    // Dial the holder first; storageConnect then starts the download.
+    LogosResult r = modules().storage_module.connect(peer, addrs);
+    if (r.success) {
+      m_storageFetch.insert("state", "connecting");
+      logEvent("storage: dialing " + peer.toStdString() + " at " +
+               addrs.join(QLatin1Char(' ')).toStdString());
+      publishStorage();
+      // If no storageConnect arrives, go ahead anyway.
+      QTimer::singleShot(20'000, this, [this, cid]() {
+        if (m_storageFetch.value("cid").toString() == cid &&
+            m_storageFetch.value("state").toString() == QLatin1String("connecting")) {
+          m_storageFetch.insert("connectError", "no answer from the holder within 20 s");
+          storageFetchManifest();
+        }
+      });
+      return QString();
+    }
+    m_storageFetch.insert("connectError", r.getError());
+  }
+  storageFetchManifest();
+  return QString();
+}
+
+// Step 1 of a fetch: ask the network for the manifest in the background
+// (storageDownloadManifestDone continues). downloadToUrl() would look it up
+// itself, but gives up after 3 s - too short for a lookup across the network.
+void ForumerBackend::storageFetchManifest() {
+  const QString cid = m_storageFetch.value("cid").toString();
+  m_storageFetch.insert("state", "manifest");
+  LogosResult r = modules().storage_module.downloadManifest(cid);
+  if (!r.success) {
+    m_storageFetch.insert("state", "failed");
+    m_storageFetch.insert("error", QStringLiteral("manifest lookup refused: %1").arg(r.getError()));
+    publishStorage();
+    return;
+  }
+  logEvent("storage: looking up manifest for " + cid.toStdString());
+  publishStorage();
+  QTimer::singleShot(90'000, this, [this, cid]() {
+    if (m_storageFetch.value("cid").toString() == cid &&
+        m_storageFetch.value("state").toString() == QLatin1String("manifest")) {
+      m_storageFetch.insert("state", "failed");
+      m_storageFetch.insert("error", "manifest not found within 90 s");
+      m_storageFetch.insert("ms", nowMs() - static_cast<qint64>(m_storageFetch.value("startedMs").toDouble()));
+      logEvent("storage: manifest timed out for " + cid.toStdString());
+      publishStorage();
+    }
+  });
+}
+
+void ForumerBackend::storageDownload() {
+  const QString cid = m_storageFetch.value("cid").toString();
+  m_storageFetch.insert("state", "fetching");
+  // From the network (local=false). Once held, the node serves it to others.
+  LogosResult r = modules().storage_module.downloadToUrl(cid, m_storageFetchPath, false,
+                                                         kStorageChunk);
+  if (!r.success) {
+    m_storageFetch.insert("state", "failed");
+    m_storageFetch.insert("error", r.getError());
+    m_storageFetch.insert("ms", nowMs() - static_cast<qint64>(m_storageFetch.value("startedMs").toDouble()));
+    logEvent("storage: download refused for " + cid.toStdString() + ": " + r.getError().toStdString());
+    publishStorage();
+    return;
+  }
+  logEvent("storage: fetching " + cid.toStdString());
+  publishStorage();
+}
+
+void ForumerBackend::publishStorage() {
+  const QJsonObject state{
+      {"state", m_storageState},
+      {"detail", m_storageDetail},
+      {"attached", m_storageAttached},
+      {"peerId", m_storagePeerId},
+      {"reachability", m_storageReachability},
+      {"peers", m_storagePeers},
+      {"sharing", m_storageSharing},
+      {"lastCid", m_storageLastCid},
+      {"shareCode", m_storageShareCode},
+      {"fetch", m_storageFetch},
+  };
+  setStorageJson(QString::fromUtf8(QJsonDocument(state).toJson(QJsonDocument::Compact)));
 }
 
 // ── Posting ───────────────────────────────────────────────────────────────────
