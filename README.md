@@ -40,8 +40,9 @@ Built for [λPrize LP-0026: Forum App](https://github.com/logos-co/lambda-prize/
 | **Identity rotation** | *Keep* one persona, rotate *Manually*, or *Auto*: a new persona for every post. |
 | **Disclosure per post** | Post as your persona (`fr:7Q4K-M2XD`), under an alias, or fully anonymously. |
 | **Topics and replies** | Topics tagged with up to 3 domains. Replies nest two levels deep. |
-| **Domains** | Follow the domains you care about; the home page shows *All* and *Followed* side by side. |
+| **Domains** | Follow the domains you care about; the home page shows *All* and *Followed* side by side. Starter domains (`#logosdevs`, `#lambdabuilders`, `#testnet-help`, `#privacy`, `#tech`) are offered even before anyone has posted in them, and a new topic started from a domain's page is posted there. |
 | **Search** | ⌘K / Ctrl+K searches every post on the device. |
+| **Shareable links** | *copy link* on a thread or a #domain gives a `basecamp://` link. Clicked in a browser or chat app, Basecamp 0.3.1+ opens it in Forumer; pasted into Forumer's search box it works on any version. The link names the post, never who shared it, and a reader who doesn't hold the thread yet asks peers for that whole week of posts, so nobody learns which thread was opened. See [Sharing links](#sharing-links). |
 | **Post status** | Every post you write shows *sending… → live*, or *failed* with retry. |
 | **Outbox** | Posts that couldn't be sent are kept on disk and retried automatically, even after a restart. |
 | **Offline catch-up** | Posts written while you were offline arrive when you come back. |
@@ -123,6 +124,30 @@ This produces a self-contained `.lgx` package for Basecamp's package manager. **
 8. **My posts** lists everything this account wrote, whichever persona it used.
 9. **Backup & restore:** show your phrase, or restore an account on another instance.
 10. **Lock** (bottom of the sidebar) locks the account again.
+
+### Sharing links
+
+Open a thread and press **copy link**, or pick a domain chip on Home (for example `#lambdabuilders`) and press **copy link** next to *follow*. You get a link like
+
+```
+basecamp://intent/forumer.open?p=eyJkb21haW4iOiJsYW1iZGFidWlsZGVycyJ9
+```
+
+Post it anywhere: Discord, a chat, a web page.
+
+- **Clicking it** (Basecamp 0.3.1 or newer) opens Basecamp, which hands it to Forumer through the `forumer.open` intent that `metadata.json` declares. A thread link opens the thread; a domain link opens Home filtered on that domain, with *follow* one click away. A link opened while the account is locked opens after unlocking.
+- **Pasting it** into Forumer's search box (⌘K) does the same on any Basecamp version. A bare 32-character topic id works too.
+
+What a link carries, and why it is safe to share:
+
+| | |
+|---|---|
+| Thread link | `{"topic": "<post id>", "day": <days since 1970>}`, base64url |
+| Domain link | `{"domain": "<name>"}` |
+| Who shared it | Not in the link. A post id is a hash of the post itself. |
+| Who opened it | No server is involved: the link only tells your own Basecamp what to show. |
+| What the network learns | If you don't hold the thread yet, Forumer asks peers for every post from that day and the week after (the ordinary history range request), not for that one post. |
+| Untrusted input | Anyone can write a link. Basecamp checks the payload against the declared parameters, and Forumer checks it again (`src/qml/links.js`): only a 32-hex id, a day number and a domain name are accepted. |
 
 ---
 
@@ -408,7 +433,7 @@ forumer/
 |---|---|---|
 | Unit | crypto, vault, recovery phrase, personas and rotation, account store, envelope signing and verification, PoW, post log and outbox, sync rules (digests, answers, retry backoff), thread placement, flood limits | `./scripts/test-core.sh` |
 | End to end | post → received; nested replies; offline → catch-up; outbox retry; hourly limits; restore | `./scripts/two-instances.sh` (needs the live `logos.dev` network) |
-| CI | **(planned)** GitHub Actions: unit tests + Nix build, green on `main` | |
+| CI | GitHub Actions on every push: the `forumer_core` unit tests, then the full module build on Linux (Ubuntu 24.04) and macOS 14 | `.github/workflows/ci.yml` |
 
 Backend logs are prefixed `[forumer backend]` on the host's stderr.
 
@@ -430,7 +455,7 @@ Backend logs are prefixed `[forumer backend]` on the host's stderr.
 | Failed sends kept for retry | ✅ | Persistent outbox, automatic and manual retry |
 | Doesn't flood the network | ✅ | [§8](#8-flood-control) |
 | Sound, reusable architecture | ✅ | `forumer_core` library, unit-tested, no UI dependencies |
-| CI green | ⏳ | Planned |
+| CI green | ✅ | [GitHub Actions](https://github.com/bristinWild/forumer/actions): unit tests + module build on Linux and macOS |
 | README | ✅ | This document |
 | "Program addresses" | n/a | Forumer deploys no on-chain programs (blockchain is out of scope for LP-0026). The content topic is listed in [§7](#7-network-and-sync). |
 | Video demo, FURPS self-assessment | ⏳ | With the submission |
@@ -449,10 +474,12 @@ Backend logs are prefixed `[forumer backend]` on the host's stderr.
 - [x] Redesigned interface (light/dark)
 - [x] Replies to you: unread badge, list, in-thread highlight, notice
 - [x] Markdown formatting with toolbar and preview; user text never rendered as HTML
+- [x] Shareable `basecamp://` links to threads and domains
 - [ ] Media attachments through Logos Storage
 - [ ] Private messages between personas
 - [ ] Mute a persona / hide a post
-- [ ] CI, module catalog release, video demo, FURPS self-assessment
+- [x] CI (unit tests + module build on Linux and macOS)
+- [ ] Module catalog release, video demo, FURPS self-assessment
 - [x] Full history for newcomers (week-by-week range requests over Delivery)
 - [x] 0.3 module stack (builder 0.3.2, delivery v0.3.0, storage v3.0.0); network choice logos.dev / logos.test
 - [x] Storage file sharing between two nodes on storage v3 (both directions, 73–83 s per fetch)

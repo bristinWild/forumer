@@ -12,7 +12,7 @@ Sheet {
     property bool sending: false
 
     // Prebuilt suggestions, shown alongside domains already in use.
-    readonly property var prebuilt: ["privacy", "campus", "seminar", "crypto", "politics", "tech", "help"]
+    readonly property var prebuilt: composer.store.suggestedDomains.concat(["crypto", "politics", "help"])
     readonly property var suggestions: {
         var typed = composer.typedDomains();
         var pool = composer.store.knownDomains.concat(composer.prebuilt);
@@ -51,6 +51,9 @@ Sheet {
     onOpened: {
         composer.error = "";
         composer.disclosure = composer.store.defaultDisclosure;
+        // Started from a domain's page: post there unless told otherwise.
+        if (domainsField.text.trim().length === 0 && composer.store.domainFilter.length > 0)
+            domainsField.text = composer.store.domainFilter;
         titleField.focusInput();
     }
 

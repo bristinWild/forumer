@@ -34,6 +34,22 @@ Item {
 
     Binding { target: store; property: "viewReady"; value: root.ready }
 
+    // Shared links: Basecamp hands Forumer the "forumer.open" intent declared
+    // in metadata.json, from another app or from a basecamp:// link (0.3.1+).
+    // The payload is checked again here (links.js): anyone can write a link.
+    Connections {
+        target: logos
+        ignoreUnknownSignals: true
+        function onIntentRequested(requestId, intent, params, requesterName) {
+            if (intent !== "forumer.open") return;
+            var link = store.linkFromParams(params);
+            root.log("intent forumer.open from " + requesterName + (link ? " -> " + link.kind : " (not a valid link)"));
+            if (link) store.openLink(link);
+            if (typeof logos.respond === "function")
+                logos.respond(requestId, link !== null, {}, link ? "" : "not a Forumer link");
+        }
+    }
+
     Component.onCompleted: {
         log("view created");
         root.ready = root.backend !== null && logos.isViewModuleReady("forumer");
@@ -196,7 +212,10 @@ Item {
             root.log("identityState -> " + store.identityState);
             if (store.identityState === "none") onboarding.reset("create");
             else if (store.identityState === "locked" && !root.restoreOverlay) onboarding.reset("unlock");
-            else if (store.identityState === "unlocked") store.open("home");
+            else if (store.identityState === "unlocked") {
+                store.open("home");
+                if (store.pendingLink) store.openLink(store.pendingLink);
+            }
         }
     }
 

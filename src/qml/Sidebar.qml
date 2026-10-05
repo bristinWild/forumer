@@ -90,6 +90,16 @@ Rectangle {
                     anchors.verticalCenter: parent.verticalCenter
                     text: sidebar.store.searchText
                     onTextEdited: {
+                        // A pasted Forumer link (or topic id) opens what it points to.
+                        var link = sidebar.store.parseLink(text);
+                        if (link) {
+                            // Through the store, so the binding on `text` stays.
+                            sidebar.store.searchText = text;
+                            sidebar.store.searchText = "";
+                            focus = false;
+                            sidebar.store.openLink(link);
+                            return;
+                        }
                         sidebar.store.searchText = text;
                         if (sidebar.store.screen !== "home") sidebar.store.open("home");
                     }

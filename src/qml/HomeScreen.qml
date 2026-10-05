@@ -68,7 +68,6 @@ Item {
                 Layout.leftMargin: 64
                 Layout.rightMargin: 64
                 spacing: 8
-                visible: home.store.knownDomains.length > 0
 
                 Chip {
                     text: "all"
@@ -76,7 +75,12 @@ Item {
                     onClicked: home.store.domainFilter = ""
                 }
                 Repeater {
-                    model: home.store.knownDomains.slice(0, 12)
+                    // Domains in use, then the suggested ones nobody has used yet.
+                    model: {
+                        var out = home.store.knownDomains.slice(0, 12);
+                        home.store.suggestedDomains.forEach(function (d) { if (out.indexOf(d) < 0) out.push(d); });
+                        return out;
+                    }
                     delegate: Chip {
                         required property string modelData
                         text: "#" + modelData
@@ -120,6 +124,23 @@ Item {
                     onClicked: home.store.toggleFollow(home.store.domainFilter)
                 }
                 FButton {
+                    visible: home.store.domainFilter.length > 0
+                    compact: true
+                    kind: "ghost"
+                    icon: copied ? "check" : "link"
+                    text: copied ? "link copied" : "copy link"
+                    tooltip: "A basecamp:// link that opens #" + home.store.domainFilter + " for whoever you share it with"
+                    property bool copied: false
+                    onClicked: {
+                        clipboard.text = home.store.domainLink(home.store.domainFilter);
+                        clipboard.selectAll();
+                        clipboard.copy();
+                        copied = true;
+                        domainCopied.restart();
+                    }
+                    Timer { id: domainCopied; interval: 1500; onTriggered: parent.copied = false }
+                }
+                FButton {
                     compact: true
                     kind: "ghost"
                     text: "clear"
@@ -146,8 +167,8 @@ Item {
                     title: "all domains"
                     caption: "newest first"
                     items: home.store.allFeed
-                    emptyText: home.store.searchText.length > 0 || home.store.domainFilter.length > 0
-                               ? "nothing matches."
+                    emptyText: home.store.searchText.length > 0 ? "nothing matches."
+                               : home.store.domainFilter.length > 0 ? "nothing in #" + home.store.domainFilter + " yet. start the first topic with “new topic”."
                                : "no topics yet. start one with “new topic”."
                     onOpenTopic: (id) => home.store.openTopic(id)
                 }
@@ -166,4 +187,7 @@ Item {
             }
         }
     }
+
+    // Off-screen helper for "copy link" (QML has no clipboard API of its own).
+    TextEdit { id: clipboard; visible: false; textFormat: TextEdit.PlainText }
 }

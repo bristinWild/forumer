@@ -108,8 +108,88 @@ Item {
                         }
                     }
 
+                    // Opened from a link, and this device doesn't hold the thread yet.
+                    ColumnLayout {
+                        id: linkPanel
+                        readonly property var wait: thread.store.linkWait
+                        readonly property bool waiting: wait !== null && wait.topic === thread.store.selectedTopicId
+                                                        && (!thread.topic || thread.topic.placeholder)
+                        // Seconds since we asked, refreshed while the panel shows.
+                        property int seconds: 0
+                        Timer {
+                            interval: 1000
+                            repeat: true
+                            running: linkPanel.waiting
+                            triggeredOnStart: true
+                            onTriggered: linkPanel.seconds = Math.floor((Date.now() - linkPanel.wait.startedMs) / 1000)
+                        }
+                        onWaitChanged: seconds = wait ? Math.max(0, Math.floor((Date.now() - wait.startedMs) / 1000)) : 0
+                        readonly property bool slow: seconds >= 45
+                        Layout.fillWidth: true
+                        visible: waiting || !thread.topic
+                        spacing: 14
+                        Text {
+                            textFormat: Text.PlainText
+                            Layout.fillWidth: true
+                            text: !linkPanel.waiting ? "This thread isn't on this device."
+                                  : linkPanel.slow ? "Not found yet"
+                                  : "Looking for this thread…"
+                            wrapMode: Text.WordWrap
+                            font.family: Ui.sans
+                            font.pixelSize: Ui.size.thread
+                            font.weight: Ui.weight.bold
+                            font.letterSpacing: -0.6
+                            color: Ui.text
+                        }
+                        Text {
+                            textFormat: Text.PlainText
+                            Layout.fillWidth: true
+                            text: {
+                                if (!linkPanel.waiting) return "It may not have reached you yet. Open it again from its link, or try “catch up now” under missed.";
+                                var when = linkPanel.wait.day > 0
+                                    ? "the posts from " + Qt.formatDate(new Date(linkPanel.wait.day * 86400000), "d MMM yyyy") + " and the week after"
+                                    : "the posts of the last two days";
+                                if (linkPanel.slow)
+                                    return "Nobody online seems to hold it right now. It opens here by itself as soon as someone who has it comes online.";
+                                return "Asking peers for " + when + " (" + linkPanel.seconds + " s). They don't learn which thread you're after.";
+                            }
+                            wrapMode: Text.WordWrap
+                            font.family: Ui.sans
+                            font.pixelSize: Ui.size.body
+                            lineHeight: 1.35
+                            color: Ui.text2
+                        }
+                        Notice {
+                            Layout.fillWidth: true
+                            message: linkPanel.waiting ? linkPanel.wait.error : ""
+                        }
+                        Row {
+                            spacing: 8
+                            FButton {
+                                visible: linkPanel.waiting && linkPanel.slow
+                                text: "ask again"
+                                icon: "refresh"
+                                implicitHeight: 36
+                                onClicked: {
+                                    var w = Object.assign({}, thread.store.linkWait);
+                                    w.startedMs = Date.now();
+                                    w.error = "";
+                                    thread.store.linkWait = w;
+                                    thread.store.askAroundLink();
+                                }
+                            }
+                            FButton {
+                                text: "back home"
+                                kind: "ghost"
+                                implicitHeight: 36
+                                onClicked: { thread.store.linkWait = null; thread.store.open("home"); }
+                            }
+                        }
+                    }
+
                     // Title + meta
                     ColumnLayout {
+                        visible: !linkPanel.visible
                         Layout.fillWidth: true
                         spacing: 14
                         TextEdit {
@@ -163,6 +243,7 @@ Item {
 
                     // Topic actions
                     Row {
+                        visible: !linkPanel.visible
                         spacing: 6
                         FButton {
                             text: "reply"
@@ -172,13 +253,14 @@ Item {
                             onClicked: { thread.store.replyTargetId = ""; thread.focusComposer(); }
                         }
                         FButton {
-                            text: copied ? "copied" : "copy id"
+                            text: copied ? "link copied" : "copy link"
                             icon: copied ? "check" : "link"
                             kind: "ghost"
                             implicitHeight: 36
+                            tooltip: "A basecamp:// link to this thread. It names the post, not you."
                             property bool copied: false
                             onClicked: {
-                                clipboard.text = thread.store.selectedTopicId;
+                                clipboard.text = thread.store.topicLink(thread.store.selectedTopicId);
                                 clipboard.selectAll();
                                 clipboard.copy();
                                 copied = true;
@@ -193,6 +275,7 @@ Item {
                         textFormat: Text.PlainText
                         Layout.fillWidth: true
                         Layout.topMargin: 16
+                        visible: !linkPanel.visible || thread.store.thread.length > 0
                         text: thread.store.thread.length === 0 ? "no replies yet"
                               : thread.store.thread.length === 1 ? "1 reply"
                               : thread.store.thread.length + " replies"
@@ -201,7 +284,10 @@ Item {
                         font.weight: Ui.weight.semibold
                         color: Ui.text
                     }
-                    Rectangle { Layout.fillWidth: true; Layout.topMargin: -12; implicitHeight: 1; color: Ui.border }
+                    Rectangle {
+                        Layout.fillWidth: true; Layout.topMargin: -12; implicitHeight: 1; color: Ui.border
+                        visible: !linkPanel.visible || thread.store.thread.length > 0
+                    }
 
                     ColumnLayout {
                         Layout.fillWidth: true
@@ -224,8 +310,9 @@ Item {
                         }
                     }
 
-                    // Composer
+                    // Composer (not while the topic itself is missing)
                     Rectangle {
+                        visible: !linkPanel.visible
                         Layout.fillWidth: true
                         Layout.topMargin: 8
                         implicitHeight: composer.implicitHeight + 32
@@ -326,7 +413,7 @@ Item {
                 // ── "In this thread" rail ──────────────────────────────────────
                 ColumnLayout {
                     id: rail
-                    visible: thread.wide
+                    visible: thread.wide && !linkPanel.visible
                     x: article.x + article.width + 48
                     y: 52
                     width: 224

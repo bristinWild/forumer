@@ -48,6 +48,12 @@ class Forumer
     // walks four more weeks back now, even past that.
     SLOT(QString loadOlderHistory())
 
+    // A shared link to a thread this device doesn't hold yet: ask peers for
+    // the posts of the days around `day` (days since 1970, UTC) - the same
+    // range request the history walk sends, so nobody learns which thread
+    // was opened. The posts arrive through topicReceived / replyReceived.
+    SLOT(QString fetchAround(qint64 day))
+
     // ── Identity ──────────────────────────────────────────────────────────────
     // Accounts are master secrets kept in password-protected vaults on this
     // device (forumer_core/account_store.h). Exactly one may be unlocked; its

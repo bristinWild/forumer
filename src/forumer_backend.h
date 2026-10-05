@@ -61,6 +61,7 @@ public:
   QString catchUp() override;
   QString retryUnsent() override;
   QString loadOlderHistory() override;
+  QString fetchAround(qint64 day) override;
 
   // ── .rep SLOTs: identity ───────────────────────────────────────────────────
   QString createIdentity(QString label, QString password) override;
@@ -262,6 +263,7 @@ private:
   int m_historyRounds = 0;         // rounds spent on this window
   int m_historyReceived = 0;       // older posts that arrived this session
   qint64 m_lastRangeAnswerMs = 0;  // we answer one range request at a time
+  qint64 m_lastLinkFetchMs = 0;    // fetchAround: at most one request per few seconds
   qint64 m_lastCoveredSaveMs = 0;
 
   // Catch-up bursts: posts that arrived (or were deferred) since our last

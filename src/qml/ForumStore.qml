@@ -1,5 +1,6 @@
 import QtQuick
 import "markdown.js" as Md
+import "links.js" as Links
 
 // The view's single source of truth: mirrors the backend's properties, keeps
 // every post the backend has shown us, and derives what each screen lists
@@ -97,6 +98,60 @@ Item {
         store.lastError = "";
     }
 
+    // ── Shareable links (links.js) ───────────────────────────────────────────
+    // Domains offered to newcomers next to the ones already in use.
+    readonly property var suggestedDomains: ["logosdevs", "lambdabuilders", "testnet-help", "privacy", "tech"]
+
+    // A link opened before the account was unlocked waits here.
+    property var pendingLink: null
+    // A thread link this device doesn't hold yet: { topic, day, startedMs, error }.
+    property var linkWait: null
+
+    function topicLink(id) {
+        var t = store.topics[id];
+        return Links.topicLink(id, t ? t.tsMs : Date.now());
+    }
+    function domainLink(domain) { return Links.domainLink(domain); }
+    function parseLink(text) { return Links.parse(text); }
+    function linkFromParams(params) { return Links.fromParams(params); }
+
+    // Opens a parsed link: { kind: "topic", topic, day } | { kind: "domain", domain }.
+    function openLink(link) {
+        if (!link) return false;
+        if (!store.unlocked) { store.pendingLink = link; return true; }
+        store.pendingLink = null;
+        store.searchText = "";
+        if (link.kind === "domain") {
+            store.domainFilter = link.domain;
+            store.open("home");
+            return true;
+        }
+        var held = store.topics[link.topic];
+        store.linkWait = held && !held.placeholder ? null
+                       : { topic: link.topic, day: link.day, startedMs: Date.now(), error: "" };
+        store.openTopic(link.topic);
+        if (store.linkWait) store.askAroundLink();
+        return true;
+    }
+
+    // Ask peers for the thread behind linkWait: the days around its date, or
+    // (a bare id without a date) an ordinary catch-up.
+    function askAroundLink() {
+        var w = store.linkWait;
+        if (!w || !store.hasBackend) return;
+        var fail = function (e) {
+            if (store.linkWait && store.linkWait.topic === w.topic) {
+                var copy = Object.assign({}, store.linkWait);
+                copy.error = String(e);
+                store.linkWait = copy;
+            }
+        };
+        if (w.day > 0 && typeof store.backend.fetchAround === "function")
+            store.call(store.backend.fetchAround(w.day), null, fail);
+        else
+            store.call(store.backend.catchUp(), null, fail);
+    }
+
     function openTopic(id) {
         store.selectedTopicId = id;
         store.replyTargetId = "";
@@ -132,6 +187,7 @@ Item {
             live: live === true,
             arrivedMs: Date.now()
         };
+        if (store.linkWait && store.linkWait.topic === id) store.linkWait = null;
         store.rev++;
     }
 

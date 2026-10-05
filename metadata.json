@@ -13,6 +13,29 @@
     "delivery_module",
     "storage_module"
   ],
+  "provides": [
+    {
+      "intent": "forumer.open",
+      "web": true,
+      "params": [
+        {
+          "name": "topic",
+          "type": "string",
+          "required": false
+        },
+        {
+          "name": "day",
+          "type": "number",
+          "required": false
+        },
+        {
+          "name": "domain",
+          "type": "string",
+          "required": false
+        }
+      ]
+    }
+  ],
   "codegen": {
     "rep": "src/forumer.rep"
   },

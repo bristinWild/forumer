@@ -1509,6 +1509,34 @@ QString ForumerBackend::loadOlderHistory() {
   return QString();
 }
 
+QString ForumerBackend::fetchAround(qint64 day) {
+  if (!m_posts)
+    return QStringLiteral("The post log isn't open");
+  if (!m_joined)
+    return QStringLiteral("Not connected to the network yet");
+  constexpr int64_t kDayMs = 86'400'000;
+  const int64_t now = nowMs();
+  // The day before through about a week after: the thread and the replies
+  // that followed it. (Newer ones come with the live digests anyway.)
+  const int64_t since = static_cast<int64_t>(day) * kDayMs - kDayMs;
+  const int64_t until = std::min<int64_t>(now, since + 9 * kDayMs);
+  if (day <= 0 || since <= 0 || since >= now)
+    return QStringLiteral("That link has no usable date");
+  if (now - m_lastLinkFetchMs < 5'000)
+    return QString();  // already asked a moment ago
+  m_lastLinkFetchMs = now;
+
+  const auto held = m_posts->range(since, until);
+  const fc::sync::Digest request =
+      fc::sync::makeDigest(held, since, fc::sync::kMaxDigestIds, until);
+  const auto r = m_transport->publish(m_topic, fc::sync::encodeRange(request));
+  if (!r.ok)
+    return QStringLiteral("Couldn't ask peers: %1").arg(QString::fromStdString(r.error));
+  logEvent("link: asking peers for [" + std::to_string(since) + ", " + std::to_string(until) +
+           "), holding " + std::to_string(held.size()));
+  return QString();
+}
+
 void ForumerBackend::historyStep() {
   if (!m_posts || !m_joined)
     return;
