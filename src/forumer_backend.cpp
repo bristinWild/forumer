@@ -58,6 +58,18 @@ void logEvent(const std::string &what) {
 
 qint64 nowMs() { return QDateTime::currentMSecsSinceEpoch(); }
 
+// How far back live digests reach: sync::kWindowMs (48 h), or
+// FORUMER_LIVE_WINDOW_HOURS for testing and demos - with 1, everything older
+// than an hour comes through the history walk instead. Read once.
+int64_t liveWindowMs() {
+  static const int64_t window = []() -> int64_t {
+    bool ok = false;
+    const int hours = qEnvironmentVariableIntValue("FORUMER_LIVE_WINDOW_HOURS", &ok);
+    return ok && hours >= 1 && hours <= 48 ? int64_t(hours) * 3'600'000 : fc::sync::kWindowMs;
+  }();
+  return window;
+}
+
 // Joining the forum topic: how long to wait before asking again, and how many
 // attempts before giving up and leaving the failure on screen.
 constexpr int kJoinRetryMs = 5000;
@@ -90,6 +102,29 @@ constexpr int kAnswerDelayMinMs = 500;
 constexpr int kAnswerDelayMaxMs = 2'500;
 constexpr int kAnswerBatchGapMs = 5'000;
 constexpr qint64 kSeenWindowMs = 30'000;
+
+// History walk: wait this long for answers to one range request, repeat the
+// window while a round still brings this many new posts (answers are capped
+// at sync::kMaxAnswer per peer), at most this many rounds per window. Start
+// a little after learning there is older history, so the live digests settle
+// first. Answer one peer's range request at a time, and never about more
+// than two windows' worth of time at once.
+constexpr int kHistoryRoundMs = 12'000;
+constexpr int kHistoryRepeatAt = 24;
+constexpr int kHistoryMaxRounds = 20;
+constexpr int kHistoryStartDelayMs = 20'000;
+constexpr qint64 kRangeAnswerGapMs = 3'000;
+constexpr int64_t kRangeMaxSpanMs = 2 * fc::sync::kHistorySpanMs;
+constexpr int64_t kLoadOlderSpanMs = 4 * fc::sync::kHistorySpanMs;
+
+// Catch-up bursts: after a digest, wait this long for answers; if at least
+// kFollowUpAt posts arrived (or were deferred by the new-key budget), send
+// another digest. At most kMaxFollowUps in a row, then the periodic schedule.
+constexpr int kFollowUpWaitMs = 8'000;
+constexpr int kFollowUpAt = 16;
+constexpr int kMaxFollowUps = 15;
+// How often "covered until" (we were online and syncing up to here) is saved.
+constexpr qint64 kCoveredSaveGapMs = 10 * 60'000;
 constexpr int kSeenPruneThreshold = 4'096;
 
 // Small text-file helpers (the per-install channel peer id).
@@ -308,6 +343,7 @@ bool ForumerBackend::openStore() {
 
   logEvent("post log open at " + file.string() + " (" + std::to_string(m_posts->count()) +
            " posts), topic " + m_topic);
+  loadHistoryState();
   setNodeReady(true);
   publishSyncState();
 
@@ -349,6 +385,7 @@ void ForumerBackend::joinForum() {
     m_retryTimer->start();
   }
   scheduleDigest(kFirstDigestMs);
+  maybeStartHistory();
 }
 
 void ForumerBackend::refreshStatus() {
@@ -1224,10 +1261,17 @@ void ForumerBackend::handlePayload(const QString &topic, const QByteArray &paylo
     logEvent(std::string("ignored a message: ") + fc::sync::describe(decoded.error));
     return;
   }
-  if (decoded.message->type == fc::sync::MessageType::Post)
+  switch (decoded.message->type) {
+  case fc::sync::MessageType::Post:
     handlePost(std::move(*decoded.message->post));
-  else
+    break;
+  case fc::sync::MessageType::Digest:
     handleDigest(decoded.message->digest);
+    break;
+  case fc::sync::MessageType::Range:
+    handleRange(decoded.message->digest);
+    break;
+  }
 }
 
 std::string ForumerBackend::checkPost(const fc::post::Post &post) const {
@@ -1274,8 +1318,13 @@ void ForumerBackend::handlePost(fc::post::Post post) {
   // Keys we've never seen (anonymous posts, fresh personas) share a budget.
   // Over it, the post isn't stored yet; the next digest exchange offers it
   // again, so this delays rather than loses.
-  if (!m_posts->hasAuthor(post.publicKey) && !m_newKeyBudget.take(nowMs())) {
+  // Exception: old posts arriving in answer to our own history request -
+  // otherwise history would trickle in at the anti-flood rate.
+  const int64_t ts = post.content.timestampMs;
+  const bool inHistoryWindow = m_historyActive && ts >= m_historyFrom && ts < m_historyTo;
+  if (!inHistoryWindow && !m_posts->hasAuthor(post.publicKey) && !m_newKeyBudget.take(nowMs())) {
     m_lastSeenOnWire.remove(qs(post.id));   // let peers offer it again
+    ++m_roundArrivals;                       // more to come: ask again soon
     logEvent("deferred " + post.id + ": new-key budget used up");
     return;
   }
@@ -1283,6 +1332,11 @@ void ForumerBackend::handlePost(fc::post::Post post) {
   switch (m_posts->insert(post, nowMs())) {
   case fc::PostStore::Insert::Added:
     ++m_receivedCount;
+    ++m_roundArrivals;
+    if (inHistoryWindow) {
+      ++m_historyRoundNew;
+      ++m_historyReceived;
+    }
     logEvent("received " + post.id);
     emitPost(post);
     publishSyncState();
@@ -1300,12 +1354,20 @@ void ForumerBackend::handlePost(fc::post::Post post) {
 void ForumerBackend::handleDigest(const fc::sync::Digest &digest) {
   const qint64 now = nowMs();
 
+  // The sender's oldest post tells us how far back the forum's history goes.
+  if (digest.oldestMs > 0 && digest.oldestMs < now &&
+      (m_historyTarget == 0 || digest.oldestMs < m_historyTarget)) {
+    m_historyTarget = digest.oldestMs;
+    publishHistory();
+    maybeStartHistory();
+  }
+
   // Does the sender hold posts we don't? Then ask for them now: our digest
   // tells it what we hold, and it answers with the rest. (This is what lets a
   // peer that was offline while others posted catch up within seconds of
   // someone else coming online, not minutes.) Look across the digest's whole
   // window, but never further back than twice ours.
-  const int64_t since = std::max<int64_t>(digest.sinceMs, now - 2 * fc::sync::kWindowMs);
+  const int64_t since = std::max<int64_t>(digest.sinceMs, now - 2 * liveWindowMs());
   if (now - m_lastPromptedDigestMs >= kPromptedDigestGapMs &&
       fc::sync::listsUnknown(digest, m_posts->recent(since))) {
     m_lastPromptedDigestMs = now;
@@ -1318,20 +1380,154 @@ void ForumerBackend::handleDigest(const fc::sync::Digest &digest) {
 
   // Never answer about posts older than our own window, however far back the
   // digest reaches: that would let one message pull our whole history.
-  const auto held = m_posts->recent(now - fc::sync::kWindowMs);
+  const auto held = m_posts->recent(now - liveWindowMs());
   const auto missing = fc::sync::missingFrom(digest, held);
   if (missing.empty())
     return;
 
-  for (const auto &id : missing)
+  queueAnswers(missing, "digest");
+}
+
+void ForumerBackend::queueAnswers(const std::vector<std::string> &ids, const char *why) {
+  for (const auto &id : ids)
     m_answerQueue.insert(qs(id));
-  logEvent("digest: peer is missing " + std::to_string(missing.size()) + " post(s) we hold");
+  logEvent(std::string(why) + ": peer is missing " + std::to_string(ids.size()) + " post(s) we hold");
 
   if (!m_answerFlushScheduled) {
     m_answerFlushScheduled = true;
     const int delay = kAnswerDelayMinMs + jitter(kAnswerDelayMaxMs - kAnswerDelayMinMs);
     QTimer::singleShot(delay, this, [this]() { flushAnswers(); });
   }
+}
+
+void ForumerBackend::handleRange(const fc::sync::Digest &range) {
+  const qint64 now = nowMs();
+  // One at a time: a stream of range requests can't make us replay history
+  // faster than this (and every answer still draws on the re-send budget).
+  if (now - m_lastRangeAnswerMs < kRangeAnswerGapMs)
+    return;
+  m_lastRangeAnswerMs = now;
+
+  fc::sync::Digest window = range;
+  if (window.untilMs - window.sinceMs > kRangeMaxSpanMs)
+    window.sinceMs = window.untilMs - kRangeMaxSpanMs;  // answer the newest part
+  const auto held = m_posts->range(window.sinceMs, window.untilMs);
+  const auto missing = fc::sync::missingFrom(window, held);
+  if (!missing.empty())
+    queueAnswers(missing, "history request");
+}
+
+// ── History walk ──────────────────────────────────────────────────────────────
+
+void ForumerBackend::loadHistoryState() {
+  const int64_t now = nowMs();
+  const int64_t top = now - liveWindowMs();  // live digests cover everything above
+  auto number = [this](const char *key) -> int64_t {
+    const auto v = m_posts->meta(key);
+    try {
+      return v ? std::stoll(*v) : 0;
+    } catch (...) {
+      return 0;
+    }
+  };
+  const int64_t floor = number("history_floor");
+  const int64_t covered = number("covered_until");
+  // First run, or away longer than the digest window: there may be a gap
+  // between where we stopped syncing and the window. Walk again from the
+  // top; windows we already hold complete in one round each.
+  m_historyFloor = (floor == 0 || floor > top || covered < top) ? top : floor;
+  m_posts->setMeta("history_floor", std::to_string(m_historyFloor));
+  m_lastCoveredSaveMs = 0;
+  publishHistory();
+}
+
+void ForumerBackend::maybeStartHistory() {
+  if (m_historyActive || m_historyScheduled || !m_joined || !m_posts)
+    return;
+  if (m_historyTarget == 0 || m_historyTarget >= m_historyFloor)
+    return;
+  m_historyScheduled = true;
+  logEvent("history: older posts exist (back to " + std::to_string(m_historyTarget) +
+           "), fetching from " + std::to_string(m_historyFloor) + " down");
+  QTimer::singleShot(kHistoryStartDelayMs, this, [this]() {
+    m_historyScheduled = false;
+    historyStep();
+  });
+}
+
+QString ForumerBackend::loadOlderHistory() {
+  if (!m_posts)
+    return QStringLiteral("The post log isn't open");
+  const int64_t deeper = m_historyFloor - kLoadOlderSpanMs;
+  if (m_historyTarget == 0 || deeper < m_historyTarget)
+    m_historyTarget = std::max<int64_t>(1, deeper);
+  publishHistory();
+  if (!m_historyActive && !m_historyScheduled && m_joined) {
+    logEvent("history: loading four more weeks on request");
+    historyStep();
+  }
+  return QString();
+}
+
+void ForumerBackend::historyStep() {
+  if (!m_posts || !m_joined)
+    return;
+  if (m_historyTarget == 0 || m_historyTarget >= m_historyFloor) {
+    if (m_historyActive)
+      logEvent("history: complete back to " + std::to_string(m_historyFloor));
+    m_historyActive = false;
+    publishHistory();
+    return;
+  }
+  m_historyActive = true;
+  m_historyTo = m_historyFloor;
+  m_historyFrom = fc::sync::historyWindowStart(
+      m_historyFloor, m_historyTarget,
+      [this](int64_t from, int64_t to) { return m_posts->countRange(from, to); });
+  m_historyRounds = 0;
+  historySendRange();
+}
+
+void ForumerBackend::historySendRange() {
+  const auto held = m_posts->range(m_historyFrom, m_historyTo);
+  const fc::sync::Digest request =
+      fc::sync::makeDigest(held, m_historyFrom, fc::sync::kMaxDigestIds, m_historyTo);
+  const auto r = m_transport->publish(m_topic, fc::sync::encodeRange(request));
+  if (!r.ok)
+    logEvent("history: request failed: " + r.error);
+  m_historyRoundNew = 0;
+  ++m_historyRounds;
+  logEvent("history: asking for [" + std::to_string(m_historyFrom) + ", " +
+           std::to_string(m_historyTo) + "), holding " + std::to_string(held.size()));
+  publishHistory();
+  QTimer::singleShot(kHistoryRoundMs, this, [this]() { historyRoundDone(); });
+}
+
+void ForumerBackend::historyRoundDone() {
+  if (!m_historyActive)
+    return;
+  // Answers are capped per peer: a round that brought a lot may have left
+  // more behind, so ask about the same window again.
+  if (m_historyRoundNew >= kHistoryRepeatAt && m_historyRounds < kHistoryMaxRounds) {
+    historySendRange();
+    return;
+  }
+  m_historyFloor = m_historyFrom;
+  m_posts->setMeta("history_floor", std::to_string(m_historyFloor));
+  publishHistory();
+  QTimer::singleShot(1'000, this, [this]() { historyStep(); });
+}
+
+void ForumerBackend::publishHistory() {
+  const QJsonObject state{
+      {"floorMs", static_cast<qint64>(m_historyFloor)},
+      {"targetMs", static_cast<qint64>(m_historyTarget)},
+      {"active", m_historyActive || m_historyScheduled},
+      {"fromMs", static_cast<qint64>(m_historyFrom)},
+      {"toMs", static_cast<qint64>(m_historyTo)},
+      {"received", m_historyReceived},
+  };
+  setHistoryJson(QString::fromUtf8(QJsonDocument(state).toJson(QJsonDocument::Compact)));
 }
 
 // ── Outbound ──────────────────────────────────────────────────────────────────
@@ -1425,8 +1621,9 @@ void ForumerBackend::sendDigest(const char *why) {
   if (!m_joined || !m_transport || !m_posts)
     return;
   const qint64 now = nowMs();
-  const auto held = m_posts->recent(now - fc::sync::kWindowMs);
-  const fc::sync::Digest digest = fc::sync::makeDigest(held, now - fc::sync::kWindowMs);
+  const auto held = m_posts->recent(now - liveWindowMs());
+  fc::sync::Digest digest = fc::sync::makeDigest(held, now - liveWindowMs());
+  digest.oldestMs = m_posts->oldestTimestamp().value_or(0);
   const auto r = m_transport->publish(m_topic, fc::sync::encodeDigest(digest));
   if (!r.ok) {
     logEvent(std::string("digest (") + why + ") failed: " + r.error);
@@ -1435,7 +1632,32 @@ void ForumerBackend::sendDigest(const char *why) {
   m_lastDigestMs = now;
   logEvent(std::string("digest (") + why + "): " + std::to_string(digest.have.size()) +
            " post(s) held");
+  m_roundArrivals = 0;
+  scheduleFollowUp();
+  // We're online and syncing: everything up to now - window is covered by
+  // live digests. Saved now and then, so a long absence is noticed on restart.
+  if (now - m_lastCoveredSaveMs >= kCoveredSaveGapMs) {
+    m_lastCoveredSaveMs = now;
+    m_posts->setMeta("covered_until", std::to_string(now));
+  }
   publishSyncState();
+}
+
+void ForumerBackend::scheduleFollowUp() {
+  if (m_followUpScheduled)
+    return;
+  m_followUpScheduled = true;
+  QTimer::singleShot(kFollowUpWaitMs, this, [this]() {
+    m_followUpScheduled = false;
+    if (m_roundArrivals >= kFollowUpAt && m_followUps < kMaxFollowUps) {
+      ++m_followUps;
+      logEvent("catch-up: " + std::to_string(m_roundArrivals) +
+               " post(s) in the last round, asking again");
+      sendDigest("follow-up");   // resets the count and schedules the next check
+    } else {
+      m_followUps = 0;           // burst over
+    }
+  });
 }
 
 void ForumerBackend::scheduleDigest(int delayMs) {

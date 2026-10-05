@@ -37,6 +37,11 @@ Item {
     readonly property string followedJson:       hasBackend ? backend.followedDomains   : "[]"
     readonly property string quotaJson:          hasBackend && backend.quotaJson ? backend.quotaJson : "{}"
     readonly property string inboxJson:          hasBackend && backend.inboxJson ? backend.inboxJson : "[]"
+    readonly property string historyJson:        hasBackend && backend.historyJson ? backend.historyJson : "{}"
+    // Fetching older posts: see historyJson in forumer.rep.
+    readonly property var history: {
+        try { return JSON.parse(store.historyJson); } catch (e) { return {}; }
+    }
     readonly property string storageJson:        hasBackend && backend.storageJson ? backend.storageJson : "{}"
     // The storage probe (Settings): see storageJson in forumer.rep.
     readonly property var storage: {
@@ -381,13 +386,15 @@ Item {
     readonly property var myPosts: { store.rev; store.tick; return store.ownPosts(false); }
 
     // Posts that reached us during this session but were written before it
-    // started — i.e. what we missed while away and caught up on.
+    // started — i.e. what we missed while away and caught up on. Older
+    // history (fetched week by week) isn't "missed": it shows in the feed.
     readonly property var missed: {
         store.rev; store.tick;
         var cutoff = store.sessionStartMs - 60000;
+        var oldest = store.sessionStartMs - 7 * 24 * 3600 * 1000;
         var out = [];
         function consider(p, isTopic) {
-            if (!p.live || p.tsMs >= cutoff || p.placeholder) return;
+            if (!p.live || p.tsMs >= cutoff || p.tsMs < oldest || p.placeholder) return;
             var topic = isTopic ? p : store.topics[p.topicId];
             out.push({
                 id: p.id,
@@ -401,7 +408,13 @@ Item {
         for (var a in store.topics) consider(store.topics[a], true);
         for (var b in store.replies) consider(store.replies[b], false);
         out.sort(function (x, y) { return y.arrivedMs - x.arrivedMs; });
-        return out;
+        return out.slice(0, 100);
+    }
+
+    // "12 Sep" / "12 Sep 2025" for history dates.
+    function day(ms) {
+        var d = new Date(ms);
+        return Qt.formatDate(d, d.getFullYear() === new Date().getFullYear() ? "dd MMM" : "dd MMM yyyy");
     }
 
     // ── Replies to you ────────────────────────────────────────────────────────

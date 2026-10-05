@@ -60,6 +60,7 @@ public:
   QString loadBacklog() override;
   QString catchUp() override;
   QString retryUnsent() override;
+  QString loadOlderHistory() override;
 
   // ── .rep SLOTs: identity ───────────────────────────────────────────────────
   QString createIdentity(QString label, QString password) override;
@@ -116,6 +117,10 @@ private:
   void handlePayload(const QString &topic, const QByteArray &payload);
   void handlePost(forumer::post::Post post);
   void handleDigest(const forumer::sync::Digest &digest);
+  // A history request: answer with what we hold in its window (rate-limited).
+  void handleRange(const forumer::sync::Digest &range);
+  // Queue posts to re-send for someone else (digest and range answers).
+  void queueAnswers(const std::vector<std::string> &ids, const char *why);
 
   // Full acceptance check for a post from anywhere. "" if acceptable.
   std::string checkPost(const forumer::post::Post &post) const;
@@ -141,6 +146,10 @@ private:
   // Schedule the next periodic digest (jittered, so peers don't sync in step).
   void scheduleDigest(int delayMs);
 
+  // After a digest: if its answers brought a lot (peers cap each answer, and
+  // new keys are rate-limited), ask again soon instead of waiting minutes.
+  void scheduleFollowUp();
+
   // Re-send the posts queued by digest answers (batched, rate-limited).
   void flushAnswers();
 
@@ -150,6 +159,16 @@ private:
   // ── View ───────────────────────────────────────────────────────────────────
   void emitPost(const forumer::post::Post &post);
   void publishSyncState();
+
+  // ── History walk ───────────────────────────────────────────────────────────
+  // Load where history is complete back to; start walking once a peer has
+  // told us of older posts.
+  void loadHistoryState();
+  void maybeStartHistory();
+  void historyStep();          // pick the next window and ask for it
+  void historySendRange();     // one request round for the current window
+  void historyRoundDone();     // repeat the window, or move the floor down
+  void publishHistory();
   void publishQuota();
 
   // Push the unlocked account's inbox ("replies to you") to the view, now or
@@ -226,6 +245,25 @@ private:
   forumer::flood::TokenBucket m_resendBudget{forumer::flood::kResendPerMinute, forumer::flood::kResendBurst};
 
   bool m_inboxScheduled = false;
+
+  // History walk (see forumer_core/sync.h "History").
+  int64_t m_historyFloor = 0;      // complete back to here
+  int64_t m_historyTarget = 0;     // oldest post any peer has told us of (0: unknown)
+  bool m_historyActive = false;
+  bool m_historyScheduled = false;
+  int64_t m_historyFrom = 0;       // window being fetched: [from, to)
+  int64_t m_historyTo = 0;
+  int m_historyRoundNew = 0;       // new posts in the window this round
+  int m_historyRounds = 0;         // rounds spent on this window
+  int m_historyReceived = 0;       // older posts that arrived this session
+  qint64 m_lastRangeAnswerMs = 0;  // we answer one range request at a time
+  qint64 m_lastCoveredSaveMs = 0;
+
+  // Catch-up bursts: posts that arrived (or were deferred) since our last
+  // digest, and how many follow-up digests this burst has sent.
+  int m_roundArrivals = 0;
+  int m_followUps = 0;
+  bool m_followUpScheduled = false;
 
   // Storage probe state (see storageJson in forumer.rep).
   bool m_storageWired = false;

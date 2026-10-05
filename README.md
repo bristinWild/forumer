@@ -44,14 +44,16 @@ Built for [λPrize LP-0026: Forum App](https://github.com/logos-co/lambda-prize/
 | **Search** | ⌘K / Ctrl+K searches every post on the device. |
 | **Post status** | Every post you write shows *sending… → live*, or *failed* with retry. |
 | **Outbox** | Posts that couldn't be sent are kept on disk and retried automatically, even after a restart. |
-| **Offline catch-up** | Posts written while you were offline arrive when you come back (last 48 hours). |
+| **Offline catch-up** | Posts written while you were offline arrive when you come back. |
+| **Full history** | A newcomer gets the whole forum, not just the last two days: older posts are fetched from peers a week at a time, back to the oldest post anyone holds. |
+| **Formatting** | Topics and replies are written in Markdown with a toolbar (headings, bold, italic, code, lists, quotes, links), ⌘B / ⌘I / ⌘E, and a Write / Preview switch. Images and HTML in posts are never loaded, so reading a post can't reveal your IP address to its author. |
 | **Replies to you** | A badge and a list of replies to your posts and new replies in threads you started or joined, plus a notice when one arrives. Worked out on your device only — it even works for posts you made anonymously, and nobody can tell who was notified. |
 | **Missed tab** | Your unsent posts plus a *Catch up* button. |
 | **My posts** | Everything this account wrote, under any persona. Only you can see this list. |
 | **Flood control** | Proof-of-work on every post, hourly limits per persona and per account, with a counter in the composer. |
 | **Backup & restore** | Show the recovery phrase (password required), or restore an account from one. |
 | **Light and dark themes** | A clean, documentation-style layout. |
-| Media via Logos Storage | **(planned)** |
+| Media and history snapshots via Logos Storage | **(investigated, planned)** — see [§10](#10-design-decisions-and-findings) |
 | Private messages between personas | **(planned)** |
 | Mute a persona / hide a post | **(planned)** |
 
@@ -93,7 +95,7 @@ To start again from nothing: `rm -rf ~/forumer-test`.
 ./scripts/test-core.sh
 ```
 
-This builds `forumer_core` and runs its 104 unit tests. It needs only Nix; cmake, the compiler, libsodium, SQLite and nlohmann/json come from nixpkgs. Set `FORUMER_NO_NIX=1` to use the system's own instead.
+This builds `forumer_core` and runs its 110 unit tests. It needs only Nix; cmake, the compiler, libsodium, SQLite and nlohmann/json come from nixpkgs. Set `FORUMER_NO_NIX=1` to use the system's own instead.
 
 ### Install in Basecamp
 
@@ -287,6 +289,18 @@ A digest says: *"these are the posts I hold since time X"*. Every peer that hold
 
 Digests cover the last **48 hours** and list at most 512 ids (64-bit short ids). One peer answers at most 64 posts per digest, after a random 0.5–2.5 s delay. A post someone else re-sent in the last 30 s is skipped, so a room full of peers doesn't all answer at once.
 
+### History: everything older
+
+Each live digest also says `"oldest": <ms>` — the sender's oldest post — so a newcomer learns how far back the forum goes. It then walks back from the digest window one **week** at a time with a **range request**:
+
+```json
+{"v":1, "t":"range", "since":<ms>, "until":<ms>, "have":["<short id>", "..."]}
+```
+
+"These are the posts I hold dated in [since, until)": peers send the rest, capped at 64 each. While a round still brings many new posts the same window is asked again; then the walk moves a week further back. A window where we already hold more than 400 posts is halved (down to one hour) so the request can list them all. Progress is saved (`history_floor`), and after an absence longer than 48 hours the walk restarts from the top, so the gap is filled too — windows already held complete in one round. **Missed → history** shows the progress and has *load older* (four more weeks, even past what peers advertised).
+
+Peers answer one range request every 3 s at most, about at most two weeks at a time, and every answer draws on the re-send budget — a stream of requests can't turn a peer into a firehose. Posts arriving in answer to our own request skip the new-key budget, so history doesn't trickle in at the anti-flood rate.
+
 ---
 
 ## 8. Flood control
@@ -325,6 +339,7 @@ Rate-Limiting Nullifiers (RLN) in Logos Delivery v0.3 could later replace the ne
 |---|---|
 | Network-level metadata | All personas of one device publish from the same node; an observer of the network can correlate timing and IP. |
 | Writing style | Rotation doesn't change how someone writes. |
+| Links you click | Opening a link in a post visits that site from your own connection. Images and HTML in posts are never loaded, so merely reading a post contacts no one. |
 | A compromised device while unlocked | Malware can read the unlocked key. |
 | Deleting posts | Nothing published peer to peer can be reliably deleted, so Forumer doesn't offer delete. |
 | Honest clocks | `ts` is set by the author; ordering is best-effort (future dates are capped). |
@@ -337,6 +352,7 @@ Rate-Limiting Nullifiers (RLN) in Logos Delivery v0.3 could later replace the ne
 |---|---|
 | **Plain relay, not reliable channels (SDS)** | SDS's causal ordering held back later messages until earlier ones arrived. The re-sent copy of a lost post was itself held back as "missing dependencies", so one lost post blocked repair. Digests over plain relay repair gaps reliably. The reliable-channel code path is kept behind a switch (`useChannels`). |
 | **Digest repair instead of store queries** | It works with no store node and no server: any peer holding a post can restore it. |
+| **History over Delivery, not Logos Storage (for now)** | We built a Storage probe (Settings → storage) and tested sharing a file between two instances with storage_module v2.1.2. Findings: (1) a node behind a home router reports *NotReachable* and never announces what it holds; (2) fetching a file's manifest only asks the DHT for providers, so even a peer we dialled directly can't be fetched from ("Failed to fetch manifest … after 10 attempts"); (3) the module's own download gives up on the manifest after 3 s. So files shared from home laptops can't be found by others. storage_module v3 (what Basecamp ships) adds UPnP, relays and hole punching, but needs a newer Logos SDK than logos-module-builder 0.2.6 — that upgrade is a separate step. Until then, history travels as posts over Delivery, which already crosses home routers. |
 | **Local SQLite, not Logos SQL** | The post log is per-device and private (it also holds the outbox). Logos SQL runs as a blockchain zone, and the blockchain module is out of scope for LP-0026. |
 | **Own keys instead of `keystore_signer`** | Forumer needs keys derived from one master key and the ability to verify, not only sign. |
 | **One topic for all domains** | No per-domain duplication, and the network doesn't learn what anyone reads. |
@@ -362,7 +378,7 @@ forumer/
 │   ├── include/forumer_core/    account_store, bytes, crypto, flood, identity, mnemonic,
 │   │                            post, post_store, sync, thread, vault
 │   ├── src/
-│   └── tests/                   104 unit tests
+│   └── tests/                   110 unit tests
 ├── scripts/
 │   ├── test-core.sh             build and run the unit tests
 │   └── two-instances.sh         two isolated instances for end-to-end testing
@@ -390,14 +406,14 @@ Backend logs are prefixed `[forumer backend]` on the host's stderr.
 | Requirement | Status | How |
 |---|---|---|
 | No central server or service | ✅ | Peer-to-peer over Logos Delivery; all state on the device |
-| Uses the Logos stack | ✅ / ⏳ | Delivery for all posts and sync. Storage (media) and Chat (private messages) planned |
+| Uses the Logos stack | ✅ / ⏳ | Delivery for posts, sync and history. Storage evaluated (see §10) and planned for media/snapshots; Chat planned |
 | Accounts, topics, replies | ✅ | Several accounts; topics with domains; two-level replies |
 | Reply by unique id, alias, or no id | ✅ | Persona / alias / anonymous per post |
 | Privacy of one identity everywhere | ✅ | Keep / manual / auto rotation ([§5](#5-identity-and-privacy)) |
 | Basecamp GUI with local build steps | ✅ | [§2](#2-quick-start) |
 | Pre-built in a module catalog | ⏳ | Planned |
 | Usable by a non-expert | ✅ | Guided onboarding, search, clear sending / live / failed states |
-| Past messages after being offline | ✅ | Digest catch-up, last 48 h ([§7](#7-network-and-sync)) |
+| Past messages after being offline | ✅ | Digest catch-up for 48 h, then week-by-week history back to the forum's first post ([§7](#7-network-and-sync)) |
 | Failed sends kept for retry | ✅ | Persistent outbox, automatic and manual retry |
 | Doesn't flood the network | ✅ | [§8](#8-flood-control) |
 | Sound, reusable architecture | ✅ | `forumer_core` library, unit-tested, no UI dependencies |
@@ -419,11 +435,14 @@ Backend logs are prefixed `[forumer backend]` on the host's stderr.
 - [x] Flood control and quota counter
 - [x] Redesigned interface (light/dark)
 - [x] Replies to you: unread badge, list, in-thread highlight, notice
+- [x] Markdown formatting with toolbar and preview; user text never rendered as HTML
 - [ ] Media attachments through Logos Storage
 - [ ] Private messages between personas
 - [ ] Mute a persona / hide a post
 - [ ] CI, module catalog release, video demo, FURPS self-assessment
-- Later: private forums with invite links; catch-up beyond 48 h through Storage snapshots; RLN with Delivery v0.3
+- [x] Full history for newcomers (week-by-week range requests over Delivery)
+- [ ] logos-module-builder 0.3.x + storage_module v3; retest Storage across routers
+- Later: private forums with invite links; history snapshots and media through Logos Storage; RLN with Delivery v0.3
 
 ---
 

@@ -55,7 +55,15 @@ std::vector<uint8_t> encodePost(const post::Post& post) {
 }
 
 std::vector<uint8_t> encodeDigest(const Digest& digest) {
-    return toBytes({{"v", kWireVersion}, {"t", "digest"}, {"since", digest.sinceMs}, {"have", digest.have}});
+    json j{{"v", kWireVersion}, {"t", "digest"}, {"since", digest.sinceMs}, {"have", digest.have}};
+    if (digest.oldestMs > 0)
+        j["oldest"] = digest.oldestMs;
+    return toBytes(j);
+}
+
+std::vector<uint8_t> encodeRange(const Digest& range) {
+    return toBytes({{"v", kWireVersion}, {"t", "range"}, {"since", range.sinceMs},
+                    {"until", range.untilMs}, {"have", range.have}});
 }
 
 DecodeResult decode(const std::vector<uint8_t>& payload) {
@@ -89,15 +97,26 @@ DecodeResult decode(const std::vector<uint8_t>& payload) {
         return {std::move(msg), DecodeError::None};
     }
 
-    if (type == "digest") {
+    if (type == "digest" || type == "range") {
         auto since = j.find("since");
         auto have = j.find("have");
         if (since == j.end() || !since->is_number_integer() || have == j.end() || !have->is_array())
             return fail(DecodeError::Malformed);
         if (have->size() > kMaxDigestIds)
             return fail(DecodeError::Malformed);
-        msg.type = MessageType::Digest;
+        msg.type = type == "range" ? MessageType::Range : MessageType::Digest;
         msg.digest.sinceMs = since->get<int64_t>();
+        if (msg.type == MessageType::Range) {
+            auto until = j.find("until");
+            if (until == j.end() || !until->is_number_integer() ||
+                until->get<int64_t>() <= msg.digest.sinceMs)
+                return fail(DecodeError::Malformed);
+            msg.digest.untilMs = until->get<int64_t>();
+        } else if (auto oldest = j.find("oldest"); oldest != j.end()) {
+            if (!oldest->is_number_integer() || oldest->get<int64_t>() < 0)
+                return fail(DecodeError::Malformed);
+            msg.digest.oldestMs = oldest->get<int64_t>();
+        }
         msg.digest.have.reserve(have->size());
         for (const auto& id : *have) {
             if (!id.is_string() || !isShortId(id.get<std::string>()))
@@ -116,13 +135,15 @@ std::string shortId(std::string_view id) {
     return std::string(id.substr(0, std::min(id.size(), kShortIdLength)));
 }
 
-Digest makeDigest(const std::vector<PostSummary>& held, int64_t sinceMs, size_t maxIds) {
+Digest makeDigest(const std::vector<PostSummary>& held, int64_t sinceMs, size_t maxIds,
+                  int64_t untilMs) {
     Digest d;
     d.sinceMs = sinceMs;
+    d.untilMs = untilMs;
     int64_t oldestListed = sinceMs;
     bool truncated = false;
     for (const auto& p : held) {
-        if (p.timestampMs < sinceMs)
+        if (p.timestampMs < sinceMs || (untilMs > 0 && p.timestampMs >= untilMs))
             continue;
         if (d.have.size() == maxIds) {
             truncated = true;
@@ -145,7 +166,8 @@ std::vector<std::string> missingFrom(const Digest& digest, const std::vector<Pos
     for (const auto& p : held) {
         if (out.size() == max)
             break;
-        if (p.timestampMs < digest.sinceMs)
+        if (p.timestampMs < digest.sinceMs ||
+            (digest.untilMs > 0 && p.timestampMs >= digest.untilMs))
             continue;
         if (have.count(shortId(p.id)) == 0)
             out.push_back(p.id);

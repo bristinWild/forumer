@@ -100,6 +100,20 @@ public:
     /// Posts whose author timestamp is >= sinceMs, newest first.
     std::vector<PostSummary> recent(int64_t sinceMs) const;
 
+    /// Posts dated in [fromMs, toMs), newest first (history windows).
+    std::vector<PostSummary> range(int64_t fromMs, int64_t toMs) const;
+
+    /// How many posts are dated in [fromMs, toMs).
+    size_t countRange(int64_t fromMs, int64_t toMs) const;
+
+    /// The author timestamp of the oldest post held, if any.
+    std::optional<int64_t> oldestTimestamp() const;
+
+    /// Small persistent settings of the log itself (e.g. how far back the
+    /// history is complete). nullopt if unset.
+    std::optional<std::string> meta(const std::string& key) const;
+    bool setMeta(const std::string& key, const std::string& value);
+
     /// Every persona key that has signed a stored post (identity restore uses
     /// this to find personas already in use).
     std::set<Bytes> authors() const;

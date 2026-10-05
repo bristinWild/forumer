@@ -43,6 +43,11 @@ class Forumer
     // Re-send every post of ours not yet confirmed, ignoring the retry backoff.
     SLOT(QString retryUnsent())
 
+    // History older than the digest window is fetched automatically, a week at
+    // a time back to the oldest post any peer has (see historyJson). This
+    // walks four more weeks back now, even past that.
+    SLOT(QString loadOlderHistory())
+
     // ── Identity ──────────────────────────────────────────────────────────────
     // Accounts are master secrets kept in password-protected vaults on this
     // device (forumer_core/account_store.h). Exactly one may be unlocked; its
@@ -161,6 +166,12 @@ class Forumer
     // topic the account wrote (else in a thread the account replied in).
     // "[]" while locked.
     PROP(QString inboxJson="[]" READONLY)
+
+    // Fetching older posts (forumer_core/sync.h, "History"):
+    //   {"floorMs": complete back to here, "targetMs": oldest post peers know
+    //    of (0: unknown), "active": bool, "fromMs"/"toMs": window being
+    //    fetched, "received": older posts that arrived this session}
+    PROP(QString historyJson="{}" READONLY)
 
     // The storage probe, for Settings:
     //   {"state": "off"|"starting"|"running"|"failed", "detail": "…",

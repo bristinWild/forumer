@@ -19,6 +19,11 @@
 //           that post again. Sent shortly after joining, then periodically, and
 //           on demand ("Catch up").
 //
+//   range   {"v":1, "t":"range", "since":<ms>, "until":<ms>, "have":[…]}
+//           A history request: the same idea for an older window [since,
+//           until). See "History" below. Live digests may also carry
+//           "oldest":<ms>, the sender's oldest post.
+//
 // Digests are what make delivery dependable. A post can be lost on the way in
 // (the receiver had only just joined, was offline, or the network dropped
 // it); the next digest from the receiver names what it holds, and whoever
@@ -27,6 +32,7 @@
 //
 // Everything here is pure (no I/O), so the rules are unit-tested.
 
+#include <algorithm>
 #include <cstdint>
 #include <optional>
 #include <string>
@@ -72,15 +78,17 @@ std::string contentTopic(std::string_view forum);
 
 struct Digest {
     int64_t sinceMs = 0;
+    int64_t untilMs = 0;            // 0: up to now. Set on history (range) requests.
     std::vector<std::string> have;  // short ids (see shortId)
+    int64_t oldestMs = 0;           // sender's oldest post (0: unknown); live digests only
 };
 
-enum class MessageType { Post, Digest };
+enum class MessageType { Post, Digest, Range };
 
 struct Message {
     MessageType type = MessageType::Post;
     std::optional<post::Post> post;  // Post: parsed but NOT yet verified
-    Digest digest;                   // Digest
+    Digest digest;                   // Digest and Range (a digest with untilMs set)
 };
 
 enum class DecodeError {
@@ -100,6 +108,12 @@ struct DecodeResult {
 std::vector<uint8_t> encodePost(const post::Post& post);
 std::vector<uint8_t> encodeDigest(const Digest& digest);
 
+/// A history request: "these are the posts I hold dated in [since, until)" -
+/// peers holding others in that window send them. Its own message type, so a
+/// peer that doesn't know it ignores it instead of answering a live digest.
+///   {"v":1, "t":"range", "since":<ms>, "until":<ms>, "have":[…]}
+std::vector<uint8_t> encodeRange(const Digest& range);
+
 /// Parse a payload. Checks shape and size only: a decoded post must still go
 /// through post::verify() and acceptTimestamp() before it is trusted.
 DecodeResult decode(const std::vector<uint8_t>& payload);
@@ -114,11 +128,11 @@ std::string shortId(std::string_view id);
 /// newest are listed and `since` moves up to the oldest listed post, so the
 /// digest never claims we lack something we simply left out.
 Digest makeDigest(const std::vector<PostSummary>& held, int64_t sinceMs,
-                  size_t maxIds = kMaxDigestIds);
+                  size_t maxIds = kMaxDigestIds, int64_t untilMs = 0);
 
 /// Which of our posts the digest's sender is missing: those in `held`
-/// (newest first) dated at or after its `since` and not listed in it. At
-/// most `max`, newest first - full post ids.
+/// (newest first) dated at or after its `since` (and before its `until`, if
+/// set) and not listed in it. At most `max`, newest first - full post ids.
 std::vector<std::string> missingFrom(const Digest& digest, const std::vector<PostSummary>& held,
                                      size_t max = kMaxAnswer);
 
@@ -128,6 +142,35 @@ std::vector<std::string> missingFrom(const Digest& digest, const std::vector<Pos
 /// the digest's whole window (PostStore::recent(digest.sinceMs)), or posts we
 /// hold but dated before our own window would look unknown.
 bool listsUnknown(const Digest& digest, const std::vector<PostSummary>& held);
+
+// ── History ──────────────────────────────────────────────────────────────────
+//
+// Digests only reach back kWindowMs. Older posts are fetched by walking back
+// in windows: send a range request for [start, floor), let peers answer,
+// repeat while answers keep coming, then move the floor down to start. Peers
+// advertise their oldest post in live digests (oldestMs), which tells a
+// newcomer how far back the forum goes.
+
+/// Default width of one history window.
+inline constexpr int64_t kHistorySpanMs = 7LL * 24 * 60 * 60 * 1000;
+/// Narrowest window (a very busy hour still fits in a few rounds).
+inline constexpr int64_t kHistoryMinSpanMs = 60LL * 60 * 1000;
+/// Most posts we may already hold in a window and still list them all.
+inline constexpr size_t kHistoryMaxHeld = 400;
+
+/// Where the next history window starts, walking down from `floorMs` towards
+/// `targetMs`: one kHistorySpanMs back, halved while we already hold more than
+/// kHistoryMaxHeld posts in it (so the request can list them all), never
+/// below the target or narrower than kHistoryMinSpanMs. `countHeld(from, to)`
+/// counts posts held in [from, to).
+template <typename CountHeld>
+int64_t historyWindowStart(int64_t floorMs, int64_t targetMs, CountHeld countHeld) {
+    int64_t span = kHistorySpanMs;
+    while (span > kHistoryMinSpanMs &&
+           countHeld(std::max(targetMs, floorMs - span), floorMs) > kHistoryMaxHeld)
+        span /= 2;
+    return std::max(targetMs, floorMs - span);
+}
 
 /// Whether a post's author timestamp is plausible relative to our clock.
 bool acceptTimestamp(int64_t postMs, int64_t nowMs);

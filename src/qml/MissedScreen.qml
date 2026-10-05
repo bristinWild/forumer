@@ -93,4 +93,63 @@ Page {
             }
         }
     }
+    // Older history: fetched week by week from peers, back to the oldest post
+    // anyone holds. Automatic; "load older" walks four more weeks back.
+    Section {
+        id: historySection
+        readonly property var h: missed.store.history || ({})
+        title: "history"
+        caption: !h.floorMs ? ""
+               : h.active ? "fetching " + missed.store.day(h.fromMs) + " – " + missed.store.day(h.toMs) + "…"
+               : (h.targetMs && h.targetMs < h.floorMs) ? "waiting for peers"
+               : "complete back to " + missed.store.day(h.floorMs)
+        note: "posts from before the last two days are fetched from peers a week at a time, back to the oldest post anyone has. it runs on its own; nothing to do here unless you want to go further back."
+        actions: [
+            FButton {
+                implicitHeight: 36
+                text: historySection.h.active ? "fetching…" : "load older"
+                icon: "refresh"
+                enabled: !historySection.h.active
+                onClicked: missed.store.call(missed.store.backend.loadOlderHistory())
+            }
+        ]
+
+        GridLayout {
+            Layout.fillWidth: true
+            Layout.topMargin: 18
+            columns: 2
+            columnSpacing: 24
+            rowSpacing: 6
+            Repeater {
+                model: [
+                    ["complete back to", historySection.h.floorMs ? missed.store.day(historySection.h.floorMs) : "…"],
+                    ["oldest known post", historySection.h.targetMs ? missed.store.day(historySection.h.targetMs) : "not heard of yet"],
+                    ["older posts received", String(historySection.h.received || 0) + " this session"]
+                ]
+                delegate: Item {
+                    required property var modelData
+                    Layout.columnSpan: 2
+                    Layout.fillWidth: true
+                    implicitHeight: 20
+                    Text {
+                        textFormat: Text.PlainText
+                        width: 170
+                        text: parent.modelData[0]
+                        font.family: Ui.sans
+                        font.pixelSize: Ui.size.ui
+                        color: Ui.text2
+                    }
+                    Text {
+                        textFormat: Text.PlainText
+                        x: 194
+                        width: parent.width - x
+                        text: parent.modelData[1]
+                        font.family: Ui.mono
+                        font.pixelSize: Ui.size.small
+                        color: Ui.text
+                    }
+                }
+            }
+        }
+    }
 }

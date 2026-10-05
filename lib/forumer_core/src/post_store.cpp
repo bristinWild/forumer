@@ -99,6 +99,7 @@ public:
         return p ? Bytes(p, p + sqlite3_column_bytes(stmt_, i)) : Bytes();
     }
     int64_t colI64(int i) const { return sqlite3_column_int64(stmt_, i); }
+    sqlite3_stmt* raw() const { return stmt_; }
 
 private:
     sqlite3_stmt* stmt_ = nullptr;
@@ -243,6 +244,48 @@ std::vector<PostSummary> PostStore::recent(int64_t sinceMs) const {
     while (s.step() == SQLITE_ROW)
         out.push_back({s.colText(0), s.colI64(1)});
     return out;
+}
+
+std::vector<PostSummary> PostStore::range(int64_t fromMs, int64_t toMs) const {
+    std::lock_guard lock(mutex_);
+    std::vector<PostSummary> out;
+    Stmt s(db_, "SELECT id, ts FROM posts WHERE ts >= ?1 AND ts < ?2 ORDER BY ts DESC, id DESC;");
+    s.i64(1, fromMs).i64(2, toMs);
+    while (s.step() == SQLITE_ROW)
+        out.push_back({s.colText(0), s.colI64(1)});
+    return out;
+}
+
+size_t PostStore::countRange(int64_t fromMs, int64_t toMs) const {
+    std::lock_guard lock(mutex_);
+    Stmt s(db_, "SELECT COUNT(*) FROM posts WHERE ts >= ?1 AND ts < ?2;");
+    s.i64(1, fromMs).i64(2, toMs);
+    return s.step() == SQLITE_ROW ? static_cast<size_t>(s.colI64(0)) : 0;
+}
+
+std::optional<int64_t> PostStore::oldestTimestamp() const {
+    std::lock_guard lock(mutex_);
+    Stmt s(db_, "SELECT MIN(ts) FROM posts;");
+    if (s.step() != SQLITE_ROW || sqlite3_column_type(s.raw(), 0) == SQLITE_NULL)
+        return std::nullopt;
+    return s.colI64(0);
+}
+
+std::optional<std::string> PostStore::meta(const std::string& key) const {
+    std::lock_guard lock(mutex_);
+    Stmt s(db_, "SELECT value FROM meta WHERE key = ?1;");
+    s.text(1, key);
+    if (s.step() != SQLITE_ROW)
+        return std::nullopt;
+    return s.colText(0);
+}
+
+bool PostStore::setMeta(const std::string& key, const std::string& value) {
+    std::lock_guard lock(mutex_);
+    Stmt s(db_, "INSERT INTO meta(key, value) VALUES (?1, ?2) "
+                "ON CONFLICT(key) DO UPDATE SET value = excluded.value;");
+    s.text(1, key).text(2, value);
+    return s.step() == SQLITE_DONE;
 }
 
 size_t PostStore::countByAuthor(const Bytes& author, post::Kind kind, int64_t fromMs,
