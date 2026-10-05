@@ -36,7 +36,14 @@ jobs:
             extra-substituters = https://cache.nix.logos.co/public
             extra-trusted-public-keys = public:l4HrXgL4nw246+LBh2SOJyhz64BoGegOYLheT/iIAPU=
       - name: Build portable package
-        run: nix build -L .#lgx-portable
+        # Downloads from the binary caches occasionally drop mid-transfer:
+        # retry, and build anything that still can't be fetched (--fallback).
+        run: |
+          for i in 1 2 3; do
+            nix build -L .#lgx-portable --fallback && exit 0
+            echo "build attempt $i failed, retrying"; sleep 20
+          done
+          exit 1
       - name: Name the package
         run: |
           version="$(jq -r .version metadata.json)"

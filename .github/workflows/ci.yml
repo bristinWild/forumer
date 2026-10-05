@@ -39,4 +39,11 @@ jobs:
             extra-substituters = https://cache.nix.logos.co/public
             extra-trusted-public-keys = public:l4HrXgL4nw246+LBh2SOJyhz64BoGegOYLheT/iIAPU=
       - name: Build module
-        run: nix build -L
+        # Downloads from the binary caches occasionally drop mid-transfer:
+        # retry, and build anything that still can't be fetched (--fallback).
+        run: |
+          for i in 1 2 3; do
+            nix build -L --fallback && exit 0
+            echo "build attempt $i failed, retrying"; sleep 20
+          done
+          exit 1
