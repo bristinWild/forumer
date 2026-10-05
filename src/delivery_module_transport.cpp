@@ -3,6 +3,7 @@
 #include <utility>
 
 #include <QByteArray>
+#include <QCryptographicHash>
 #include <QJsonDocument>
 #include <QString>
 #include <QVariant>
@@ -79,44 +80,106 @@ DeliveryModuleTransport::SendResult DeliveryModuleTransport::publish(
     return {true, stringOf(r), {}};
 }
 
-std::vector<std::vector<uint8_t>> DeliveryModuleTransport::fetchHistory(
-    const std::string& contentTopic, const std::string& peerAddr, const std::string& requestId,
-    int64_t timeoutMs) {
-    std::vector<std::vector<uint8_t>> out;
+std::string DeliveryModuleTransport::autoshardPubsubTopic(const std::string& contentTopic,
+                                                          int cluster, int shards) {
+    // "/application/version/name/encoding"
+    std::vector<std::string> parts;
+    size_t i = 1;
+    while (i <= contentTopic.size()) {
+        const size_t j = contentTopic.find('/', i);
+        parts.push_back(contentTopic.substr(i, j == std::string::npos ? std::string::npos : j - i));
+        if (j == std::string::npos)
+            break;
+        i = j + 1;
+    }
+    if (contentTopic.empty() || contentTopic[0] != '/' || parts.size() < 2 || shards <= 0)
+        return {};
+    const QByteArray digest = QCryptographicHash::hash(
+        QByteArray::fromStdString(parts[0] + parts[1]), QCryptographicHash::Sha256);
+    uint64_t v = 0;
+    for (int k = 24; k < 32; ++k)
+        v = (v << 8) | static_cast<uint8_t>(digest[k]);
+    return "/waku/2/rs/" + std::to_string(cluster) + "/" +
+           std::to_string(v % static_cast<uint64_t>(shards));
+}
 
+DeliveryModuleTransport::StorePage DeliveryModuleTransport::parseStorePage(
+    const std::string& responseJson) {
+    StorePage page;
+    const json response = json::parse(responseJson, nullptr, false);
+    if (response.is_discarded() || !response.is_object()) {
+        page.error = "unreadable store response";
+        return page;
+    }
+    const auto code = response.find("statusCode");
+    if (code != response.end() && code->is_number_integer()) {
+        const int c = code->get<int>();
+        if (c < 200 || c >= 300) {
+            const auto desc = response.find("statusDesc");
+            page.error = "store node said " + std::to_string(c) +
+                         (desc != response.end() && desc->is_string() ? " " + desc->get<std::string>()
+                                                                     : std::string());
+            return page;
+        }
+    }
+    const auto messages = response.find("messages");
+    if (messages == response.end() || !messages->is_array()) {
+        page.error = "store response without messages";
+        return page;
+    }
+    for (const auto& entry : *messages) {
+        if (!entry.is_object())
+            continue;
+        const auto message = entry.find("message");
+        if (message == entry.end() || !message->is_object())
+            continue;
+        const auto payload = message->find("payload");
+        if (payload == message->end() || !payload->is_string())
+            continue;
+        const std::string decoded = base64Decode(payload->get<std::string>());
+        if (!decoded.empty())
+            page.payloads.emplace_back(decoded.begin(), decoded.end());
+    }
+    const auto cursor = response.find("paginationCursor");
+    if (cursor != response.end() && cursor->is_string())
+        page.cursor = cursor->get<std::string>();
+    page.ok = true;
+    return page;
+}
+
+void DeliveryModuleTransport::queryStorePage(const std::string& contentTopic, int cluster,
+                                             int64_t sinceMs, const std::string& cursor,
+                                             const std::string& peerAddr, int64_t timeoutMs,
+                                             std::function<void(StorePage)> done) {
+    static uint64_t counter = 0;
     json req;
-    req["requestId"] = requestId;
+    req["requestId"] = "forumer-" + std::to_string(++counter);
     req["includeData"] = true;
     req["paginationForward"] = true;
+    req["paginationLimit"] = 100;
+    req["pubsubTopic"] = autoshardPubsubTopic(contentTopic, cluster);
     req["contentTopics"] = json::array({contentTopic});
+    req["timeStart"] = sinceMs * 1'000'000;  // nanoseconds
+    if (!cursor.empty())
+        req["paginationCursor"] = cursor;
 
-    LogosResult res = modules_.delivery_module.storeQuery(qs(req.dump()), qs(peerAddr),
-                                                          static_cast<int>(timeoutMs));
-    if (!res.success)
-        return out;
-
-    // StoreQueryResponseHex: { "messages": [ { "message": { "payload": base64 } } ] }.
-    // The Qt wrapper may hand the response back as a JSON string or as an
-    // already-structured map/list; normalise both to JSON text.
-    QString text = res.value.toString();
-    if (text.isEmpty())
-        text = QString::fromUtf8(QJsonDocument::fromVariant(res.value).toJson(QJsonDocument::Compact));
-
-    const json response = json::parse(text.toStdString(), nullptr, false);
-    if (response.is_discarded() || !response.is_object())
-        return out;
-    auto messages = response.find("messages");
-    if (messages == response.end() || !messages->is_array())
-        return out;
-
-    for (const auto& entry : *messages) {
-        if (!entry.is_object() || !entry.contains("message"))
-            continue;
-        const json& message = entry["message"];
-        if (!message.is_object() || !message.contains("payload") || !message["payload"].is_string())
-            continue;
-        const std::string decoded = base64Decode(message["payload"].get<std::string>());
-        out.emplace_back(decoded.begin(), decoded.end());
-    }
-    return out;
+    // Async: a synchronous storeQuery would block this thread (and the view's
+    // replica) for as long as the store node takes to answer.
+    modules_.delivery_module.storeQueryAsync(
+        qs(req.dump()), qs(peerAddr), timeoutMs, [done = std::move(done)](LogosResult r) {
+            if (!r.success) {
+                StorePage failed;
+                failed.error = errorOf(r);
+                if (failed.error.empty())
+                    failed.error = "no answer";
+                done(std::move(failed));
+                return;
+            }
+            // The Qt wrapper may hand the response back as JSON text or as an
+            // already-structured map; normalise both to text.
+            QString text = r.value.toString();
+            if (text.isEmpty())
+                text = QString::fromUtf8(QJsonDocument::fromVariant(r.value).toJson(QJsonDocument::Compact));
+            done(parseStorePage(text.toStdString()));
+        });
 }

@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cstdint>
+#include <functional>
 #include <set>
 #include <string>
 #include <vector>
@@ -53,13 +54,34 @@ public:
     /// False when channels are off, or once the node has refused one.
     bool usingChannels() const { return channelsAvailable_; }
 
-    /// Historical payloads for `contentTopic` from the store node at
-    /// `peerAddr`, newest last. Empty on any failure: storeQuery is flagged
-    /// upstream as unstable. Not used until a store node is configured.
-    std::vector<std::vector<uint8_t>> fetchHistory(const std::string& contentTopic,
-                                                   const std::string& peerAddr,
-                                                   const std::string& requestId,
-                                                   int64_t timeoutMs);
+    /// One page of a store query: the payloads, and where the next page
+    /// starts ("" = this was the last).
+    struct StorePage {
+        bool ok = false;
+        std::string error;
+        std::vector<std::vector<uint8_t>> payloads;
+        std::string cursor;
+    };
+
+    /// Asks the store node at `peerAddr` (a full multiaddr with /p2p/) for one
+    /// page of `contentTopic` messages since `sinceMs`, oldest first. Async:
+    /// `done` runs later on this thread. storeQuery is flagged upstream as
+    /// unstable, so every field of the answer is checked (parseStorePage).
+    void queryStorePage(const std::string& contentTopic, int cluster, int64_t sinceMs,
+                        const std::string& cursor, const std::string& peerAddr,
+                        int64_t timeoutMs, std::function<void(StorePage)> done);
+
+    /// StoreQueryResponseHex -> StorePage. Never throws: a store node's last
+    /// page carries "paginationCursor": null, and anything unexpected is an
+    /// error rather than a crash.
+    static StorePage parseStorePage(const std::string& responseJson);
+
+    /// The relay shard a content topic lands on under autosharding: SHA-256
+    /// of the topic's application and version fields, last 8 bytes
+    /// big-endian, modulo the shard count. "/forumer/3/public/proto" on
+    /// cluster 3 -> "/waku/2/rs/3/4". Store queries filter on it.
+    static std::string autoshardPubsubTopic(const std::string& contentTopic, int cluster,
+                                            int shards = 8);
 
 private:
     // Opens (or re-opens after a restart) the channel for `topic`. False when

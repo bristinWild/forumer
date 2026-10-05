@@ -1,17 +1,23 @@
 {
   "name": "forumer",
   "display_name": "Forumer",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "type": "ui_qml",
   "interface": "universal",
-  "category": "example",
-  "description": "Forumer: a private, serverless forum on the Logos stack. Personas, identity rotation, offline catch-up and an outbox.",
+  "category": "social",
+  "description": "A private forum with no server: topics, threads and domains over Logos Delivery, history from peers and the network's store nodes, and posts signed as a persona, under an alias, or anonymously.",
   "main": "forumer_plugin",
-  "icon": null,
+  "icon": "assets/icon.png",
   "view": "qml/Main.qml",
   "dependencies": [
-    "delivery_module",
-    "storage_module"
+    {
+      "name": "delivery_module",
+      "version": "~0.3.0"
+    },
+    {
+      "name": "storage_module",
+      "version": "~3.0.0"
+    }
   ],
   "provides": [
     {

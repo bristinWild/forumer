@@ -20,8 +20,8 @@
 #include <QLatin1String>
 #include <QHostAddress>
 #include <QNetworkInterface>
+#include <QPointer>
 #include <QRandomGenerator>
-#include <QRegularExpression>
 #include <QStandardPaths>
 #include <QTextStream>
 #include <QTimer>
@@ -113,6 +113,11 @@ constexpr int kHistoryRoundMs = 12'000;
 constexpr int kHistoryRepeatAt = 24;
 constexpr int kHistoryMaxRounds = 20;
 constexpr int kHistoryStartDelayMs = 20'000;
+// Store nodes: asked once per session, a few seconds after joining.
+constexpr int kStoreStartDelayMs = 6'000;
+constexpr int64_t kStoreTimeoutMs = 15'000;
+constexpr int kStoreMaxPages = 20;                       // x 100 messages, per node
+constexpr int64_t kStoreLookbackMs = 30LL * 86'400'000;  // what store nodes keep at most
 constexpr qint64 kRangeAnswerGapMs = 3'000;
 constexpr int64_t kRangeMaxSpanMs = 2 * fc::sync::kHistorySpanMs;
 constexpr int64_t kLoadOlderSpanMs = 4 * fc::sync::kHistorySpanMs;
@@ -394,6 +399,8 @@ void ForumerBackend::joinForum() {
   }
   scheduleDigest(kFirstDigestMs);
   maybeStartHistory();
+  if (!m_storeStarted)
+    QTimer::singleShot(kStoreStartDelayMs, this, [this]() { startStoreHistory(); });
 }
 
 void ForumerBackend::refreshStatus() {
@@ -1030,15 +1037,26 @@ QString ForumerBackend::storageFetch(QString code) {
     return QStringLiteral("Start storage first");
   if (cid.isEmpty())
     return QStringLiteral("Paste a CID first");
-  // A Forumer post id (32 hex chars, from "copy id" on a topic) is the
-  // likeliest mix-up: say so instead of letting the download fail.
-  static const QRegularExpression postId(QStringLiteral("^[0-9a-f]{32}$"));
-  if (postId.match(cid).hasMatch())
-    return QStringLiteral("That's a post id (from \"copy id\" on a topic). Use the id shown after "
+  // Plain character checks, no QRegularExpression: under Basecamp's hardened
+  // runtime on macOS its JIT is not allowed to run.
+  auto only = [](const QString &text, auto ok) {
+    for (const QChar c : text)
+      if (c.unicode() > 127 || !ok(static_cast<char>(c.unicode())))
+        return false;
+    return true;
+  };
+  // A Forumer post id (32 hex chars, from a thread's link) is the likeliest
+  // mix-up: say so instead of letting the download fail.
+  if (cid.size() == 32 &&
+      only(cid, [](char c) { return (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f'); }))
+    return QStringLiteral("That's a forum post id, not a storage id. Use the code shown after "
                           "\"share a test file\" in the other window - it starts with z.");
   // Storage CIDs are base58 (z…, Qm…) or base32 (b…) text.
-  static const QRegularExpression cidShape(QStringLiteral("^[A-Za-z0-9]{20,128}$"));
-  if (!cidShape.match(cid).hasMatch())
+  const bool cidShape = cid.size() >= 20 && cid.size() <= 128 &&
+                        only(cid, [](char c) {
+                          return (c >= '0' && c <= '9') || (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z');
+                        });
+  if (!cidShape)
     return QStringLiteral("That doesn't look like a storage id");
 
   const QString dir = dataDir() + QStringLiteral("/storage-test");
@@ -1361,7 +1379,8 @@ void ForumerBackend::handlePost(fc::post::Post post) {
   // Exception: old posts arriving in answer to our own history request -
   // otherwise history would trickle in at the anti-flood rate.
   const int64_t ts = post.content.timestampMs;
-  const bool inHistoryWindow = m_historyActive && ts >= m_historyFrom && ts < m_historyTo;
+  const bool inHistoryWindow =
+      m_storeImport || (m_historyActive && ts >= m_historyFrom && ts < m_historyTo);
   if (!inHistoryWindow && !m_posts->hasAuthor(post.publicKey) && !m_newKeyBudget.take(nowMs())) {
     m_lastSeenOnWire.remove(qs(post.id));   // let peers offer it again
     ++m_roundArrivals;                       // more to come: ask again soon
@@ -1586,6 +1605,135 @@ void ForumerBackend::historyRoundDone() {
   QTimer::singleShot(1'000, this, [this]() { historyStep(); });
 }
 
+// ── History from the network's store nodes ───────────────────────────────────
+//
+// Logos Delivery's fleet nodes keep recent messages (the "store" protocol).
+// Peers answer digests and range requests only while someone who holds the
+// posts is online; the store nodes answer even when nobody is. Asked once per
+// session, node by node, until one has given us posts. Every post is checked
+// exactly like a live one (signature, proof-of-work, flood limits) - a store
+// node can withhold posts but can't forge or alter them. Only posts are taken
+// from the archive: old digests and range requests in it are ignored, or a
+// newcomer would answer requests that were settled days ago.
+
+int ForumerBackend::deliveryCluster() const {
+  return networkPreset() == QLatin1String("logos.test") ? 2 : 3;
+}
+
+QStringList ForumerBackend::storePeers() const {
+  const QString custom = qEnvironmentVariable("FORUMER_STORE_PEERS").trimmed();
+  if (!custom.isEmpty())
+    return custom.split(QLatin1Char(','), Qt::SkipEmptyParts);
+  if (networkPreset() == QLatin1String("logos.test"))
+    // The logos.test fleet (cluster 2). Not verified from here yet: override
+    // with FORUMER_STORE_PEERS if they change.
+    return {
+        QStringLiteral("/dns4/node-01.do-ams3.logos.test.status.im/tcp/30303/p2p/16Uiu2HAmQ9X2xDfPG3uL77V9piYDhjq14JhKCtcmNYsTMKNqrKCj"),
+        QStringLiteral("/dns4/node-01.gc-us-central1-a.logos.test.status.im/tcp/30303/p2p/16Uiu2HAmF8WtwGPmeGHgYAX2277jHgy5cW9F7zsB8EqUjBZQAZQ3"),
+        QStringLiteral("/dns4/node-01.ac-cn-hongkong-c.logos.test.status.im/tcp/30303/p2p/16Uiu2HAmL3oU95jh1BZHozn3uNhx8HEneirgr8M1jEAapzXGDqRF"),
+        QStringLiteral("/dns4/node-02.do-ams3.logos.test.status.im/tcp/30303/p2p/16Uiu2HAmB8NYprrfQrgWVzsJtYWkfjsXbmJEGNMG6othXsQ53BwG"),
+    };
+  // The logos.dev fleet (cluster 3): the six entry nodes, peer ids as our own
+  // node discovered them.
+  return {
+      QStringLiteral("/dns4/delivery-01.do-ams3.logos.dev.status.im/tcp/30303/p2p/16Uiu2HAmTUbnxLGT9JvV6mu9oPyDjqHK4Phs1VDJNUgESgNSkuby"),
+      QStringLiteral("/dns4/delivery-02.do-ams3.logos.dev.status.im/tcp/30303/p2p/16Uiu2HAmMK7PYygBtKUQ8EHp7EfaD3bCEsJrkFooK8RQ2PVpJprH"),
+      QStringLiteral("/dns4/delivery-01.gc-us-central1-a.logos.dev.status.im/tcp/30303/p2p/16Uiu2HAm4S1JYkuzDKLKQvwgAhZKs9otxXqt8SCGtB4hoJP1S397"),
+      QStringLiteral("/dns4/delivery-02.gc-us-central1-a.logos.dev.status.im/tcp/30303/p2p/16Uiu2HAm8Y9kgBNtjxvCnf1X6gnZJW5EGE4UwwCL3CCm55TwqBiH"),
+      QStringLiteral("/dns4/delivery-01.ac-cn-hongkong-c.logos.dev.status.im/tcp/30303/p2p/16Uiu2HAm8YokiNun9BkeA1ZRmhLbtNUvcwRr64F69tYj9fkGyuEP"),
+      QStringLiteral("/dns4/delivery-02.ac-cn-hongkong-c.logos.dev.status.im/tcp/30303/p2p/16Uiu2HAkvwhGHKNry6LACrB8TmEFoCJKEX29XR5dDUzk3UT3UNSE"),
+  };
+}
+
+void ForumerBackend::startStoreHistory() {
+  if (m_storeStarted || !m_joined || !m_transport || !m_posts)
+    return;
+  if (qEnvironmentVariableIsSet("FORUMER_NO_STORE")) {
+    logEvent("store: skipped (FORUMER_NO_STORE)");
+    return;
+  }
+  m_storeStarted = true;
+  m_storePeer = 0;
+  m_storePage = 0;
+  m_storeNodeMsgs = 0;
+  m_storeCursor.clear();
+  m_storeState = QStringLiteral("asking");
+  m_storeError.clear();
+  publishHistory();
+  storeQueryNext();
+}
+
+void ForumerBackend::storeQueryNext() {
+  const QStringList peers = storePeers();
+  if (m_storePeer >= peers.size()) {
+    m_storeState = m_storeGot > 0 ? QStringLiteral("done")
+                   : m_storeError.isEmpty() ? QStringLiteral("empty")
+                                            : QStringLiteral("unreachable");
+    logEvent("store: finished, " + std::to_string(m_storeGot) + " new post(s)");
+    publishHistory();
+    return;
+  }
+  const QString peer = peers.at(m_storePeer);
+  m_storeNode = peer.section(QLatin1Char('/'), 2, 2);  // "/dns4/<host>/tcp/..." -> host
+  const int64_t since = nowMs() - kStoreLookbackMs;
+  QPointer<ForumerBackend> self(this);
+  m_transport->queryStorePage(m_topic, deliveryCluster(), since, m_storeCursor, peer.toStdString(),
+                              kStoreTimeoutMs,
+                              [self](DeliveryModuleTransport::StorePage page) {
+                                if (self)
+                                  self->storePageArrived(std::move(page));
+                              });
+}
+
+void ForumerBackend::storePageArrived(DeliveryModuleTransport::StorePage page) {
+  auto nextNode = [this]() {
+    ++m_storePeer;
+    m_storePage = 0;
+    m_storeNodeMsgs = 0;
+    m_storeCursor.clear();
+    // Leave the event handler first: don't call back into the module from
+    // inside its own callback.
+    QTimer::singleShot(0, this, [this]() { storeQueryNext(); });
+  };
+  if (!page.ok) {
+    m_storeError = qs(page.error);
+    logEvent("store: " + m_storeNode.toStdString() + ": " + page.error);
+    nextNode();
+    return;
+  }
+
+  const int before = m_receivedCount;
+  m_storeImport = true;
+  for (const auto &payload : page.payloads) {
+    fc::sync::DecodeResult decoded = fc::sync::decode(payload);
+    if (decoded.message && decoded.message->type == fc::sync::MessageType::Post)
+      handlePost(std::move(*decoded.message->post));
+  }
+  m_storeImport = false;
+  const int added = m_receivedCount - before;
+  m_storeGot += added;
+  m_storeNodeMsgs += static_cast<int>(page.payloads.size());
+  ++m_storePage;
+  logEvent("store: " + m_storeNode.toStdString() + " page " + std::to_string(m_storePage) + ": " +
+           std::to_string(page.payloads.size()) + " message(s), " + std::to_string(added) + " new");
+  publishHistory();
+
+  if (!page.cursor.empty() && !page.payloads.empty() && m_storePage < kStoreMaxPages) {
+    m_storeCursor = page.cursor;
+    QTimer::singleShot(0, this, [this]() { storeQueryNext(); });
+    return;
+  }
+  // This node is done. One that kept our topic's messages is enough (the
+  // fleet nodes share what they relay); one that kept nothing may just be
+  // new, so try the next.
+  if (m_storeNodeMsgs > 0) {
+    m_storePeer = static_cast<int>(storePeers().size());
+    QTimer::singleShot(0, this, [this]() { storeQueryNext(); });
+    return;
+  }
+  nextNode();
+}
+
 void ForumerBackend::publishHistory() {
   const QJsonObject state{
       {"floorMs", static_cast<qint64>(m_historyFloor)},
@@ -1594,6 +1742,10 @@ void ForumerBackend::publishHistory() {
       {"fromMs", static_cast<qint64>(m_historyFrom)},
       {"toMs", static_cast<qint64>(m_historyTo)},
       {"received", m_historyReceived},
+      {"archive", m_storeState},
+      {"archiveGot", m_storeGot},
+      {"archiveNode", m_storeNode},
+      {"archiveError", m_storeError},
   };
   setHistoryJson(QString::fromUtf8(QJsonDocument(state).toJson(QJsonDocument::Compact)));
 }

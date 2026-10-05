@@ -171,6 +171,13 @@ private:
   void historySendRange();     // one request round for the current window
   void historyRoundDone();     // repeat the window, or move the floor down
   void publishHistory();
+
+  // History from the network's store nodes (see startStoreHistory).
+  void startStoreHistory();
+  void storeQueryNext();
+  void storePageArrived(DeliveryModuleTransport::StorePage page);
+  QStringList storePeers() const;
+  int deliveryCluster() const;
   void publishQuota();
 
   // Push the unlocked account's inbox ("replies to you") to the view, now or
@@ -265,6 +272,19 @@ private:
   qint64 m_lastRangeAnswerMs = 0;  // we answer one range request at a time
   qint64 m_lastLinkFetchMs = 0;    // fetchAround: at most one request per few seconds
   qint64 m_lastCoveredSaveMs = 0;
+
+  // Store nodes: what the network itself kept, for a newcomer with nobody
+  // else online. One pass per session, node by node.
+  bool m_storeStarted = false;
+  bool m_storeImport = false;       // handlePost: these come from a store node
+  int m_storePeer = 0;              // index into storePeers()
+  int m_storePage = 0;              // pages read from this node
+  int m_storeNodeMsgs = 0;          // messages this node returned (new or not)
+  int m_storeGot = 0;               // new posts from all nodes, this session
+  std::string m_storeCursor;
+  QString m_storeState;             // "" | "asking" | "done" | "empty" | "unreachable"
+  QString m_storeNode;              // host of the node that answered last
+  QString m_storeError;
 
   // Catch-up bursts: posts that arrived (or were deferred) since our last
   // digest, and how many follow-up digests this burst has sent.

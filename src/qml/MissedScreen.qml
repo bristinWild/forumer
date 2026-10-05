@@ -98,12 +98,21 @@ Page {
     Section {
         id: historySection
         readonly property var h: missed.store.history || ({})
+        // What the network's store nodes gave us this session.
+        function archiveText() {
+            var a = historySection.h.archive || "";
+            if (a === "asking") return "asking store nodes… " + (h.archiveGot || 0) + " so far";
+            if (a === "done") return (h.archiveGot || 0) + " post(s) from " + (h.archiveNode || "a store node");
+            if (a === "empty") return "store nodes hold nothing new for this forum";
+            if (a === "unreachable") return "no store node answered" + (h.archiveError ? " (" + h.archiveError + ")" : "");
+            return "not asked yet";
+        }
         title: "history"
         caption: !h.floorMs ? ""
                : h.active ? "fetching " + missed.store.day(h.fromMs) + " – " + missed.store.day(h.toMs) + "…"
                : (h.targetMs && h.targetMs < h.floorMs) ? "waiting for peers"
                : "complete back to " + missed.store.day(h.floorMs)
-        note: "posts from before the last two days are fetched from peers a week at a time, back to the oldest post anyone has. it runs on its own; nothing to do here unless you want to go further back."
+        note: "on joining, forumer first asks the network's store nodes for what they kept (the last weeks), so you get the forum even when nobody else is online. older posts are fetched from peers a week at a time, back to the oldest post anyone has. it runs on its own; nothing to do here unless you want to go further back."
         actions: [
             FButton {
                 implicitHeight: 36
@@ -124,7 +133,8 @@ Page {
                 model: [
                     ["complete back to", historySection.h.floorMs ? missed.store.day(historySection.h.floorMs) : "…"],
                     ["oldest known post", historySection.h.targetMs ? missed.store.day(historySection.h.targetMs) : "not heard of yet"],
-                    ["older posts received", String(historySection.h.received || 0) + " this session"]
+                    ["older posts received", String(historySection.h.received || 0) + " this session"],
+                    ["network archive", historySection.archiveText()]
                 ]
                 delegate: Item {
                     required property var modelData

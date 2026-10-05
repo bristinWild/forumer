@@ -46,7 +46,7 @@ Built for [λPrize LP-0026: Forum App](https://github.com/logos-co/lambda-prize/
 | **Post status** | Every post you write shows *sending… → live*, or *failed* with retry. |
 | **Outbox** | Posts that couldn't be sent are kept on disk and retried automatically, even after a restart. |
 | **Offline catch-up** | Posts written while you were offline arrive when you come back. |
-| **Full history** | A newcomer gets the whole forum, not just the last two days: older posts are fetched from peers a week at a time, back to the oldest post anyone holds. |
+| **Full history** | A newcomer gets the whole forum, not just the last two days. On joining, Forumer asks the network's own **store nodes** for what they kept, so this works even when nobody else is online; older posts are fetched from peers a week at a time, back to the oldest post anyone holds. |
 | **Formatting** | Topics and replies are written in Markdown with a toolbar (headings, bold, italic, code, lists, quotes, links), ⌘B / ⌘I / ⌘E, and a Write / Preview switch. Images and HTML in posts are never loaded, so reading a post can't reveal your IP address to its author. |
 | **Replies to you** | A badge and a list of replies to your posts and new replies in threads you started or joined, plus a notice when one arrives. Worked out on your device only — it even works for posts you made anonymously, and nobody can tell who was notified. |
 | **Missed tab** | Your unsent posts plus a *Catch up* button. |
@@ -102,13 +102,26 @@ To start again from nothing: `rm -rf ~/forumer-test`.
 
 This builds `forumer_core` and runs its 110 unit tests. It needs only Nix; cmake, the compiler, libsodium, SQLite and nlohmann/json come from nixpkgs. Set `FORUMER_NO_NIX=1` to use the system's own instead.
 
-### Install in Basecamp
+### Install in Basecamp (no build needed)
+
+Forumer is served pre-built from its own Logos module catalog, [`bristinWild/forumer-catalog`](https://github.com/bristinWild/forumer-catalog), made from the official [`logos-modules-release-base`](https://github.com/logos-co/logos-modules-release-base):
+
+1. In Basecamp: **Settings → Package Repositories → Add a repository**, and paste
+   ```
+   https://raw.githubusercontent.com/bristinWild/forumer-catalog/main/logos-repo.json
+   ```
+2. **Package Manager → Social → Forumer → Install.** Its dependencies, `delivery_module` (~0.3.0) and `storage_module` (~3.0.0), come from the official Logos catalog and are installed with it.
+3. Open **Forumer** from the sidebar.
+
+Packages are built for macOS (Apple silicon) and Linux (x86_64).
+
+### Build the package yourself
 
 ```bash
 nix build .#lgx-portable
 ```
 
-This produces a self-contained `.lgx` package for Basecamp's package manager. **(planned)** Forumer will also be published in a Logos module catalog for one-click install.
+This produces a self-contained `.lgx` package for Basecamp's package manager.
 
 ---
 
@@ -327,6 +340,19 @@ A digest says: *"these are the posts I hold since time X"*. Every peer that hold
 
 Digests cover the last **48 hours** and list at most 512 ids (64-bit short ids). One peer answers at most 64 posts per digest, after a random 0.5–2.5 s delay. A post someone else re-sent in the last 30 s is skipped, so a room full of peers doesn't all answer at once.
 
+### History from the network's store nodes
+
+Logos Delivery's fleet nodes keep recent messages (the store protocol). A few seconds after joining, Forumer asks them for the forum topic's messages of the last 30 days, 100 per page, node by node until one answers with messages:
+
+| | |
+|---|---|
+| Query | `storeQuery` (async) with `contentTopics: ["/forumer/3/public/proto"]` and the autosharded `pubsubTopic` (`/waku/2/rs/3/4` on logos.dev) |
+| Nodes | the six logos.dev entry nodes (`delivery-0{1,2}.<dc>.logos.dev.status.im`); `FORUMER_STORE_PEERS` (comma-separated multiaddrs) overrides, `FORUMER_NO_STORE=1` skips |
+| What is taken | posts only — old digests and range requests in the archive are ignored, so a newcomer never answers requests settled days ago |
+| Trust | every post is checked like a live one (signature, proof-of-work, flood limits): a store node can withhold posts but not forge or alter them |
+
+This is what lets a fresh install see the forum when nobody else is online. **Missed → history → network archive** shows what came from where.
+
 ### History: everything older
 
 Each live digest also says `"oldest": <ms>` — the sender's oldest post — so a newcomer learns how far back the forum goes. It then walks back from the digest window one **week** at a time with a **range request**:
@@ -449,9 +475,9 @@ Backend logs are prefixed `[forumer backend]` on the host's stderr.
 | Reply by unique id, alias, or no id | ✅ | Persona / alias / anonymous per post |
 | Privacy of one identity everywhere | ✅ | Keep / manual / auto rotation ([§5](#5-identity-and-privacy)) |
 | Basecamp GUI with local build steps | ✅ | [§2](#2-quick-start) |
-| Pre-built in a module catalog | ⏳ | Planned |
+| Pre-built in a module catalog | ✅ | [`forumer-catalog`](https://github.com/bristinWild/forumer-catalog), built by the official release action ([§2](#2-quick-start)) |
 | Usable by a non-expert | ✅ | Guided onboarding, search, clear sending / live / failed states |
-| Past messages after being offline | ✅ | Digest catch-up for 48 h, then week-by-week history back to the forum's first post ([§7](#7-network-and-sync)) |
+| Past messages after being offline | ✅ | Store nodes (works with nobody else online), digest catch-up for 48 h, then week-by-week history back to the forum's first post ([§7](#7-network-and-sync)) |
 | Failed sends kept for retry | ✅ | Persistent outbox, automatic and manual retry |
 | Doesn't flood the network | ✅ | [§8](#8-flood-control) |
 | Sound, reusable architecture | ✅ | `forumer_core` library, unit-tested, no UI dependencies |
@@ -479,8 +505,10 @@ Backend logs are prefixed `[forumer backend]` on the host's stderr.
 - [ ] Private messages between personas
 - [ ] Mute a persona / hide a post
 - [x] CI (unit tests + module build on Linux and macOS)
-- [ ] Module catalog release, video demo, FURPS self-assessment
+- [x] Module catalog ([`forumer-catalog`](https://github.com/bristinWild/forumer-catalog))
+- [ ] Video demo, FURPS self-assessment
 - [x] Full history for newcomers (week-by-week range requests over Delivery)
+- [x] History from the network's store nodes, with nobody else online
 - [x] 0.3 module stack (builder 0.3.2, delivery v0.3.0, storage v3.0.0); network choice logos.dev / logos.test
 - [x] Storage file sharing between two nodes on storage v3 (both directions, 73–83 s per fetch)
 - [ ] Storage between two different home networks
