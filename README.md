@@ -342,7 +342,7 @@ Digests cover the last **48 hours** and list at most 512 ids (64-bit short ids).
 
 ### History from the network's store nodes
 
-Logos Delivery's fleet nodes keep recent messages (the store protocol). A few seconds after joining, Forumer asks them for the forum topic's messages of the last 30 days, 100 per page, node by node until one answers with messages:
+Logos Delivery's fleet nodes keep recent messages (the store protocol). A few seconds after joining, Forumer asks them for the forum topic's messages of the last 30 days (the last day, where a node caps the range at 24 h), 100 per page, node by node until one answers with messages:
 
 | | |
 |---|---|

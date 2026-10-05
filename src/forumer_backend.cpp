@@ -117,7 +117,8 @@ constexpr int kHistoryStartDelayMs = 20'000;
 constexpr int kStoreStartDelayMs = 6'000;
 constexpr int64_t kStoreTimeoutMs = 15'000;
 constexpr int kStoreMaxPages = 20;                       // x 100 messages, per node
-constexpr int64_t kStoreLookbackMs = 30LL * 86'400'000;  // what store nodes keep at most
+constexpr int64_t kStoreLookbackMs = 30LL * 86'400'000;  // ask for up to a month...
+constexpr int64_t kStoreShortLookbackMs = 86'400'000 - 60'000;  // ...or a day, where a node caps it
 constexpr qint64 kRangeAnswerGapMs = 3'000;
 constexpr int64_t kRangeMaxSpanMs = 2 * fc::sync::kHistorySpanMs;
 constexpr int64_t kLoadOlderSpanMs = 4 * fc::sync::kHistorySpanMs;
@@ -1675,7 +1676,7 @@ void ForumerBackend::storeQueryNext() {
   }
   const QString peer = peers.at(m_storePeer);
   m_storeNode = peer.section(QLatin1Char('/'), 2, 2);  // "/dns4/<host>/tcp/..." -> host
-  const int64_t since = nowMs() - kStoreLookbackMs;
+  const int64_t since = nowMs() - (m_storeShortRange ? kStoreShortLookbackMs : kStoreLookbackMs);
   QPointer<ForumerBackend> self(this);
   m_transport->queryStorePage(m_topic, deliveryCluster(), since, m_storeCursor, peer.toStdString(),
                               kStoreTimeoutMs,
@@ -1696,6 +1697,15 @@ void ForumerBackend::storePageArrived(DeliveryModuleTransport::StorePage page) {
     QTimer::singleShot(0, this, [this]() { storeQueryNext(); });
   };
   if (!page.ok) {
+    // Some store nodes refuse ranges longer than a day ("time range exceeds
+    // 24h"): ask the same node again for the last day only.
+    if (!m_storeShortRange && page.error.find("time range") != std::string::npos) {
+      m_storeShortRange = true;
+      m_storeCursor.clear();
+      logEvent("store: " + m_storeNode.toStdString() + " caps the time range; asking for the last day");
+      QTimer::singleShot(0, this, [this]() { storeQueryNext(); });
+      return;
+    }
     m_storeError = qs(page.error);
     logEvent("store: " + m_storeNode.toStdString() + ": " + page.error);
     nextNode();

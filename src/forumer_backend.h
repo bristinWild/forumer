@@ -277,6 +277,7 @@ private:
   // else online. One pass per session, node by node.
   bool m_storeStarted = false;
   bool m_storeImport = false;       // handlePost: these come from a store node
+  bool m_storeShortRange = false;   // a node refused a month: ask for a day
   int m_storePeer = 0;              // index into storePeers()
   int m_storePage = 0;              // pages read from this node
   int m_storeNodeMsgs = 0;          // messages this node returned (new or not)
