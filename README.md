@@ -77,6 +77,10 @@ nix run            # run Forumer in a standalone Basecamp window
 
 The first build downloads the Logos modules (delivery, storage) and can take a while.
 
+Versions: logos-module-builder **0.3.2**, delivery_module **v0.3.0**, storage_module **v3.0.0** — the 0.3 module generation that current Basecamp runs (0.2 modules don't load in 0.3).
+
+On macOS the first launch asks whether to accept incoming network connections: choose **Allow** (the delivery and storage nodes listen for peers).
+
 ### Two instances on one machine (end-to-end test)
 
 ```bash
@@ -260,7 +264,16 @@ Each reply carries `root` (the topic) and `parent` (what it answers), so anyone 
 /forumer/3/public/proto          (LIP-23 format)
 ```
 
-Every public post goes on one shared topic. Domains are filtered on the device, so the network can't see which domains someone reads. Delivery node preset: `logos.test`.
+Every public post goes on one shared topic. Domains are filtered on the device, so the network can't see which domains someone reads.
+
+### Which network
+
+| Network | What it is | Default |
+|---|---|---|
+| `logos.dev` | Logos devnet, open to anyone | ✅ |
+| `logos.test` | Official testnet; Delivery v0.3 runs RLN rate limiting there, so the node only starts with an active RLN membership registered on the LEZ testnet | |
+
+Choose in **Settings → choose network** (takes effect after a restart; saved in the account's data folder as `network`). For testing, `FORUMER_NETWORK=logos.test` overrides it. The two are separate networks: you only see people on the same one. Settings → network shows the one in use.
 
 Two kinds of message, both small JSON objects:
 
@@ -316,7 +329,7 @@ There is no server to throttle anyone, so every peer applies the same rules to w
 | Re-sends | Answers to digests are capped (240 per minute), so digests can't turn a peer into an amplifier. |
 | Sizes | 16 KB per post, 24 KB per network message. |
 
-Rate-Limiting Nullifiers (RLN) in Logos Delivery v0.3 could later replace the new-key budget with a per-member cryptographic limit.
+Rate-Limiting Nullifiers (RLN), which Delivery v0.3 enforces on `logos.test`, could later replace the new-key budget with a per-member cryptographic limit.
 
 ---
 
@@ -352,7 +365,7 @@ Rate-Limiting Nullifiers (RLN) in Logos Delivery v0.3 could later replace the ne
 |---|---|
 | **Plain relay, not reliable channels (SDS)** | SDS's causal ordering held back later messages until earlier ones arrived. The re-sent copy of a lost post was itself held back as "missing dependencies", so one lost post blocked repair. Digests over plain relay repair gaps reliably. The reliable-channel code path is kept behind a switch (`useChannels`). |
 | **Digest repair instead of store queries** | It works with no store node and no server: any peer holding a post can restore it. |
-| **History over Delivery, not Logos Storage (for now)** | We built a Storage probe (Settings → storage) and tested sharing a file between two instances with storage_module v2.1.2. Findings: (1) a node behind a home router reports *NotReachable* and never announces what it holds; (2) fetching a file's manifest only asks the DHT for providers, so even a peer we dialled directly can't be fetched from ("Failed to fetch manifest … after 10 attempts"); (3) the module's own download gives up on the manifest after 3 s. So files shared from home laptops can't be found by others. storage_module v3 (what Basecamp ships) adds UPnP, relays and hole punching, but needs a newer Logos SDK than logos-module-builder 0.2.6 — that upgrade is a separate step. Until then, history travels as posts over Delivery, which already crosses home routers. |
+| **History over Delivery, not Logos Storage (for now)** | We built a Storage probe (Settings → storage) and tested sharing a file between two instances with storage_module v2.1.2. Findings: (1) a node behind a home router reports *NotReachable* and never announces what it holds; (2) fetching a file's manifest only asks the DHT for providers, so even a peer we dialled directly can't be fetched from ("Failed to fetch manifest … after 10 attempts"); (3) the module's own download gives up on the manifest after 3 s. So files shared from home laptops can't be found by others. Retested on storage_module v3.0.0 (UPnP, relays, hole punching): the node takes ~2 min to start and its reachability goes *Unknown* → *NotReachable* on a home network, but sharing now **works** once both nodes have settled — two instances fetched each other's test file, in both directions, in 73–83 s (an attempt in the first minutes timed out). So Storage is usable, but slow to find content. History keeps travelling as posts over Delivery (seconds, crosses home routers); Storage is the path for media and history snapshots. |
 | **Local SQLite, not Logos SQL** | The post log is per-device and private (it also holds the outbox). Logos SQL runs as a blockchain zone, and the blockchain module is out of scope for LP-0026. |
 | **Own keys instead of `keystore_signer`** | Forumer needs keys derived from one master key and the ability to verify, not only sign. |
 | **One topic for all domains** | No per-domain duplication, and the network doesn't learn what anyone reads. |
@@ -366,7 +379,7 @@ Rate-Limiting Nullifiers (RLN) in Logos Delivery v0.3 could later replace the ne
 
 ```
 forumer/
-├── flake.nix, metadata.json     Logos module build (logos-module-builder 0.2.6)
+├── flake.nix, metadata.json     Logos module build (logos-module-builder 0.3.2)
 ├── CMakeLists.txt
 ├── src/
 │   ├── forumer.rep              contract between backend and view (Qt Remote Objects)
@@ -394,7 +407,7 @@ forumer/
 | Layer | What | How |
 |---|---|---|
 | Unit | crypto, vault, recovery phrase, personas and rotation, account store, envelope signing and verification, PoW, post log and outbox, sync rules (digests, answers, retry backoff), thread placement, flood limits | `./scripts/test-core.sh` |
-| End to end | post → received; nested replies; offline → catch-up; outbox retry; hourly limits; restore | `./scripts/two-instances.sh` (needs the live `logos.test` network) |
+| End to end | post → received; nested replies; offline → catch-up; outbox retry; hourly limits; restore | `./scripts/two-instances.sh` (needs the live `logos.dev` network) |
 | CI | **(planned)** GitHub Actions: unit tests + Nix build, green on `main` | |
 
 Backend logs are prefixed `[forumer backend]` on the host's stderr.
@@ -441,8 +454,10 @@ Backend logs are prefixed `[forumer backend]` on the host's stderr.
 - [ ] Mute a persona / hide a post
 - [ ] CI, module catalog release, video demo, FURPS self-assessment
 - [x] Full history for newcomers (week-by-week range requests over Delivery)
-- [ ] logos-module-builder 0.3.x + storage_module v3; retest Storage across routers
-- Later: private forums with invite links; history snapshots and media through Logos Storage; RLN with Delivery v0.3
+- [x] 0.3 module stack (builder 0.3.2, delivery v0.3.0, storage v3.0.0); network choice logos.dev / logos.test
+- [x] Storage file sharing between two nodes on storage v3 (both directions, 73–83 s per fetch)
+- [ ] Storage between two different home networks
+- Later: private forums with invite links; history snapshots and media through Logos Storage; RLN memberships for `logos.test` users
 
 ---
 

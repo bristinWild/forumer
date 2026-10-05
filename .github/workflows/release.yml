@@ -1,0 +1,55 @@
+name: Release
+
+# Push a tag like v0.2.0 and this attaches installable packages to a GitHub
+# release: forumer-<version>-<platform>.lgx, which Basecamp installs from file.
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  lgx:
+    name: package (${{ matrix.platform }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            platform: linux-x86_64
+          - os: macos-latest
+            platform: macos-arm64
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: cachix/install-nix-action@v27
+        with:
+          extra_nix_config: |
+            experimental-features = nix-command flakes
+      - uses: cachix/cachix-action@v15
+        with:
+          name: logos-co
+          skipPush: true
+      - name: Build portable package
+        run: nix build -L .#lgx-portable
+      - name: Name the package
+        run: |
+          version="$(jq -r .version metadata.json)"
+          file="$(find -L result -name '*.lgx' | head -n1)"
+          test -n "$file" || { echo "no .lgx in result/"; ls -laR result; exit 1; }
+          mkdir -p dist
+          cp "$file" "dist/forumer-${version}-${{ matrix.platform }}.lgx"
+          (cd dist && shasum -a 256 *.lgx > "forumer-${version}-${{ matrix.platform }}.sha256")
+          ls -la dist
+      - uses: actions/upload-artifact@v4
+        with:
+          name: forumer-${{ matrix.platform }}
+          path: dist/*
+      - name: Attach to the release
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/*
+          generate_release_notes: true

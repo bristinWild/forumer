@@ -102,6 +102,13 @@ class Forumer
     // inbox read. "" on success.
     SLOT(QString markRepliesRead(QString ids))
 
+    // ── Network ───────────────────────────────────────────────────────────────
+    // Which Logos Delivery fleet to join: "logos.dev" (default; no RLN) or
+    // "logos.test" (runs RLN: needs an active RLN membership on the LEZ
+    // testnet, or the node won't start). Saved for this instance; applies
+    // after a restart. The fleets are separate - peers see only their own.
+    SLOT(QString chooseNetwork(QString preset))
+
     // ── Storage (experiment) ──────────────────────────────────────────────────
     // A probe of Logos Storage from inside Forumer, before history bundles are
     // built on it: start (or attach to) the storage node, share a small test
@@ -135,6 +142,11 @@ class Forumer
     //    "replies": {"left": 60, "max": 60, "waitMin": 0}}
     // waitMin: minutes until the next one is allowed, when left is 0.
     PROP(QString quotaJson="{}" READONLY)
+
+    // The network this run joined ("logos.dev" | "logos.test"), and the one
+    // chosen for the next start (differs until restarted).
+    PROP(QString network="" READONLY)
+    PROP(QString networkNext="" READONLY)
 
     // App version, from metadata.json.
     PROP(QString appVersion="" READONLY)

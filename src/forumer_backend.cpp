@@ -280,11 +280,19 @@ void ForumerBackend::bootstrap() {
   // per-instance localStoragePath. Any bare WakuNodeConf key at the top level
   // (logLevel, tcpPort, …) reclassifies the whole config as the legacy flat
   // shape, which binds fixed ports — two instances on one machine collide.
+  //
+  // The network: logos.dev unless chosen otherwise (Settings → network).
+  // logos.test runs RLN and refuses to start a node without an active RLN
+  // membership (registered on the LEZ testnet); logos.dev runs without it.
+  // The two are separate fleets: peers only see others on the same one.
   const QJsonObject cfg{
       {"mode", "Core"},
-      {"preset", "logos.test"},
+      {"preset", networkPreset()},
   };
   const QString cfgJson = QString::fromUtf8(QJsonDocument(cfg).toJson(QJsonDocument::Compact));
+  logEvent("network: " + networkPreset().toStdString());
+  setNetwork(networkPreset());
+  setNetworkNext(networkPreset());
 
   LogosResult created = modules().delivery_module.createNode(cfgJson);
   if (!created.success) {
@@ -411,6 +419,36 @@ QString ForumerBackend::dataDir() const {
   // namespace under the module name.
   return QStandardPaths::writableLocation(QStandardPaths::AppDataLocation) +
          QStringLiteral("/forumer");
+}
+
+QString ForumerBackend::networkPreset() const {
+  auto valid = [](const QString &p) {
+    return p == QLatin1String("logos.dev") || p == QLatin1String("logos.test");
+  };
+  const QString env = qEnvironmentVariable("FORUMER_NETWORK").trimmed();
+  if (valid(env))
+    return env;
+  QFile file(dataDir() + QStringLiteral("/network"));
+  if (file.open(QIODevice::ReadOnly)) {
+    const QString saved = QString::fromUtf8(file.readAll()).trimmed();
+    if (valid(saved))
+      return saved;
+  }
+  return QStringLiteral("logos.dev");
+}
+
+QString ForumerBackend::chooseNetwork(QString preset) {
+  preset = preset.trimmed();
+  if (preset != QLatin1String("logos.dev") && preset != QLatin1String("logos.test"))
+    return QStringLiteral("Unknown network");
+  QDir().mkpath(dataDir());
+  QFile file(dataDir() + QStringLiteral("/network"));
+  if (!file.open(QIODevice::WriteOnly | QIODevice::Truncate))
+    return QStringLiteral("Could not save the choice");
+  file.write(preset.toUtf8());
+  file.close();
+  setNetworkNext(networkPreset());
+  return QString();
 }
 
 // ── Identity ──────────────────────────────────────────────────────────────────
@@ -711,8 +749,8 @@ void ForumerBackend::publishInbox() {
 // downloader already runs a node, so init() fails and we attach to that one.
 // Standalone (nix run), we create our own under this instance's data folder.
 //
-// Written against storage_module v2.1.2 (see flake.nix): uploadUrl(path,
-// chunk), downloadToUrl(cid, path, local, chunk), no isRunning().
+// Written against storage_module v3.0.0 (see flake.nix), the version
+// Basecamp ships.
 
 namespace {
 
@@ -847,22 +885,21 @@ QString ForumerBackend::storageStart() {
   // instances on one machine don't share a repository. We pick the TCP port
   // ourselves (rather than 0 = any) so we know it: a node that isn't
   // reachable from outside announces no address, so share codes are built
-  // from this port and the machine's own addresses (see localStorageAddrs).
-  // The discovery (UDP) port defaults to a fixed 8090: draw one per instance.
+  // from this port and the machine's own addresses. (v3 has no separate
+  // discovery port: discovery runs over the libp2p DHT.)
   m_storageListenPort = 30000 + static_cast<int>(QRandomGenerator::global()->bounded(20000));
-  const int discPort = 20000 + static_cast<int>(QRandomGenerator::global()->bounded(10000));
   const QJsonObject cfg{
       {"data-dir", dataDir() + QStringLiteral("/storage")},
       {"listen-port", m_storageListenPort},
-      {"disc-port", discPort},
       {"log-level", "info"},
   };
   const QString cfgJson = QString::fromUtf8(QJsonDocument(cfg).toJson(QJsonDocument::Compact));
 
   const bool created = modules().storage_module.init(cfgJson);
-  // init() fails when a node already exists (Basecamp's): attach to it.
-  // dataDir() only answers when there is a node to ask.
-  m_storageAttached = !created && modules().storage_module.dataDir().success;
+  // init() fails when a node already exists (Basecamp's package downloader
+  // runs one): attach to it. libstorageVersion() only answers when there is
+  // a node to ask.
+  m_storageAttached = !created && modules().storage_module.libstorageVersion().success;
   if (m_storageAttached)
     m_storageListenPort = 0;  // not our config: we don't know that node's port
   if (!created && !m_storageAttached) {
@@ -873,17 +910,19 @@ QString ForumerBackend::storageStart() {
   }
   logEvent(std::string("storage: ") + (created ? "created node" : "attached to the running node"));
 
+  if (modules().storage_module.isRunning()) {
+    m_storageState = QStringLiteral("running");
+    m_storageDetail.clear();
+    refreshStorageInfo();
+    return QString();
+  }
+
   m_storageState = QStringLiteral("starting");
   m_storageDetail.clear();
   publishStorage();
   if (!modules().storage_module.start()) {
     if (m_storageAttached) {
-      // Basecamp's node is most likely up already (start() refuses then):
-      // if it answers, use it; otherwise its storageStart event completes this.
-      if (modules().storage_module.peerId().success) {
-        m_storageState = QStringLiteral("running");
-        refreshStorageInfo();
-      }
+      // The other consumer is starting it: its storageStart event completes this.
     } else {
       m_storageState = QStringLiteral("failed");
       m_storageDetail = QStringLiteral("The storage node refused to start");
@@ -911,7 +950,6 @@ void ForumerBackend::refreshStorageInfo() {
   LogosResult info = modules().storage_module.debug();
   if (info.success) {
     const QVariantMap map = info.getMap();
-    // v2.1.2's debug() has no NAT report; show it when a later version does.
     m_storageReachability = map.value("nat").toMap().value("reachability").toString();
     if (m_storageReachability.isEmpty())
       m_storageReachability = QStringLiteral("not reported");
@@ -959,7 +997,8 @@ QString ForumerBackend::storageShareTest() {
   m_storageUploadSession.clear();
   m_storageLastCid.clear();
   m_storageShareCode.clear();
-  LogosResult r = modules().storage_module.uploadUrl(path, kStorageChunk);
+  // advertise: announce that we hold it, so others can find it.
+  LogosResult r = modules().storage_module.uploadUrl(path, kStorageChunk, true);
   if (!r.success) {
     m_storageSharing = false;
     return QStringLiteral("Upload refused: %1").arg(r.getError());
@@ -1039,7 +1078,8 @@ QString ForumerBackend::storageFetch(QString code) {
 void ForumerBackend::storageFetchManifest() {
   const QString cid = m_storageFetch.value("cid").toString();
   m_storageFetch.insert("state", "manifest");
-  LogosResult r = modules().storage_module.downloadManifest(cid);
+  // Public (isPrivate=false: no mix routing), and advertise once held.
+  LogosResult r = modules().storage_module.downloadManifest(cid, false, true);
   if (!r.success) {
     m_storageFetch.insert("state", "failed");
     m_storageFetch.insert("error", QStringLiteral("manifest lookup refused: %1").arg(r.getError()));
@@ -1048,11 +1088,11 @@ void ForumerBackend::storageFetchManifest() {
   }
   logEvent("storage: looking up manifest for " + cid.toStdString());
   publishStorage();
-  QTimer::singleShot(90'000, this, [this, cid]() {
+  QTimer::singleShot(180'000, this, [this, cid]() {
     if (m_storageFetch.value("cid").toString() == cid &&
         m_storageFetch.value("state").toString() == QLatin1String("manifest")) {
       m_storageFetch.insert("state", "failed");
-      m_storageFetch.insert("error", "manifest not found within 90 s");
+      m_storageFetch.insert("error", "manifest not found within 3 min");
       m_storageFetch.insert("ms", nowMs() - static_cast<qint64>(m_storageFetch.value("startedMs").toDouble()));
       logEvent("storage: manifest timed out for " + cid.toStdString());
       publishStorage();
@@ -1065,7 +1105,7 @@ void ForumerBackend::storageDownload() {
   m_storageFetch.insert("state", "fetching");
   // From the network (local=false). Once held, the node serves it to others.
   LogosResult r = modules().storage_module.downloadToUrl(cid, m_storageFetchPath, false,
-                                                         kStorageChunk);
+                                                         kStorageChunk, false, true);
   if (!r.success) {
     m_storageFetch.insert("state", "failed");
     m_storageFetch.insert("error", r.getError());

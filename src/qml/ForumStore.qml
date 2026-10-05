@@ -35,6 +35,8 @@ Item {
     readonly property int    unsentCount:        hasBackend ? backend.unsentCount       : 0
     readonly property string syncInfo:           hasBackend ? backend.syncInfo          : ""
     readonly property string followedJson:       hasBackend ? backend.followedDomains   : "[]"
+    readonly property string network:            hasBackend && backend.network ? backend.network : ""
+    readonly property string networkNext:        hasBackend && backend.networkNext ? backend.networkNext : ""
     readonly property string quotaJson:          hasBackend && backend.quotaJson ? backend.quotaJson : "{}"
     readonly property string inboxJson:          hasBackend && backend.inboxJson ? backend.inboxJson : "[]"
     readonly property string historyJson:        hasBackend && backend.historyJson ? backend.historyJson : "{}"

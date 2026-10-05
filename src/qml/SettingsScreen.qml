@@ -94,6 +94,7 @@ Page {
             rowSpacing: 10
             Repeater {
                 model: [
+                    ["delivery network", settings.store.network.length > 0 ? settings.store.network : "-"],
                     ["forum topic", settings.store.topic],
                     ["sync", settings.store.syncInfo.length > 0 ? settings.store.syncInfo : "-"],
                     ["unsent", String(settings.store.unsentCount)],
@@ -123,6 +124,28 @@ Page {
                         color: Ui.text
                     }
                 }
+            }
+        }
+    }
+
+    Section {
+        title: "choose network"
+        caption: settings.store.networkNext !== settings.store.network && settings.store.networkNext.length > 0
+                 ? "restart forumer to switch to " + settings.store.networkNext : ""
+        note: "logos.dev works for everyone. logos.test is the official testnet, but it runs RLN rate limiting: a node starts there only with an active RLN membership registered on the LEZ testnet. the two are separate networks - you only see people on the same one."
+
+        ColumnLayout {
+            Layout.fillWidth: true
+            Layout.topMargin: 18
+            spacing: 10
+            Segmented {
+                Layout.preferredWidth: 420
+                options: [
+                    { value: "logos.dev", label: "logos.dev · open" },
+                    { value: "logos.test", label: "logos.test · RLN" }
+                ]
+                value: settings.store.networkNext.length > 0 ? settings.store.networkNext : settings.store.network
+                onPicked: (v) => settings.store.call(settings.store.backend.chooseNetwork(v))
             }
         }
     }

@@ -80,6 +80,7 @@ public:
   QString chooseAlias(QString alias) override;
   QString followDomain(QString domain) override;
   QString unfollowDomain(QString domain) override;
+  QString chooseNetwork(QString preset) override;
 
   // ── .rep SLOTs: replies to you ─────────────────────────────────────────────
   QString markRepliesRead(QString ids) override;
@@ -190,6 +191,10 @@ private:
   // Base directory for this app's local data (accounts + posts), scoped to the
   // Basecamp instance's data tree (LOGOS_USER_DIR) when there is one.
   QString dataDir() const;
+
+  // The Delivery preset to join: FORUMER_NETWORK, else the saved choice
+  // (dataDir()/network), else "logos.dev".
+  QString networkPreset() const;
 
   // Push every identity PROP from the store + unlocked account. The single
   // place those PROPs are written.
