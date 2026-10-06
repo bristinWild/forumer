@@ -6,6 +6,10 @@ Forumer lets people discuss any topic (politics, privacy, campus life, technolog
 
 Built for [λPrize LP-0026: Forum App](https://github.com/logos-co/lambda-prize/blob/master/prizes/LP-0026.md). Forked from [jzaki/forum-sample-app](https://github.com/jzaki/forum-sample-app).
 
+> **Demo video:** [watch the end-to-end walkthrough](https://youtu.be/Tc-MUpDcn7M) (about 14 min: install from the catalog, accounts, topics and replies, personas, links, offline, history, flood control).
+>
+> **Install in Basecamp:** Settings → Package Repositories → add `https://raw.githubusercontent.com/bristinWild/forumer-catalog/main/logos-repo.json`, then Package Manager → Social → Forumer → Install.
+
 > **Status:** working and in active development. This README describes what is built today. Planned features are marked **(planned)**. The original design document is kept in [`docs/Forumer-description.md`](docs/Forumer-description.md).
 
 ---
@@ -53,7 +57,7 @@ Built for [λPrize LP-0026: Forum App](https://github.com/logos-co/lambda-prize/
 | **My posts** | Everything this account wrote, under any persona. Only you can see this list. |
 | **Flood control** | Proof-of-work on every post, hourly limits per persona and per account, with a counter in the composer. |
 | **Backup & restore** | Show the recovery phrase (password required), or restore an account from one. |
-| **Light and dark themes** | A clean, documentation-style layout. |
+| **Night-city theme** | Dark and light palettes with Chakra Petch and Share Tech Mono; delivery states colour-coded (sending, live, failed). |
 | Media and history snapshots via Logos Storage | **(investigated, planned)** — see [§10](#10-design-decisions-and-findings) |
 | Private messages between personas | **(planned)** |
 | Mute a persona / hide a post | **(planned)** |
@@ -484,7 +488,8 @@ Backend logs are prefixed `[forumer backend]` on the host's stderr.
 | CI green | ✅ | [GitHub Actions](https://github.com/bristinWild/forumer/actions): unit tests + module build on Linux and macOS |
 | README | ✅ | This document |
 | "Program addresses" | n/a | Forumer deploys no on-chain programs (blockchain is out of scope for LP-0026). The content topic is listed in [§7](#7-network-and-sync). |
-| Video demo, FURPS self-assessment | ⏳ | With the submission |
+| Video demo | ✅ | [Demo video](https://youtu.be/Tc-MUpDcn7M) |
+| FURPS self-assessment | ✅ | In the solution PR, `solutions/LP-0026.md` in logos-co/lambda-prize |
 | MIT + Apache-2.0 | ✅ | `LICENSE-MIT`, `LICENSE-APACHE-v2` |
 
 ---
@@ -497,7 +502,7 @@ Backend logs are prefixed `[forumer backend]` on the host's stderr.
 - [x] Topics, domains, follow, two-level replies, search
 - [x] Outbox with automatic retry; offline catch-up through digests
 - [x] Flood control and quota counter
-- [x] Redesigned interface (light/dark)
+- [x] Redesigned interface (night-city theme, light/dark)
 - [x] Replies to you: unread badge, list, in-thread highlight, notice
 - [x] Markdown formatting with toolbar and preview; user text never rendered as HTML
 - [x] Shareable `basecamp://` links to threads and domains
@@ -506,7 +511,7 @@ Backend logs are prefixed `[forumer backend]` on the host's stderr.
 - [ ] Mute a persona / hide a post
 - [x] CI (unit tests + module build on Linux and macOS)
 - [x] Module catalog ([`forumer-catalog`](https://github.com/bristinWild/forumer-catalog))
-- [ ] Video demo, FURPS self-assessment
+- [x] Video demo, FURPS self-assessment
 - [x] Full history for newcomers (week-by-week range requests over Delivery)
 - [x] History from the network's store nodes, with nobody else online
 - [x] 0.3 module stack (builder 0.3.2, delivery v0.3.0, storage v3.0.0); network choice logos.dev / logos.test
