@@ -471,7 +471,7 @@ Item {
                                             visible: index === 0
                                             width: 2
                                             height: parent.height
-                                            color: Ui.text
+                                            color: Ui.accent
                                         }
                                         Text {
                                             textFormat: Text.PlainText

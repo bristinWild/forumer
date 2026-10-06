@@ -9,14 +9,14 @@ Text {
 
     property string source: ""
 
-    text: Md.safe(md.source, String(Ui.unread))
+    text: Md.safe(md.source, String(Ui.link))
     textFormat: Text.MarkdownText
     wrapMode: Text.Wrap
     font.family: Ui.sans
     font.pixelSize: Ui.size.reading
     lineHeight: 1.25
     color: Ui.textBody
-    linkColor: Ui.unread
+    linkColor: Ui.link
 
     onLinkActivated: function (link) {
         if (/^https?:\/\//i.test(link)) Qt.openUrlExternally(link);

@@ -519,7 +519,7 @@ Backend logs are prefixed `[forumer backend]` on the host's stderr.
 ## 15. Credits and license
 
 - Forked from [jzaki/forum-sample-app](https://github.com/jzaki/forum-sample-app) (MIT / Apache-2.0).
-- Built on the [Logos](https://logos.co) stack. Fonts: Geist and Geist Mono (SIL Open Font License, `src/qml/fonts/OFL.txt`).
+- Built on the [Logos](https://logos.co) stack. Fonts: Chakra Petch and Share Tech Mono (SIL Open Font License 1.1, `src/qml/fonts/OFL-*.txt`).
 
 Dual-licensed under the **MIT License** and the **Apache License 2.0**, at your option.
 

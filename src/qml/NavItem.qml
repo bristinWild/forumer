@@ -23,6 +23,16 @@ Rectangle {
     Accessible.role: Accessible.Button
     Accessible.name: item.text
 
+    // The active row's edge marker, like a cursor in a terminal.
+    Rectangle {
+        visible: item.active
+        width: 2
+        height: parent.height - 16
+        anchors.left: parent.left
+        anchors.verticalCenter: parent.verticalCenter
+        color: Ui.accent
+    }
+
     Row {
         anchors.left: parent.left
         anchors.leftMargin: 12
@@ -63,7 +73,7 @@ Rectangle {
         visible: item.badgeTone === "unread" && item.badge.length > 0
         width: Math.max(20, pill.implicitWidth + 12)
         height: 20
-        radius: 10
+        radius: Ui.radius.m
         color: Ui.unread
         Text {
             textFormat: Text.PlainText

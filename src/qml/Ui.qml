@@ -15,42 +15,50 @@ QtObject {
     function pick(d, l) { return ui.dark ? d : l; }
 
     // ── Colours ───────────────────────────────────────────────────────────────
-    readonly property color bg:          pick("#070707", "#ffffff")   // page
-    readonly property color sidebar:     pick("#0b0b0b", "#fafafa")
-    readonly property color surface:     pick("#0d0d0d", "#ffffff")   // panels, composer
-    readonly property color field:       pick("#111111", "#f5f5f5")   // inputs, search
-    readonly property color raised:      pick("#161616", "#f0f0f0")   // chips, pickers
-    readonly property color active:      pick("#1c1c1c", "#ededed")   // selected nav row
-    readonly property color hover:       pick("#141414", "#f4f4f4")
-    readonly property color border:      pick("#1d1d1d", "#e5e5e5")   // section rules
-    readonly property color borderSoft:  pick("#161616", "#efefef")   // row dividers
-    readonly property color borderStrong:pick("#262626", "#d4d4d4")   // inputs, outline buttons
-    readonly property color scrim:       pick("#b8000000", "#66000000")
+    // "Night city": ink with a violet cast instead of neutral grey, one signal
+    // colour (cyan) for what you act on, and hot magenta kept for one job only:
+    // something new for you (replies, unread). Light mode is the same idea on
+    // a cool paper.
+    readonly property color bg:          pick("#08080e", "#f6f7fb")   // page
+    readonly property color sidebar:     pick("#0b0a13", "#eef0f6")
+    readonly property color surface:     pick("#0e0d18", "#ffffff")   // panels, composer
+    readonly property color field:       pick("#12111e", "#ffffff")   // inputs, search
+    readonly property color raised:      pick("#17162a", "#e8eaf3")   // chips, pickers
+    readonly property color active:      pick("#1a1930", "#e3e6f1")   // selected nav row
+    readonly property color hover:       pick("#141324", "#eceef6")
+    readonly property color border:      pick("#1f1d33", "#dcdfeb")   // section rules
+    readonly property color borderSoft:  pick("#171628", "#e8eaf2")   // row dividers
+    readonly property color borderStrong:pick("#2c2a47", "#c7cbdb")   // inputs, outline buttons
+    readonly property color scrim:       pick("#c405040a", "#660b0c14")
 
-    readonly property color text:        pick("#ededed", "#0a0a0a")
-    readonly property color textBody:    pick("#d4d4d4", "#262626")   // long-form reading
-    readonly property color text2:       pick("#a3a3a3", "#525252")   // secondary
-    readonly property color text3:       pick("#8a8a8a", "#6b6b6b")   // captions, metadata
+    readonly property color text:        pick("#e8eaf4", "#0b0c14")
+    readonly property color textBody:    pick("#cdd0de", "#262838")   // long-form reading
+    readonly property color text2:       pick("#a2a5bd", "#4c4f66")   // secondary
+    readonly property color text3:       pick("#8487a1", "#62657d")   // captions, metadata
 
-    readonly property color inverse:     pick("#ededed", "#0a0a0a")   // primary button fill
-    readonly property color inverseText:   pick("#0a0a0a", "#fafafa")
+    // The signal colour: primary buttons, selected chips, focus, links.
+    readonly property color accent:      pick("#2be4d3", "#00807a")
+    readonly property color inverse:     accent                         // primary button fill
+    readonly property color inverseText: pick("#05060b", "#ffffff")
+    readonly property color link:        accent
 
-    readonly property color live:        pick("#4ade80", "#15803d")
-    readonly property color sending:     pick("#fbbf24", "#b45309")
-    readonly property color failed:      pick("#f87171", "#b91c1c")
-    readonly property color failedText:  pick("#fca5a5", "#b91c1c")
-    readonly property color unread:      pick("#60a5fa", "#2563eb")   // new replies to you
-    readonly property color focus:       pick("#7c7c7c", "#6b6b6b")
+    readonly property color live:        pick("#3cf0a0", "#0f7a4a")
+    readonly property color sending:     pick("#ffc24b", "#a35a00")
+    readonly property color failed:      pick("#ff5470", "#c0233f")
+    readonly property color failedText:  pick("#ff8fa3", "#c0233f")
+    readonly property color unread:      pick("#ff3d9a", "#c2186a")   // new replies to you
+    readonly property color focus:       accent
 
     // ── Type ──────────────────────────────────────────────────────────────────
-    // Geist for text, Geist Mono for machine details (fingerprints, times,
-    // #domains, delivery states). Bundled under fonts/ (SIL OFL, fonts/OFL.txt).
-    readonly property FontLoader sansRegular:  FontLoader { source: "fonts/Geist-Regular.ttf" }
-    readonly property FontLoader sansMedium:   FontLoader { source: "fonts/Geist-Medium.ttf" }
-    readonly property FontLoader sansSemiBold: FontLoader { source: "fonts/Geist-SemiBold.ttf" }
-    readonly property FontLoader sansBold:     FontLoader { source: "fonts/Geist-Bold.ttf" }
-    readonly property FontLoader monoRegular:  FontLoader { source: "fonts/GeistMono-Regular.ttf" }
-    readonly property FontLoader monoMedium:   FontLoader { source: "fonts/GeistMono-Medium.ttf" }
+    // Chakra Petch for everything you read: squared-off, technical, still
+    // comfortable at body size. Share Tech Mono for machine details
+    // (fingerprints, times, #domains, delivery states). Both bundled under
+    // fonts/ (SIL OFL 1.1, fonts/OFL-*.txt).
+    readonly property FontLoader sansRegular:  FontLoader { source: "fonts/ChakraPetch-Regular.ttf" }
+    readonly property FontLoader sansMedium:   FontLoader { source: "fonts/ChakraPetch-Medium.ttf" }
+    readonly property FontLoader sansSemiBold: FontLoader { source: "fonts/ChakraPetch-SemiBold.ttf" }
+    readonly property FontLoader sansBold:     FontLoader { source: "fonts/ChakraPetch-Bold.ttf" }
+    readonly property FontLoader monoRegular:  FontLoader { source: "fonts/ShareTechMono-Regular.ttf" }
 
     readonly property string sans: sansRegular.status === FontLoader.Ready ? sansRegular.font.family : "sans-serif"
     readonly property string mono: monoRegular.status === FontLoader.Ready ? monoRegular.font.family : "monospace"
@@ -87,12 +95,13 @@ QtObject {
     }
 
     readonly property QtObject radius: QtObject {
-        readonly property int s: 6
-        readonly property int m: 8
-        readonly property int l: 10
-        readonly property int xl: 12
-        readonly property int sheet: 16
-        readonly property int pill: 999
+        // Squared, like a HUD: corners only soften the edge.
+        readonly property int s: 2
+        readonly property int m: 3
+        readonly property int l: 4
+        readonly property int xl: 4
+        readonly property int sheet: 6
+        readonly property int pill: 3
     }
 
     readonly property int sidebarWidth: 280

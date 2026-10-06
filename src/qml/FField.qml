@@ -3,7 +3,7 @@ import QtQuick.Controls.Basic as B
 
 // A labelled single-line input.
 //   FField { label: "title"; placeholder: "…"; onAccepted: … }
-// `password: true` masks it; `mono: true` sets it in Geist Mono (domains,
+// `password: true` masks it; `mono: true` sets it in the mono face (domains,
 // phrases). `text` reads/writes the value; `focusInput()` focuses it.
 Column {
     id: field
