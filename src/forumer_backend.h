@@ -112,6 +112,7 @@ private:
 
   // Re-derive the status PROP from the last connectionStateChanged value.
   void refreshStatus();
+  void pollConnectionStatus();
 
   // ── Inbound ────────────────────────────────────────────────────────────────
   // One payload from the network. Ignores other topics (delivery_module is
@@ -251,6 +252,7 @@ private:
 
   // Fires every few seconds once joined; retries whatever is due.
   QTimer *m_retryTimer = nullptr;
+  QTimer *m_statusTimer = nullptr;
 
   // Flood control (forumer_core/flood.h): posts from never-seen keys, and
   // re-sends in answer to digests.

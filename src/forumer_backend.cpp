@@ -94,6 +94,8 @@ constexpr qint64 kPromptedDigestGapMs = 30'000;
 
 // Outbox: how often to look for posts due a retry.
 constexpr int kRetryTickMs = 5'000;
+// How often to ask the node for its connection state (see pollConnectionStatus).
+constexpr int kStatusPollMs = 15'000;
 
 // Digest answers. Wait a moment before re-sending, and skip any post someone
 // else re-sent (or that we saw at all) within kSeenWindowMs — so one digest
@@ -387,6 +389,18 @@ void ForumerBackend::joinForum() {
 
   m_joined = true;
   refreshStatus();
+
+  // connectionStateChanged fires on transitions only. In Basecamp the
+  // delivery node is shared and may have connected long before we started
+  // listening (another app, or this one before an update), so ask for the
+  // current state now and keep asking now and then.
+  pollConnectionStatus();
+  if (!m_statusTimer) {
+    m_statusTimer = new QTimer(this);
+    m_statusTimer->setInterval(kStatusPollMs);
+    connect(m_statusTimer, &QTimer::timeout, this, [this]() { pollConnectionStatus(); });
+    m_statusTimer->start();
+  }
   logEvent(std::string("joined ") + m_topic +
            (m_transport->usingChannels() ? " (reliable channel)" : " (plain relay)"));
 
@@ -402,6 +416,24 @@ void ForumerBackend::joinForum() {
   maybeStartHistory();
   if (!m_storeStarted)
     QTimer::singleShot(kStoreStartDelayMs, this, [this]() { startStoreHistory(); });
+}
+
+void ForumerBackend::pollConnectionStatus() {
+  QPointer<ForumerBackend> self(this);
+  modules().delivery_module.getConnectionStatusAsync([self](LogosResult r) {
+    if (!self || !r.success)
+      return;
+    QString state = r.value.toString().trimmed();
+    state.remove(QLatin1Char('"'));
+    if (state != QLatin1String("Connected") && state != QLatin1String("PartiallyConnected") &&
+        state != QLatin1String("Disconnected"))
+      return;
+    if (state == self->m_connectionState)
+      return;
+    self->m_connectionState = state;
+    logEvent("connection state (asked) -> " + state.toStdString());
+    self->refreshStatus();
+  });
 }
 
 void ForumerBackend::refreshStatus() {
