@@ -1,0 +1,11 @@
+{
+    "$comment": "Pointer for tools that look for module.json. Forumer is a logos-module-builder 0.3.x module: its real manifest, read by the build, the module catalog and Basecamp, is metadata.json.",
+    "name": "forumer",
+    "display_name": "Forumer",
+    "manifest": "metadata.json",
+    "type": "ui_qml",
+    "category": "social",
+    "description": "A private, serverless forum for Logos Basecamp over Logos Delivery (Waku).",
+    "repository": "https://github.com/bristinWild/forumer",
+    "catalog": "https://raw.githubusercontent.com/bristinWild/forumer-catalog/main/logos-repo.json"
+}
