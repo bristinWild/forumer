@@ -173,17 +173,17 @@ Item {
 
     // ── Posts ─────────────────────────────────────────────────────────────────
     property int rev: 0
-    property var topics: ({})     // id -> { id, title, body, author, domains[], tsMs, delivery, placeholder, live, arrivedMs }
-    property var replies: ({})    // id -> { id, topicId, parentId, body, author, tsMs, delivery, live, arrivedMs }
+    property var topics: ({})     // id -> { id, title, body, author, authorKey, domains[], tsMs, delivery, placeholder, live, arrivedMs }
+    property var replies: ({})    // id -> { id, topicId, parentId, body, author, authorKey, tsMs, delivery, live, arrivedMs }
     property var deliveries: ({}) // id -> state, for posts whose state arrives before the post
 
     function nsToMs(ts) { return Math.floor(Number(ts) / 1000000); }
 
-    function addTopic(id, title, body, author, domains, ts, live) {
+    function addTopic(id, title, body, author, domains, ts, live, authorKey) {
         var existing = store.topics[id];
         if (existing && !existing.placeholder) return;
         store.topics[id] = {
-            id: id, title: title, body: body, author: author || "",
+            id: id, title: title, body: body, author: author || "", authorKey: authorKey || "",
             domains: (domains || "").split(",").filter(function (d) { return d.length > 0; }),
             tsMs: store.nsToMs(ts),
             delivery: store.deliveries[id] || "",
@@ -195,10 +195,11 @@ Item {
         store.rev++;
     }
 
-    function addReply(id, topicId, parentId, body, author, ts, live) {
+    function addReply(id, topicId, parentId, body, author, ts, live, authorKey) {
         if (store.replies[id]) return;
         store.replies[id] = {
             id: id, topicId: topicId, parentId: parentId || topicId, body: body, author: author || "",
+            authorKey: authorKey || "",
             tsMs: store.nsToMs(ts),
             delivery: store.deliveries[id] || "",
             live: live === true,
@@ -207,7 +208,7 @@ Item {
         // A reply can outrun its topic: stand in a placeholder until it arrives.
         if (!store.topics[topicId])
             store.topics[topicId] = {
-                id: topicId, title: "", body: "", author: "", domains: [], tsMs: store.nsToMs(ts),
+                id: topicId, title: "", body: "", author: "", authorKey: "", domains: [], tsMs: store.nsToMs(ts),
                 delivery: "", placeholder: true, live: false, arrivedMs: Date.now()
             };
         store.rev++;
@@ -238,9 +239,9 @@ Item {
             for (var i = 0; i < list.length; ++i) {
                 var e = list[i];
                 if (e.kind === "topic")
-                    store.addTopic(e.id, e.title, e.body, e.author, e.domains || "", e.ts, false);
+                    store.addTopic(e.id, e.title, e.body, e.author, e.domains || "", e.ts, false, e.authorKey);
                 else if (e.kind === "reply")
-                    store.addReply(e.id, e.topicId, e.parentId || e.topicId, e.body, e.author, e.ts, false);
+                    store.addReply(e.id, e.topicId, e.parentId || e.topicId, e.body, e.author, e.ts, false, e.authorKey);
             }
             store.applyOwnStates();
             store.log("backlog restored: " + list.length + " post(s)");
@@ -275,11 +276,11 @@ Item {
     Connections {
         target: store.backend
         ignoreUnknownSignals: true
-        function onTopicReceived(id, title, body, author, domains, timestamp) {
-            store.addTopic(id, title, body, author, domains, timestamp, true);
+        function onTopicReceived(id, title, body, author, domains, timestamp, authorKey) {
+            store.addTopic(id, title, body, author, domains, timestamp, true, authorKey);
         }
-        function onReplyReceived(id, topicId, parentId, body, author, timestamp) {
-            store.addReply(id, topicId, parentId, body, author, timestamp, true);
+        function onReplyReceived(id, topicId, parentId, body, author, timestamp, authorKey) {
+            store.addReply(id, topicId, parentId, body, author, timestamp, true, authorKey);
         }
         function onMessageStateChanged(id, state, detail) {
             store.log("messageStateChanged -> " + id + " " + state + (detail.length > 0 ? " (" + detail + ")" : ""));
@@ -410,7 +411,8 @@ Item {
                 id: r.id, author: r.author, body: r.body, time: store.ago(r.tsMs),
                 depth: depth, delivery: r.delivery, subthread: subthread,
                 fresh: store.freshIds[r.id] === true,
-                isOp: t !== undefined && !t.placeholder && r.author === t.author && r.author !== "Anonymous"
+                // Same signing key as the topic: display text can be imitated (F5).
+                isOp: t !== undefined && !t.placeholder && t.authorKey !== "" && r.authorKey === t.authorKey
             };
         }
         level1.forEach(function (r) {

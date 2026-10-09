@@ -16,6 +16,8 @@ jobs:
       - uses: DeterminateSystems/nix-installer-action@main
       - name: Run unit tests
         run: ./scripts/test-core.sh
+      - name: Markdown sanitiser tests
+        run: node scripts/test-markdown.mjs
 
   module:
     name: module (${{ matrix.os }})

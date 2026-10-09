@@ -108,6 +108,13 @@ std::vector<std::string> parseDomains(std::string_view commaSeparated);
 /// Check a draft is well-formed before signing (shape and size limits).
 Error validateDraft(const Draft& draft);
 
+/// Why an alias can't be used, or nullptr if it can. An alias is shown next
+/// to its persona's fingerprint ("night owl · fr:7Q4K-M2XD"), so it may not
+/// imitate one: no "fr:XXXX-XXXX" shape, not "Anonymous", no "·" separator,
+/// no control, invisible or bidirectional-override characters, no leading or
+/// trailing spaces, valid UTF-8, at most kMaxAlias bytes.
+const char* aliasProblem(std::string_view alias);
+
 /// Sign a draft as `persona`. Mines proof-of-work of `powBits` first (cost
 /// roughly doubles per bit). Returns nullopt with `error` set if the draft is
 /// invalid. Domains are normalised as part of signing.

@@ -4,6 +4,7 @@
 
 #include <algorithm>
 #include <cctype>
+#include <optional>
 
 #include "forumer_core/crypto.h"
 
@@ -83,14 +84,75 @@ bool isLowerHex(const std::string& s) {
                        [](char c) { return (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f'); });
 }
 
+// One UTF-8 code point from s at i (advancing i); nullopt on bad UTF-8.
+std::optional<uint32_t> nextCodePoint(std::string_view s, size_t& i) {
+    const auto b = [&](size_t k) { return static_cast<uint8_t>(s[k]); };
+    const uint8_t c = b(i);
+    int len = c < 0x80 ? 1 : (c >> 5) == 0x6 ? 2 : (c >> 4) == 0xe ? 3 : (c >> 3) == 0x1e ? 4 : 0;
+    if (len == 0 || i + len > s.size()) return std::nullopt;
+    uint32_t cp = len == 1 ? c : len == 2 ? (c & 0x1f) : len == 3 ? (c & 0x0f) : (c & 0x07);
+    for (int k = 1; k < len; ++k) {
+        if ((b(i + k) & 0xc0) != 0x80) return std::nullopt;
+        cp = (cp << 6) | (b(i + k) & 0x3f);
+    }
+    static constexpr uint32_t kMin[] = {0, 0, 0x80, 0x800, 0x10000};
+    if (cp < kMin[len] || cp > 0x10ffff || (cp >= 0xd800 && cp <= 0xdfff)) return std::nullopt;
+    i += len;
+    return cp;
+}
+
+// Characters an alias may not contain: controls, separators and everything
+// invisible or direction-changing (they make two different aliases render
+// alike, or reorder the fingerprint shown after it).
+bool forbiddenInAlias(uint32_t cp) {
+    if (cp < 0x20 || (cp >= 0x7f && cp <= 0x9f)) return true;           // C0, DEL, C1
+    if (cp == 0x00b7 || cp == 0x2027 || cp == 0x2022 || cp == 0x30fb ||  // middle dots
+        cp == 0x00ad || cp == 0x034f || cp == 0x061c || cp == 0x115f || cp == 0x1160 ||
+        cp == 0x17b4 || cp == 0x17b5 || cp == 0x180e || cp == 0x3164 || cp == 0xfeff ||
+        cp == 0xffa0)
+        return true;
+    if (cp >= 0x2000 && cp <= 0x200f) return true;  // odd spaces, zero-width, LRM/RLM
+    if (cp >= 0x2028 && cp <= 0x202f) return true;  // line/para separators, bidi embeddings
+    if (cp >= 0x205f && cp <= 0x206f) return true;  // word joiner, invisible ops, bidi isolates
+    if (cp >= 0xfe00 && cp <= 0xfe0f) return true;  // variation selectors
+    if (cp >= 0xfff9 && cp <= 0xfffb) return true;  // interlinear annotations
+    if (cp >= 0xe0000 && cp <= 0xe0fff) return true; // tags, variation selectors supplement
+    return false;
+}
+
+} // namespace
+
+const char* aliasProblem(std::string_view alias) {
+    if (alias.empty()) return "an alias can't be empty";
+    if (alias.size() > kMaxAlias) return "an alias can be at most 32 characters";
+    if (alias.front() == ' ' || alias.back() == ' ') return "an alias can't start or end with a space";
+    std::string lower;
+    for (size_t i = 0; i < alias.size();) {
+        auto cp = nextCodePoint(alias, i);
+        if (!cp) return "an alias must be valid text";
+        if (forbiddenInAlias(*cp)) return "an alias can't contain separators or invisible characters";
+        lower.push_back(*cp < 0x80 ? static_cast<char>(std::tolower(static_cast<int>(*cp))) : '?');
+    }
+    if (lower == "anonymous") return "\"Anonymous\" is reserved";
+    // Nothing that reads as a fingerprint: "fr:" anywhere, or 4+4 base32 with a dash.
+    if (lower.find("fr:") != std::string::npos || lower.find("fr :") != std::string::npos)
+        return "an alias can't look like a fingerprint (fr:...)";
+    return nullptr;
+}
+
+namespace {
+
 Error validateDisclosure(const Post& p) {
     switch (p.disclosure) {
         case Disclosure::Anonymous:
             if (!p.alias.empty() || p.showFingerprint) return Error::Malformed;
             break;
         case Disclosure::Alias:
-            if (p.alias.empty()) return Error::Malformed;
             if (p.alias.size() > kMaxAlias) return Error::TooLarge;
+            // An alias is always shown with its fingerprint, so a reader can
+            // tell "night owl" from "night owl": a post that hides it, or an
+            // alias dressed up as someone else's fingerprint, is refused.
+            if (!p.showFingerprint || aliasProblem(p.alias)) return Error::Malformed;
             break;
         case Disclosure::Persona:
             if (!p.alias.empty() || !p.showFingerprint) return Error::Malformed;
@@ -257,7 +319,7 @@ std::string Post::authorDisplay() const {
     const std::string fp = identity::fingerprint(publicKey);
     switch (disclosure) {
         case Disclosure::Anonymous: return "Anonymous";
-        case Disclosure::Alias: return showFingerprint ? alias + " · " + fp : alias;
+        case Disclosure::Alias: return alias + " · " + fp;  // fp is mandatory (validateDisclosure)
         case Disclosure::Persona: return fp;
     }
     return fp;

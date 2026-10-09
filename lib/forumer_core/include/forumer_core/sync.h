@@ -70,6 +70,15 @@ inline constexpr int64_t kWindowMs = 48LL * 60 * 60 * 1000;
 /// pin itself to the top of every feed by lying about its time).
 inline constexpr int64_t kMaxClockSkewMs = 10LL * 60 * 1000;
 
+/// No Forumer post predates this (2026-01-01 UTC). A digest claiming the
+/// forum's history goes back further is ignored, so one forged message can't
+/// send every peer walking history back to 1970.
+inline constexpr int64_t kForumEpochMs = 1'767'225'600'000LL;
+
+/// Whether [sinceMs, untilMs) is wider than maxSpanMs, without overflow for
+/// any pair of int64 values (an inverted range counts as empty: false).
+bool spanExceeds(int64_t sinceMs, int64_t untilMs, int64_t maxSpanMs);
+
 /// The content topic of a forum. Forum names are [a-z0-9-], 1..64 chars;
 /// returns "" for anything else.
 std::string contentTopic(std::string_view forum);
@@ -150,6 +159,12 @@ bool listsUnknown(const Digest& digest, const std::vector<PostSummary>& held);
 // repeat while answers keep coming, then move the floor down to start. Peers
 // advertise their oldest post in live digests (oldestMs), which tells a
 // newcomer how far back the forum goes.
+
+/// The automatic history walk stops after this many windows in a row came
+/// back empty: a forum with a quiet month is fine (the user can still ask for
+/// more), but a lie about how old the forum is costs a few requests, not
+/// thousands.
+inline constexpr int kHistoryMaxEmptyWindows = 8;
 
 /// Default width of one history window.
 inline constexpr int64_t kHistorySpanMs = 7LL * 24 * 60 * 60 * 1000;

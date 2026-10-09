@@ -889,8 +889,13 @@ QString ForumerBackend::chooseAlias(QString alias) {
   if (!m_account)
     return QStringLiteral("Unlock first");
   alias = alias.trimmed();
-  if (alias.toUtf8().size() > static_cast<int>(fc::post::kMaxAlias))
-    return QStringLiteral("Alias is too long (max %1 characters)").arg(fc::post::kMaxAlias);
+  if (!alias.isEmpty()) {
+    if (const char *problem = fc::post::aliasProblem(alias.toStdString())) {
+      QString message = QString::fromUtf8(problem);
+      message[0] = message[0].toUpper();
+      return message;
+    }
+  }
   m_account->setAlias(alias.toStdString());
   saveAccount();
   publishIdentityState();
@@ -1443,6 +1448,10 @@ QString ForumerBackend::publish(fc::post::Draft draft, const QString &disclosure
   const std::string alias = m_account->state().alias;
   if (disclosure == Disclosure::Alias && alias.empty())
     return QStringLiteral("Set an alias first, or post as persona / anonymous");
+  if (disclosure == Disclosure::Alias && fc::post::aliasProblem(alias))
+    return QStringLiteral("Your alias \"%1\" can't be used any more (%2). Choose another in "
+                          "profile & personas.")
+        .arg(qs(alias), QString::fromUtf8(fc::post::aliasProblem(alias)));
   if (m_account->restorePending())
     return QStringLiteral("This account was just restored and its history is still arriving. "
                           "Posting now could reuse a persona you rotated away from - wait for "
@@ -1495,12 +1504,15 @@ QString ForumerBackend::publish(fc::post::Draft draft, const QString &disclosure
 
 void ForumerBackend::emitPost(const fc::post::Post &post) {
   const auto &c = post.content;
+  // authorKey: the full persona key, for comparing authors (the "op" badge).
+  // The display text alone can be imitated; the key can't.
+  const QString key = qs(fc::toHex(post.publicKey));
   if (c.kind == fc::post::Kind::Post)
     emit topicReceived(qs(post.id), qs(c.title), qs(c.body), qs(post.authorDisplay()),
-                       joinDomains(c.domains), toNs(c.timestampMs));
+                       joinDomains(c.domains), toNs(c.timestampMs), key);
   else
     emit replyReceived(qs(post.id), qs(c.root), qs(c.parent), qs(c.body), qs(post.authorDisplay()),
-                       toNs(c.timestampMs));
+                       toNs(c.timestampMs), key);
 }
 
 QString ForumerBackend::loadBacklog() {
@@ -1523,6 +1535,7 @@ QString ForumerBackend::loadBacklog() {
         {"id", qs(p.id)},
         {"body", qs(p.content.body)},
         {"author", qs(p.authorDisplay())},
+        {"authorKey", qs(fc::toHex(p.publicKey))},
         {"ts", QString::number(toNs(p.content.timestampMs))},
     };
     if (isTopic) {
@@ -1595,18 +1608,24 @@ std::string ForumerBackend::checkPost(const fc::post::Post &post) const {
 }
 
 void ForumerBackend::handlePost(fc::post::Post post) {
-  // Seen on the wire, valid or not — a peer about to answer a digest with
-  // this post can skip it.
-  m_lastSeenOnWire.insert(qs(post.id), nowMs());
-
-  if (m_posts->contains(post.id))
-    return; // already have it (including our own echo)
+  // "Seen on the wire" lets a peer about to answer a digest skip a post
+  // someone else has just re-sent. Only a genuine copy counts: a forged
+  // message carrying a real post's id must not suppress its repair (F8).
+  const int minPow = post.disclosure == Disclosure::Anonymous ? kAnonymousPowBits : kPowBits;
+  if (m_posts->contains(post.id)) {
+    // Already have it (including our own echo). The id is a hash over the
+    // signed bytes, so a copy that verifies is the same post.
+    if (fc::post::verify(post, minPow) == fc::post::Error::None)
+      m_lastSeenOnWire.insert(qs(post.id), nowMs());
+    return;
+  }
 
   const std::string problem = checkPost(post);
   if (!problem.empty()) {
     logEvent("dropped " + post.id + ": " + problem);
     return;
   }
+  m_lastSeenOnWire.insert(qs(post.id), nowMs());
 
   // Keys we've never seen (anonymous posts, fresh personas) share a budget.
   // Over it, the post isn't stored yet; the next digest exchange offers it
@@ -1656,7 +1675,8 @@ void ForumerBackend::handleDigest(const fc::sync::Digest &digest) {
   const qint64 now = nowMs();
 
   // The sender's oldest post tells us how far back the forum's history goes.
-  if (digest.oldestMs > 0 && digest.oldestMs < now &&
+  // oldestMs before Forumer existed is already dropped by decode (F10).
+  if (digest.oldestMs >= fc::sync::kForumEpochMs && digest.oldestMs < now &&
       (m_historyTarget == 0 || digest.oldestMs < m_historyTarget)) {
     m_historyTarget = digest.oldestMs;
     publishHistory();
@@ -1710,8 +1730,12 @@ void ForumerBackend::handleRange(const fc::sync::Digest &range) {
   m_lastRangeAnswerMs = now;
 
   fc::sync::Digest window = range;
-  if (window.untilMs - window.sinceMs > kRangeMaxSpanMs)
-    window.sinceMs = window.untilMs - kRangeMaxSpanMs;  // answer the newest part
+  window.untilMs = std::min<int64_t>(window.untilMs, now + fc::sync::kMaxClockSkewMs);
+  if (window.untilMs <= window.sinceMs)
+    return;
+  // Overflow-safe for any decoded pair (F11): answer only the newest part.
+  if (fc::sync::spanExceeds(window.sinceMs, window.untilMs, kRangeMaxSpanMs))
+    window.sinceMs = window.untilMs - kRangeMaxSpanMs;
   const auto held = m_posts->range(window.sinceMs, window.untilMs);
   const auto missing = fc::sync::missingFrom(window, held);
   if (!missing.empty())
@@ -1763,6 +1787,7 @@ QString ForumerBackend::loadOlderHistory() {
   if (m_historyTarget == 0 || deeper < m_historyTarget)
     m_historyTarget = std::max<int64_t>(1, deeper);
   publishHistory();
+  m_historyByRequest = true;  // the user asked: don't stop at empty weeks
   if (!m_historyActive && !m_historyScheduled && m_joined) {
     logEvent("history: loading four more weeks on request");
     historyStep();
@@ -1805,6 +1830,8 @@ void ForumerBackend::historyStep() {
     if (m_historyActive)
       logEvent("history: complete back to " + std::to_string(m_historyFloor));
     m_historyActive = false;
+    m_historyByRequest = false;
+    m_historyEmptyWindows = 0;
     publishHistory();
     maybeFinishRestore();
     return;
@@ -1844,6 +1871,18 @@ void ForumerBackend::historyRoundDone() {
   }
   m_historyFloor = m_historyFrom;
   m_posts->setMeta("history_floor", std::to_string(m_historyFloor));
+  // A run of windows with nothing in them: the forum probably doesn't go back
+  // that far, whatever a digest claimed (F10). Stop here; "load older" can
+  // still go further on request.
+  if (m_historyRoundNew == 0 && m_posts->countRange(m_historyFrom, m_historyTo) == 0) {
+    if (++m_historyEmptyWindows >= fc::sync::kHistoryMaxEmptyWindows && !m_historyByRequest) {
+      logEvent("history: " + std::to_string(m_historyEmptyWindows) +
+               " empty windows in a row - stopping at " + std::to_string(m_historyFloor));
+      m_historyTarget = m_historyFloor;
+    }
+  } else {
+    m_historyEmptyWindows = 0;
+  }
   publishHistory();
   QTimer::singleShot(1'000, this, [this]() { historyStep(); });
 }

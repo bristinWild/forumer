@@ -19,6 +19,10 @@
 #include "forumer_core/post.h"
 #include "forumer_core/post_store.h"
 #include "forumer_core/sealed.h"
+#include "forumer_core/sync.h"
+
+#include <climits>
+#include <nlohmann/json.hpp>
 
 using namespace forumer;
 using namespace forumer::identity;
@@ -388,4 +392,94 @@ TEST(f3_sealed_binds_account_and_purpose) {
     CHECK(!sealed::open(key, "other", "own", *text).has_value());
     CHECK(!sealed::open(key, "acct", "state", *text).has_value());
     CHECK(!sealed::open(crypto::randomSecret(32), "acct", "own", *text).has_value());
+}
+
+//  F5: an alias can't pass for someone else's fingerprint 
+
+TEST(f5_alias_rules) {
+    CHECK(post::aliasProblem("night owl") == nullptr);
+    CHECK(post::aliasProblem("ünïcödé ok") == nullptr);
+    CHECK(post::aliasProblem("fr:7Q4K-M2XD") != nullptr);          // a fingerprint
+    CHECK(post::aliasProblem("FR:7Q4K-M2XD") != nullptr);
+    CHECK(post::aliasProblem("me fr:7Q4K") != nullptr);
+    CHECK(post::aliasProblem("Anonymous") != nullptr);
+    CHECK(post::aliasProblem("anonymous") != nullptr);
+    CHECK(post::aliasProblem("owl \xC2\xB7 fr") != nullptr);         // U+00B7 separator
+    CHECK(post::aliasProblem("owl\xE2\x80\xAE" "dxm") != nullptr);       // U+202E right-to-left override
+    CHECK(post::aliasProblem("o\xE2\x80\x8Bwl") != nullptr);          // U+200B zero-width space
+    CHECK(post::aliasProblem("owl\n") != nullptr);
+    CHECK(post::aliasProblem(" owl") != nullptr);
+    CHECK(post::aliasProblem("\xFF\xFE") != nullptr);                // not UTF-8
+    CHECK(post::aliasProblem(std::string(33, 'a')) != nullptr);
+    CHECK(post::aliasProblem("") != nullptr);
+}
+
+TEST(f5_alias_posts_always_show_their_fingerprint) {
+    Account a = Account::create("A");
+    const auto p = topic(a.currentPersona(), Disclosure::Alias, "hi", nowMs(), "night owl");
+    CHECK(post::verify(p, kTestPow) == post::Error::None);
+    CHECK_EQ(p.authorDisplay(), "night owl · " + a.currentPersona().fingerprint());
+
+    // The review's forgery: an alias post that hides the fingerprint (fp=false)
+    // so it displays exactly like another persona's "fr:..." - refused before
+    // the signature is even looked at.
+    auto doc = nlohmann::json::parse(p.toJson());
+    doc["fp"] = false;
+    auto hidden = post::Post::fromJson(doc.dump());
+    CHECK(hidden.has_value());
+    if (hidden) CHECK(post::verify(*hidden, kTestPow) == post::Error::Malformed);
+
+    doc = nlohmann::json::parse(p.toJson());
+    doc["alias"] = "fr:7Q4K-M2XD";
+    auto spoof = post::Post::fromJson(doc.dump());
+    if (spoof) CHECK(post::verify(*spoof, kTestPow) == post::Error::Malformed);
+
+    // And nobody can sign one in the first place.
+    post::Draft d;
+    d.title = "x";
+    d.domains = {"privacy"};
+    d.timestampMs = nowMs();
+    post::Error err = post::Error::None;
+    CHECK(!post::sign(d, a.currentPersona(), Disclosure::Alias, "fr:7Q4K-M2XD", kTestPow, &err));
+    CHECK(err == post::Error::Malformed);
+}
+
+//  F10 / F11: digest and range bounds 
+
+TEST(f10_digest_oldest_before_forumer_is_ignored) {
+    auto decode = [](const std::string& json) {
+        return sync::decode(Bytes(json.begin(), json.end()));
+    };
+    auto old = decode("{\"v\":1,\"t\":\"digest\",\"since\":1,\"have\":[],\"oldest\":1}");
+    CHECK(old.message.has_value());
+    if (old.message) CHECK_EQ(old.message->digest.oldestMs, int64_t(0));  // unknown, not 1970
+
+    const int64_t plausible = sync::kForumEpochMs + 86'400'000;
+    auto ok = decode("{\"v\":1,\"t\":\"digest\",\"since\":1,\"have\":[],\"oldest\":" +
+                     std::to_string(plausible) + "}");
+    CHECK(ok.message.has_value());
+    if (ok.message) CHECK_EQ(ok.message->digest.oldestMs, plausible);
+}
+
+TEST(f11_ranges_cant_overflow_the_span_cap) {
+    auto decode = [](const std::string& json) {
+        return sync::decode(Bytes(json.begin(), json.end()));
+    };
+    // The review's message: since = INT64_MIN, until = INT64_MAX.
+    auto bad = decode("{\"v\":1,\"t\":\"range\",\"since\":" + std::to_string(INT64_MIN) +
+                      ",\"until\":" + std::to_string(INT64_MAX) + ",\"have\":[]}");
+    CHECK(!bad.message.has_value());
+    auto negative = decode("{\"v\":1,\"t\":\"digest\",\"since\":-5,\"have\":[]}");
+    CHECK(!negative.message.has_value());
+
+    // Still huge but valid: decodes, and the span check catches it.
+    auto huge = decode("{\"v\":1,\"t\":\"range\",\"since\":0,\"until\":" + std::to_string(INT64_MAX) +
+                       ",\"have\":[]}");
+    CHECK(huge.message.has_value());
+    const int64_t cap = 2 * sync::kHistorySpanMs;
+    CHECK(sync::spanExceeds(0, INT64_MAX, cap));
+    CHECK(sync::spanExceeds(INT64_MIN, INT64_MAX, cap));      // no overflow even unchecked
+    CHECK(!sync::spanExceeds(100, 100 + cap, cap));
+    CHECK(sync::spanExceeds(100, 101 + cap, cap));
+    CHECK(!sync::spanExceeds(500, 100, cap));                 // inverted: empty
 }

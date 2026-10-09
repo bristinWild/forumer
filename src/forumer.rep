@@ -23,7 +23,8 @@ class Forumer
     // first and oldest first within each kind:
     //   [{"kind":"topic","id":…,"title":…,"body":…,"author":…,"domains":…,"ts":…}, …]
     // Replies carry "topicId" and "parentId" (= topicId for level-1 replies).
-    // `author` is the display form (fingerprint, alias, or "Anonymous").
+    // `author` is the display form (fingerprint, alias, or "Anonymous");
+    // `authorKey` the signing persona's public key (hex).
     // Posts this device wrote also carry "state": "pending" | "sent" | "failed".
     //
     // A SLOT rather than a startup SIGNAL on purpose. The backend finishes its
@@ -221,12 +222,13 @@ class Forumer
     // ── Events ────────────────────────────────────────────────────────────────
     // A verified topic arrived (or was just created locally). `author` is the
     // display form; `domains` comma-separated; `timestamp` ns since epoch
-    // (the author's clock).
-    SIGNAL(topicReceived(QString id, QString title, QString body, QString author, QString domains, qint64 timestamp))
+    // (the author's clock); `authorKey` the signing persona's public key
+    // (hex) - compare authors by this, never by the display text.
+    SIGNAL(topicReceived(QString id, QString title, QString body, QString author, QString domains, qint64 timestamp, QString authorKey))
 
     // A verified reply in topic `topicId`, answering `parentId` (the topic
     // itself for a level-1 reply, a level-1 reply for a level-2 one).
-    SIGNAL(replyReceived(QString id, QString topicId, QString parentId, QString body, QString author, qint64 timestamp))
+    SIGNAL(replyReceived(QString id, QString topicId, QString parentId, QString body, QString author, qint64 timestamp, QString authorKey))
 
     // Delivery state of a post the unlocked account made: "pending",
     // "propagated", "sent" or "failed" (reason in `detail`). Failed posts stay

@@ -105,6 +105,10 @@ DecodeResult decode(const std::vector<uint8_t>& payload) {
         if (have->size() > kMaxDigestIds)
             return fail(DecodeError::Malformed);
         msg.type = type == "range" ? MessageType::Range : MessageType::Digest;
+        // Times are ms since 1970: never negative. (A negative `since` with a
+        // huge `until` used to overflow the span check and skip its cap.)
+        if (since->get<int64_t>() < 0)
+            return fail(DecodeError::Malformed);
         msg.digest.sinceMs = since->get<int64_t>();
         if (msg.type == MessageType::Range) {
             auto until = j.find("until");
@@ -115,7 +119,8 @@ DecodeResult decode(const std::vector<uint8_t>& payload) {
         } else if (auto oldest = j.find("oldest"); oldest != j.end()) {
             if (!oldest->is_number_integer() || oldest->get<int64_t>() < 0)
                 return fail(DecodeError::Malformed);
-            msg.digest.oldestMs = oldest->get<int64_t>();
+            // Older than any Forumer post: not believable, treat as unknown.
+            msg.digest.oldestMs = oldest->get<int64_t>() >= kForumEpochMs ? oldest->get<int64_t>() : 0;
         }
         msg.digest.have.reserve(have->size());
         for (const auto& id : *have) {
@@ -184,6 +189,13 @@ bool listsUnknown(const Digest& digest, const std::vector<PostSummary>& held) {
         if (mine.count(id) == 0)
             return true;
     return false;
+}
+
+bool spanExceeds(int64_t sinceMs, int64_t untilMs, int64_t maxSpanMs) {
+    if (untilMs <= sinceMs) return false;
+    // The difference of two int64s always fits in a uint64.
+    const uint64_t span = static_cast<uint64_t>(untilMs) - static_cast<uint64_t>(sinceMs);
+    return maxSpanMs < 0 || span > static_cast<uint64_t>(maxSpanMs);
 }
 
 bool acceptTimestamp(int64_t postMs, int64_t nowMs) {

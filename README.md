@@ -282,7 +282,7 @@ Anyone can check, without trusting the sender, that a post was written by the ke
 |---|---|
 | Title / body | 200 / 10,000 characters |
 | Domains per topic | 3, normalised to `[a-z0-9-]`, 2–32 characters |
-| Alias | 32 characters |
+| Alias | 32 bytes; always shown with its fingerprint; can't contain `fr:`, `·`, or invisible / direction-changing characters, or be `Anonymous` |
 | Whole envelope | 16 KB (media will travel by reference, never inline) |
 | Proof-of-work | 16 bits (persona/alias), 20 bits (anonymous) |
 | Clock | posts dated more than 10 minutes in the future are refused |

@@ -300,6 +300,8 @@ private:
   int m_historyRoundNew = 0;       // new posts in the window this round
   int m_historyRounds = 0;         // rounds spent on this window
   int m_historyReceived = 0;       // older posts that arrived this session
+  int m_historyEmptyWindows = 0;   // windows in a row that brought nothing (F10)
+  bool m_historyByRequest = false; // walking because the user asked ("load older")
   qint64 m_lastRangeAnswerMs = 0;  // we answer one range request at a time
   qint64 m_lastLinkFetchMs = 0;    // fetchAround: at most one request per few seconds
   qint64 m_lastCoveredSaveMs = 0;

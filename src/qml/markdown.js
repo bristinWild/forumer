@@ -14,29 +14,66 @@
 // Neutralise one line of non-code text. Links are rebuilt as our own small
 // anchor (only http/https; others keep just their text) so they can take the
 // theme's link colour - Qt's Markdown renderer ignores Text.linkColor.
+//
+// "<" becomes the entity "&lt;". Markdown decodes entities to plain text and
+// never parses them as markup, and no backslash in front of one can turn it
+// back into a tag. (The old escape, a backslash before "<", was undone by a
+// backslash already in the text: \<b> became \\<b>, which Markdown reads as
+// an escaped backslash followed by a live tag.)
 function safeText(s, linkColor) {
     s = s
         // inline images become their alt text: ![alt](url) -> alt
         .replace(/!\[([^\]]*)\]\([^)]*\)/g, "$1")
         // any other image syntax (reference style) is shown literally
         .replace(/!\[/g, "!\\[")
-        // raw HTML is shown literally: <b> -> \<b>
-        .replace(/</g, "\\<");
+        // raw HTML is shown literally: <b> -> &lt;b>
+        .replace(/</g, "&lt;");
     return s.replace(/\[([^\]]+)\]\(([^)\s]*)\)/g, function (all, label, url) {
         if (!/^https?:\/\/[^\s"'<>]+$/i.test(url)) return label;
         return '<a href="' + url + '"><span style="color:' + linkColor + ';">' + label + '</span></a>';
     });
 }
 
-// One line outside a fenced block: escape everything except `code spans`.
+// The code spans of one line, as Markdown finds them: a run of N backticks
+// opens a span that the next run of exactly N backticks closes. A run with a
+// backslash right before it is never treated as an opener here - Markdown may
+// read it as an escaped backtick, and text we wrongly took for code would go
+// out unescaped. (Erring the other way only shows "&lt;" inside real code.)
+// Returns [{start, end}] index ranges, closing backticks included.
+function codeSpans(line) {
+    var spans = [];
+    var i = 0;
+    while (i < line.length) {
+        if (line[i] !== "`") { ++i; continue; }
+        var open = i;
+        while (i < line.length && line[i] === "`") ++i;
+        var n = i - open;
+        if (open > 0 && line[open - 1] === "\\") continue;   // maybe escaped: not an opener
+        // Find the next run of exactly n backticks.
+        var j = i, close = -1;
+        while (j < line.length) {
+            if (line[j] !== "`") { ++j; continue; }
+            var run = j;
+            while (j < line.length && line[j] === "`") ++j;
+            if (j - run === n) { close = j; break; }
+        }
+        if (close < 0) continue;            // unmatched: the backticks are plain text
+        spans.push({ start: open, end: close });
+        i = close;
+    }
+    return spans;
+}
+
+// One line outside a fenced block: escape everything except code spans.
 function safeLine(line, linkColor) {
-    var parts = line.split("`");
-    for (var i = 0; i < parts.length; i += 2)
-        parts[i] = safeText(parts[i], linkColor);
-    // An unmatched backtick leaves the tail unescaped: escape it too.
-    if (parts.length % 2 === 0)
-        parts[parts.length - 1] = safeText(parts[parts.length - 1], linkColor);
-    return parts.join("`");
+    var spans = codeSpans(line);
+    var out = "", at = 0;
+    for (var k = 0; k < spans.length; ++k) {
+        out += safeText(line.slice(at, spans[k].start), linkColor);
+        out += line.slice(spans[k].start, spans[k].end);
+        at = spans[k].end;
+    }
+    return out + safeText(line.slice(at), linkColor);
 }
 
 function safe(md, linkColor) {
