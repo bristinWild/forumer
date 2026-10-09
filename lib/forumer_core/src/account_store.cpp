@@ -8,6 +8,7 @@
 #include <system_error>
 
 #include "forumer_core/mnemonic.h"
+#include "forumer_core/sealed.h"
 #include "forumer_core/vault.h"
 
 namespace forumer {
@@ -19,7 +20,8 @@ using identity::AccountState;
 
 namespace {
 
-constexpr int kIndexVersion = 1;
+constexpr int kIndexVersion = 2;      // 1: no labels (0.2.2 and earlier)
+constexpr const char* kStatePurpose = "state";
 constexpr size_t kMinPasswordLength = 8;
 
 // Account ids are 16 lowercase hex characters (identity::accountIdFor). Checked
@@ -28,6 +30,18 @@ bool isValidId(const std::string& id) {
     if (id.size() != 16) return false;
     return std::all_of(id.begin(), id.end(),
                        [](char c) { return (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f'); });
+}
+
+bool isValidPrivateName(const std::string& name) {
+    return !name.empty() && name.size() <= 32 &&
+           std::all_of(name.begin(), name.end(), [](char c) { return c >= 'a' && c <= 'z'; });
+}
+
+// Owner-only directory (0700). Best effort: a filesystem without POSIX
+// permissions just keeps its defaults.
+void restrictDir(const fs::path& dir) {
+    std::error_code ec;
+    fs::permissions(dir, fs::perms::owner_all, fs::perm_options::replace, ec);
 }
 
 std::string passwordProblem(const std::string& password) {
@@ -84,12 +98,32 @@ AccountStore::AccountStore(fs::path dir, crypto::PasswordHashParams params)
 
 fs::path AccountStore::accountDir(const std::string& id) const { return dir_ / id; }
 
+std::string AccountStore::Index::labelOf(const std::string& id) const {
+    for (const auto& [k, v] : labels)
+        if (k == id) return v;
+    return {};
+}
+
+void AccountStore::Index::setLabel(const std::string& id, const std::string& label) {
+    for (auto& [k, v] : labels)
+        if (k == id) {
+            v = label;
+            return;
+        }
+    labels.emplace_back(id, label);
+}
+
 AccountStore::Index AccountStore::readIndex() const {
     Index index;
     auto text = readFile(dir_ / "accounts.json");
     if (!text) return index;
     const json doc = json::parse(*text, nullptr, /*allow_exceptions=*/false);
-    if (doc.is_discarded() || !doc.is_object() || doc.value("v", 0) != kIndexVersion) return index;
+    const int version = doc.is_object() ? doc.value("v", 0) : 0;
+    if (doc.is_discarded() || (version != 1 && version != kIndexVersion)) return index;
+    if (auto it = doc.find("labels"); it != doc.end() && it->is_object()) {
+        for (const auto& [id, label] : it->items())
+            if (isValidId(id) && label.is_string()) index.labels.emplace_back(id, label.get<std::string>());
+    }
 
     index.selected = doc.value("selected", std::string());
     if (auto it = doc.find("order"); it != doc.end() && it->is_array()) {
@@ -101,18 +135,31 @@ AccountStore::Index AccountStore::readIndex() const {
 }
 
 bool AccountStore::writeIndex(const Index& index) const {
-    json doc = {{"v", kIndexVersion}, {"selected", index.selected}, {"order", index.order}};
-    return writeFileAtomic(dir_ / "accounts.json", doc.dump(2));
+    json labels = json::object();
+    for (const auto& id : index.order)
+        labels[id] = index.labelOf(id);
+    json doc = {{"v", kIndexVersion}, {"selected", index.selected}, {"order", index.order},
+                {"labels", labels}};
+    const bool ok = writeFileAtomic(dir_ / "accounts.json", doc.dump(2), /*ownerOnly=*/true);
+    restrictDir(dir_);
+    return ok;
 }
 
 std::vector<AccountStore::Summary> AccountStore::list() const {
     std::vector<Summary> out;
-    for (const auto& id : readIndex().order) {
-        auto text = readFile(accountDir(id) / "state.json");
-        if (!text) continue;
-        auto state = AccountState::fromJson(*text);
-        if (!state || state->id != id) continue;
-        out.push_back({id, state->label});
+    const Index index = readIndex();
+    for (const auto& id : index.order) {
+        if (!fs::exists(accountDir(id) / "vault.json")) continue;
+        std::string label = index.labelOf(id);
+        if (label.empty()) {
+            // Written by 0.2.2 or earlier: the name is still in the clear state
+            // file until the account is next unlocked.
+            if (auto text = readFile(accountDir(id) / "state.json"))
+                if (auto state = AccountState::fromJson(*text); state && state->id == id)
+                    label = state->label;
+        }
+        if (label.empty()) label = "Account";
+        out.push_back({id, label});
     }
     return out;
 }
@@ -134,15 +181,43 @@ bool AccountStore::select(const std::string& id) {
     return writeIndex(index);
 }
 
+bool AccountStore::writeState(const Account& account) const {
+    const std::string& id = account.state().id;
+    auto text = sealed::seal(account.storageKey(), id, kStatePurpose, account.state().toJson());
+    if (!text || !writeFileAtomic(accountDir(id) / "state.enc", *text, /*ownerOnly=*/true))
+        return false;
+    // Once the encrypted copy is down, the clear one from 0.2.2 goes.
+    std::error_code ec;
+    fs::remove(accountDir(id) / "state.json", ec);
+    return true;
+}
+
+std::optional<AccountState> AccountStore::readState(const std::string& id, const SecretBytes& master,
+                                                    bool* legacy) const {
+    if (legacy) *legacy = false;
+    if (auto text = readFile(accountDir(id) / "state.enc")) {
+        auto plain = sealed::open(identity::storageKeyFor(master), id, kStatePurpose, *text);
+        if (!plain) return std::nullopt;
+        return AccountState::fromJson(*plain);
+    }
+    if (auto text = readFile(accountDir(id) / "state.json")) {
+        if (legacy) *legacy = true;
+        return AccountState::fromJson(*text);
+    }
+    return std::nullopt;
+}
+
 bool AccountStore::writeAccountFiles(const Account& account, const std::string& vaultJson) {
     const fs::path dir = accountDir(account.state().id);
     if (!writeFileAtomic(dir / "vault.json", vaultJson, /*ownerOnly=*/true)) return false;
-    if (!writeFileAtomic(dir / "state.json", account.state().toJson())) return false;
+    restrictDir(dir);
+    if (!writeState(account)) return false;
 
     Index index = readIndex();
     if (std::find(index.order.begin(), index.order.end(), account.state().id) == index.order.end())
         index.order.push_back(account.state().id);
     index.selected = account.state().id;
+    index.setLabel(account.state().id, account.state().label);
     return writeIndex(index);
 }
 
@@ -165,17 +240,26 @@ AccountStore::Result AccountStore::unlock(const std::string& id, const std::stri
     const fs::path dir = accountDir(id);
 
     auto vaultText = readFile(dir / "vault.json");
-    auto stateText = readFile(dir / "state.json");
-    if (!vaultText || !stateText) return {std::nullopt, "this account's files are missing"};
+    if (!vaultText) return {std::nullopt, "this account's files are missing"};
 
     auto opened = vault::open(*vaultText, password);
     if (!opened.ok()) return {std::nullopt, vault::describe(opened.error)};
 
-    auto state = AccountState::fromJson(*stateText);
-    if (!state) return {std::nullopt, "this account's settings file is damaged"};
+    bool legacy = false;
+    auto state = readState(id, *opened.secret, &legacy);
+    if (!state) return {std::nullopt, "this account's settings file is missing or damaged"};
 
     auto account = Account::load(std::move(*opened.secret), std::move(*state));
     if (!account) return {std::nullopt, "this account's vault and settings don't match"};
+
+    if (legacy) {
+        // 0.2.2 format: encrypt the state, record the name in the index.
+        writeState(*account);
+        Index index = readIndex();
+        index.setLabel(id, account->state().label);
+        writeIndex(index);
+        restrictDir(dir);
+    }
     return {std::move(account), {}};
 }
 
@@ -191,10 +275,8 @@ AccountStore::Result AccountStore::restore(const std::string& phrase, const std:
     // Same phrase as an account already on this device: keep its settings.
     const std::string id = identity::accountIdFor(master);
     std::optional<Account> account;
-    if (auto stateText = readFile(accountDir(id) / "state.json")) {
-        if (auto state = AccountState::fromJson(*stateText))
-            account = Account::load(master, std::move(*state));
-    }
+    if (auto state = readState(id, master))
+        account = Account::load(master, std::move(*state));
     if (!account) account = Account::restore(master, label.empty() ? "Restored" : label, isKnown);
     if (!account) return {std::nullopt, "could not rebuild the identity from that phrase"};
 
@@ -208,7 +290,32 @@ AccountStore::Result AccountStore::restore(const std::string& phrase, const std:
 bool AccountStore::save(const Account& account) {
     const std::string& id = account.state().id;
     if (!isValidId(id)) return false;
-    return writeFileAtomic(accountDir(id) / "state.json", account.state().toJson());
+    if (!writeState(account)) return false;
+    Index index = readIndex();
+    if (index.labelOf(id) != account.state().label) {
+        index.setLabel(id, account.state().label);
+        return writeIndex(index);
+    }
+    return true;
+}
+
+std::optional<std::string> AccountStore::loadPrivate(const Account& account,
+                                                     const std::string& name) const {
+    const std::string& id = account.state().id;
+    if (!isValidId(id) || !isValidPrivateName(name) || name == kStatePurpose) return std::nullopt;
+    const fs::path file = accountDir(id) / (name + ".enc");
+    if (!fs::exists(file)) return std::string();
+    auto text = readFile(file);
+    if (!text) return std::nullopt;
+    return sealed::open(account.storageKey(), id, name, *text);
+}
+
+bool AccountStore::savePrivate(const Account& account, const std::string& name,
+                               const std::string& plaintext) const {
+    const std::string& id = account.state().id;
+    if (!isValidId(id) || !isValidPrivateName(name) || name == kStatePurpose) return false;
+    auto text = sealed::seal(account.storageKey(), id, name, plaintext);
+    return text && writeFileAtomic(accountDir(id) / (name + ".enc"), *text, /*ownerOnly=*/true);
 }
 
 std::string AccountStore::changePassword(const std::string& id, const std::string& oldPassword,
@@ -234,6 +341,9 @@ bool AccountStore::remove(const std::string& id) {
 
     Index index = readIndex();
     index.order.erase(std::remove(index.order.begin(), index.order.end(), id), index.order.end());
+    index.labels.erase(std::remove_if(index.labels.begin(), index.labels.end(),
+                                      [&id](const auto& l) { return l.first == id; }),
+                       index.labels.end());
     if (index.selected == id) index.selected = index.order.empty() ? "" : index.order.front();
     return writeIndex(index);
 }

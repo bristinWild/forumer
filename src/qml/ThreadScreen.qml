@@ -405,6 +405,7 @@ Item {
                                 noun: "reply"
                                 nounPlural: "replies"
                             }
+                            RestoreNotice { Layout.fillWidth: true; store: thread.store }
                             Notice { Layout.fillWidth: true; message: thread.error }
                         }
                     }

@@ -41,6 +41,10 @@ Item {
     readonly property string quotaJson:          hasBackend && backend.quotaJson ? backend.quotaJson : "{}"
     readonly property string inboxJson:          hasBackend && backend.inboxJson ? backend.inboxJson : "[]"
     readonly property string historyJson:        hasBackend && backend.historyJson ? backend.historyJson : "{}"
+    // The unlocked account's own posts and their delivery state; "{}" while
+    // locked. The one source of "my posts" (see applyOwnStates).
+    readonly property string ownStatesJson:      hasBackend && backend.ownStatesJson ? backend.ownStatesJson : "{}"
+    readonly property bool   restorePending:     hasBackend && backend.restorePending === true
     // Fetching older posts: see historyJson in forumer.rep.
     readonly property var history: {
         try { return JSON.parse(store.historyJson); } catch (e) { return {}; }
@@ -66,7 +70,7 @@ Item {
     readonly property bool repliesLeft: quota.replies.left === undefined || quota.replies.left > 0
 
     readonly property bool unlocked: identityState === "unlocked"
-    readonly property bool canPost: nodeReady && unlocked
+    readonly property bool canPost: nodeReady && unlocked && !restorePending
     readonly property bool connected: status === "Connected" || status === "PartiallyConnected"
 
     // Replying to a reply needs the backend's replyToPost; an older backend
@@ -233,12 +237,12 @@ Item {
             }
             for (var i = 0; i < list.length; ++i) {
                 var e = list[i];
-                if (e.state) store.deliveries[e.id] = e.state;
                 if (e.kind === "topic")
                     store.addTopic(e.id, e.title, e.body, e.author, e.domains || "", e.ts, false);
                 else if (e.kind === "reply")
                     store.addReply(e.id, e.topicId, e.parentId || e.topicId, e.body, e.author, e.ts, false);
             }
+            store.applyOwnStates();
             store.log("backlog restored: " + list.length + " post(s)");
         }, function (err) {
             store.log("backlog load failed: " + err);
@@ -248,6 +252,25 @@ Item {
 
     onViewReadyChanged: store.loadBacklog()
     onNodeReadyChanged: store.loadBacklog()
+
+    // Which posts are "mine" belongs to the unlocked account: on lock, unlock
+    // or switch, replace every delivery mark with that account's list, so one
+    // account never sees another's posts in "My posts" or the outbox.
+    function applyOwnStates() {
+        var map = {};
+        try { map = JSON.parse(store.ownStatesJson); } catch (e) { map = {}; }
+        var deliveries = {};
+        for (var id in map) {
+            // A live "propagated" waypoint outranks the stored "pending".
+            var live = store.deliveries[id];
+            deliveries[id] = (map[id] === "pending" && live === "propagated") ? live : map[id];
+        }
+        store.deliveries = deliveries;
+        for (var a in store.topics) store.topics[a].delivery = deliveries[a] || "";
+        for (var b in store.replies) store.replies[b].delivery = deliveries[b] || "";
+        store.rev++;
+    }
+    onOwnStatesJsonChanged: store.applyOwnStates()
 
     Connections {
         target: store.backend
@@ -583,6 +606,11 @@ Item {
             try { r = JSON.parse(json); } catch (e) { r = { error: "Unexpected reply" }; }
             if (r.error) onErr(r.error); else onOk(r);
         }, function (e) { onErr(String(e)); });
+    }
+
+    function postAfterRestore() {
+        if (typeof store.backend.postAfterRestore === "function")
+            store.call(store.backend.postAfterRestore());
     }
 
     function createTopic(title, body, domains, disclosure, onOk, onErr) {

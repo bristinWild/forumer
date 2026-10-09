@@ -150,13 +150,19 @@ TEST(post_store_survives_reopen) {
     TempDir dir;
     auto account = identity::Account::create("A");
     const auto t = makeTopic(account.persona(0), "durable", nowMs());
+    OwnData saved;
     {
         auto store = PostStore::open(dir.path / "posts.sqlite3");
         store->insert(t, 1);
         store->enqueue(t.id, "acct", 1);
+        saved = store->exportOwn("acct");
     }
     auto store = PostStore::open(dir.path / "posts.sqlite3");
     CHECK(store->contains(t.id));
+    // F3: the outbox is not in the log file; it comes back from the
+    // account's own (encrypted) data.
+    CHECK(!store->outboxEntry(t.id).has_value());
+    CHECK(store->importOwn(saved));
     CHECK(store->outboxEntry(t.id).has_value());
 }
 

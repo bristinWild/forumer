@@ -12,6 +12,7 @@ add_executable(forumer_core_tests
     test_flood.cpp
     test_inbox.cpp
     test_history.cpp
+    test_review_fixes.cpp
 )
 
 target_link_libraries(forumer_core_tests PRIVATE forumer_core)

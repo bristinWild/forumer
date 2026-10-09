@@ -137,6 +137,8 @@ Sheet {
         noun: "topic"
     }
 
+    RestoreNotice { Layout.fillWidth: true; store: composer.store }
+
     Notice { Layout.fillWidth: true; message: composer.error }
 
     actions: [

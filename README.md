@@ -197,17 +197,20 @@ Forumer is one `ui_qml` module. The engine is a separate library inside it, not 
 Everything lives under the instance's data folder: `$LOGOS_USER_DIR/module_data/forumer/` when Basecamp sets one, otherwise the system's app-data folder.
 
 ```
-forumer/
+forumer/                       (0700; every file below is 0600)
 ├── accounts/
-│   ├── accounts.json          list of accounts, which one is selected
+│   ├── accounts.json          accounts, their names, which one is selected
 │   └── <account id>/
-│       ├── vault.json         master key, encrypted with the password (file mode 0600)
-│       └── state.json         name, rotation policy, persona counter, alias, followed domains
+│       ├── vault.json         master key, encrypted with the password
+│       ├── state.enc          rotation policy, persona counter, alias, followed domains (encrypted)
+│       └── own.enc            which posts this account wrote, their send state, replies read (encrypted)
 └── posts/
-    └── posts.sqlite3          every verified post + the outbox of this device's own posts
+    └── posts.sqlite3          every verified post: public data only
 ```
 
-No file on disk holds anything that links personas to each other, except the encrypted vault.
+`state.enc` and `own.enc` are encrypted (XChaCha20-Poly1305) under a key derived from the account's master key, bound to the account and to the file's purpose. While an account is locked, nothing on disk says which posts it wrote, links its personas, or reveals its alias; only its name (shown on the lock screen) is readable. The unlocked account's list of its own posts lives in memory only.
+
+Upgrading from 0.2.2, which kept the account state and the outbox in clear: each account's data moves into its encrypted files the first time it is unlocked, and the clear tables are dropped from the post log once every account has moved.
 
 ---
 
@@ -232,7 +235,11 @@ persona_key[i]  = Ed25519 key pair from persona_seed[i]
 fingerprint     = "fr:" + first 40 bits of BLAKE2b(public key), Crockford base32   e.g. fr:7Q4K-M2XD
 ```
 
-Personas are derived, so the recovery phrase brings all of them back, and **My posts** can be rebuilt on a new device. Without the master key, two personas cannot be linked.
+Personas are derived, so the recovery phrase brings all of them back, and **My posts** is rebuilt on a new device as the account's posts arrive from the network. Without the master key, two personas cannot be linked.
+
+Anonymous posts are signed with one-time keys derived from a random 64-bit id under their own context (`frmranon`), never from the persona counter: a restore can never hand one out again, and they are not recovered into **My posts**.
+
+**Restoring on a new device.** The new device doesn't hold the account's history yet, so it can't know which personas were already used. Until history has synced from at least one peer, posting waits (the composer says why, with a *post anyway* option); as posts by the account's personas arrive, it resumes as the newest one, never one the user had rotated away from. Persona recovery scans up to 1,000 unused indices ahead.
 
 ### Rotation policy
 
@@ -248,7 +255,7 @@ Personas are derived, so the recovery phrase brings all of them back, and **My p
 |---|---|---|---|
 | **Persona** | the policy's persona | `fr:7Q4K-M2XD` | "unique id" |
 | **Alias** | the policy's persona | `night owl · fr:7Q4K-M2XD` | "alias (alongside optional uid)" |
-| **Anonymous** | a fresh one-time persona | `Anonymous` | "without revealing any id" |
+| **Anonymous** | a one-time key, never reused | `Anonymous` | "without revealing any id" |
 
 Every post is signed, so it can't be forged or altered. Only *persona* and *alias* make posts recognisable as coming from the same author.
 

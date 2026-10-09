@@ -135,6 +135,17 @@ constexpr int kMaxFollowUps = 15;
 constexpr qint64 kCoveredSaveGapMs = 10 * 60'000;
 constexpr int kSeenPruneThreshold = 4'096;
 
+// Owner-only permissions (0700 directories, 0600 files) for everything this
+// app keeps on disk. Best effort: filesystems without POSIX modes keep theirs.
+void ownerOnly(const QString &path, bool directory) {
+  std::error_code ec;
+  std::filesystem::permissions(path.toStdString(),
+                               directory ? std::filesystem::perms::owner_all
+                                         : std::filesystem::perms::owner_read |
+                                               std::filesystem::perms::owner_write,
+                               std::filesystem::perm_options::replace, ec);
+}
+
 // Small text-file helpers (the per-install channel peer id).
 QString readTextFile(const QString &path) {
   QFile f(path);
@@ -147,6 +158,7 @@ bool writeTextFile(const QString &path, const QString &contents) {
   QFile f(path);
   if (!f.open(QIODevice::WriteOnly | QIODevice::Text))
     return false;
+  ownerOnly(path, false);
   QTextStream out(&f);
   out << contents;
   return true;
@@ -332,6 +344,7 @@ void ForumerBackend::bootstrap() {
 bool ForumerBackend::openStore() {
   const QString dir = dataDir();
   QDir().mkpath(dir);
+  ownerOnly(dir, true);
 
   // A stable per-install id for reliable channels (SDS sender id). Never
   // shown and never linked to an account or persona.
@@ -359,6 +372,10 @@ bool ForumerBackend::openStore() {
 
   logEvent("post log open at " + file.string() + " (" + std::to_string(m_posts->count()) +
            " posts), topic " + m_topic);
+  ownerOnly(peerIdFile, false);
+  // An account unlocked before the log opened gets its own posts now.
+  if (m_account)
+    attachAccount();
   loadHistoryState();
   setNodeReady(true);
   publishSyncState();
@@ -485,6 +502,7 @@ QString ForumerBackend::chooseNetwork(QString preset) {
   QFile file(dataDir() + QStringLiteral("/network"));
   if (!file.open(QIODevice::WriteOnly | QIODevice::Truncate))
     return QStringLiteral("Could not save the choice");
+  ownerOnly(file.fileName(), false);
   file.write(preset.toUtf8());
   file.close();
   setNetworkNext(networkPreset());
@@ -526,9 +544,11 @@ void ForumerBackend::publishIdentityState() {
       followed.append(qs(d));
     setFollowedDomains(QString::fromUtf8(QJsonDocument(followed).toJson(QJsonDocument::Compact)));
     setMyPersona(qs(m_account->currentPersona().fingerprint()));
+    setRestorePending(m_account->restorePending());
   } else {
     setMyPersona(QString());
     setFollowedDomains(QStringLiteral("[]"));
+    setRestorePending(false);
   }
 
   publishQuota();
@@ -545,6 +565,147 @@ void ForumerBackend::saveAccount() {
     logEvent("failed to save account state for " + m_account->state().id);
 }
 
+// ── The unlocked account's own posts ──────────────────────────────────────────
+
+void ForumerBackend::attachAccount() {
+  if (!m_account)
+    return;
+  m_ownKeys.clear();
+  m_ownKeysTo = 0;
+  extendOwnKeys();
+  if (m_posts && m_accounts) {
+    const std::string id = m_account->state().id;
+    m_posts->forgetOwn();
+    auto text = m_accounts->loadPrivate(*m_account, "own");
+    std::optional<fc::OwnData> own = text ? fc::OwnData::fromJson(*text, id) : std::nullopt;
+    if (!own) {
+      logEvent("own-posts file of " + id + " can't be read; starting an empty one");
+      own = fc::OwnData{id, {}, {}};
+    }
+    m_posts->importOwn(*own);
+    // A log from 0.2.2 kept this account's outbox and read marks in clear:
+    // move them into its encrypted file, then out of the log.
+    const fc::OwnData legacy = m_posts->takeLegacy(id);
+    if (!legacy.outbox.empty() || !legacy.read.empty()) {
+      m_posts->importOwn(legacy);
+      logEvent("moved " + std::to_string(legacy.outbox.size()) + " own post(s) of " + id +
+               " out of the clear log");
+    }
+    saveOwn();
+    m_posts->dropLegacyTablesIfEmpty();
+  }
+  publishOwnStates();
+  publishSyncState();
+  publishInbox();
+}
+
+void ForumerBackend::detachAccount() {
+  if (m_ownSaveScheduled)
+    saveOwn();  // flush before the key goes
+  if (m_posts)
+    m_posts->forgetOwn();
+  m_ownKeys.clear();
+  m_ownKeysTo = 0;
+  publishOwnStates();
+  publishSyncState();
+}
+
+bool ForumerBackend::saveOwn() {
+  m_ownSaveScheduled = false;
+  if (!m_account || !m_posts || !m_accounts)
+    return false;
+  const auto own = m_posts->exportOwn(m_account->state().id);
+  if (!m_accounts->savePrivate(*m_account, "own", own.toJson())) {
+    logEvent("failed to save own posts of " + m_account->state().id);
+    return false;
+  }
+  return true;
+}
+
+void ForumerBackend::scheduleOwnSave() {
+  if (m_ownSaveScheduled)
+    return;
+  m_ownSaveScheduled = true;
+  QTimer::singleShot(1'000, this, [this]() {
+    if (m_ownSaveScheduled)
+      saveOwn();
+  });
+}
+
+void ForumerBackend::publishOwnStates() {
+  QJsonObject states;
+  if (m_posts && m_account)
+    for (const auto &e : m_posts->outbox())
+      states.insert(qs(e.postId), QLatin1String(fc::toString(e.state)));
+  const QString json = QString::fromUtf8(QJsonDocument(states).toJson(QJsonDocument::Compact));
+  if (json != ownStatesJson())
+    setOwnStatesJson(json);
+}
+
+void ForumerBackend::extendOwnKeys() {
+  if (!m_account)
+    return;
+  const uint64_t to = m_account->state().nextIndex + fc::identity::kRecoveryGap;
+  if (to <= m_ownKeysTo)
+    return;
+  const auto keys = fc::identity::personaKeys(m_account->masterSecret(), m_ownKeysTo, to);
+  for (size_t i = 0; i < keys.size(); ++i)
+    m_ownKeys.emplace(keys[i], m_ownKeysTo + i);
+  m_ownKeysTo = to;
+}
+
+void ForumerBackend::noteOwnPost(const fc::post::Post &post, uint64_t index) {
+  // Never hand out this persona (or an older one) again, and after a restore
+  // resume as the newest one found.
+  if (m_account->notePersonaUsed(index, m_account->restorePending())) {
+    saveAccount();
+    extendOwnKeys();
+    publishIdentityState();
+  }
+  // Rebuild "My posts": the post was already delivered, by us or the device
+  // that wrote it.
+  const qint64 now = nowMs();
+  if (!m_posts->outboxEntry(post.id) && m_posts->enqueue(post.id, m_account->state().id, now)) {
+    m_posts->markState(post.id, fc::SendState::Sent);
+    scheduleOwnSave();
+    publishOwnStates();
+  }
+}
+
+void ForumerBackend::maybeFinishRestore() {
+  if (!m_account || !m_account->restorePending())
+    return;
+  // Evidence that this device has caught up: posts have arrived from the
+  // network (our own messages echo back, so a digest alone proves nothing)
+  // and the live window has had a minute to fill, the store nodes have been
+  // asked, and the history walk has reached the oldest post any peer knows
+  // of. With nothing arriving at all, the user decides (postAfterRestore).
+  const qint64 now = nowMs();
+  const bool peerSeen = m_firstArrivalMs > 0 && now - m_firstArrivalMs >= 60'000;
+  const bool storeDone = !m_storeState.isEmpty() && m_storeState != QLatin1String("asking");
+  const bool historyDone = !m_historyActive && !m_historyScheduled &&
+                           (m_historyTarget == 0 || m_historyTarget >= m_historyFloor);
+  if (!peerSeen || !storeDone || !historyDone || m_followUpScheduled || m_followUps > 0)
+    return;
+  m_account->finishRestore();
+  saveAccount();
+  logEvent("restore: history has synced; posting resumes as " +
+           m_account->currentPersona().fingerprint());
+  publishIdentityState();
+}
+
+QString ForumerBackend::postAfterRestore() {
+  if (!m_account)
+    return QStringLiteral("Unlock first");
+  if (m_account->restorePending()) {
+    m_account->finishRestore();
+    saveAccount();
+    logEvent("restore: posting resumed by the user before history finished");
+    publishIdentityState();
+  }
+  return QString();
+}
+
 QString ForumerBackend::createIdentity(QString label, QString password) {
   if (!m_accounts)
     return jsonResult(QStringLiteral("Not ready yet"));
@@ -553,8 +714,10 @@ QString ForumerBackend::createIdentity(QString label, QString password) {
   if (!result.ok())
     return jsonResult(qs(result.error));
 
+  detachAccount();
   m_account = std::move(result.account);
   logEvent("created account " + m_account->state().id);
+  attachAccount();
   publishIdentityState();
 
   const QString out = jsonResult(QString(), qs(phrase));
@@ -570,8 +733,10 @@ QString ForumerBackend::unlockIdentity(QString accountId, QString password) {
     return qs(result.error);
 
   m_accounts->select(accountId.toStdString());
+  detachAccount();
   m_account = std::move(result.account);
   logEvent("unlocked account " + m_account->state().id);
+  attachAccount();
   publishIdentityState();
   return QString();
 }
@@ -591,14 +756,25 @@ QString ForumerBackend::restoreIdentity(QString phrase, QString label, QString p
   if (!result.ok())
     return qs(result.error);
 
+  detachAccount();
   m_account = std::move(result.account);
   logEvent("restored account " + m_account->state().id + " (next persona " +
-           std::to_string(m_account->state().nextIndex) + ")");
+           std::to_string(m_account->state().nextIndex) +
+           (m_account->restorePending() ? ", recovering from history)" : ")"));
+  attachAccount();
+  // Posts by its personas already in the log rebuild "My posts" now.
+  if (m_posts)
+    for (const auto &p : m_posts->all()) {
+      const auto own = m_ownKeys.find(p.publicKey);
+      if (own != m_ownKeys.end())
+        noteOwnPost(p, own->second);
+    }
   publishIdentityState();
   return QString();
 }
 
 QString ForumerBackend::lockIdentity() {
+  detachAccount();
   m_account.reset();
   publishIdentityState();
   return QString();
@@ -607,6 +783,7 @@ QString ForumerBackend::lockIdentity() {
 QString ForumerBackend::selectAccount(QString accountId) {
   if (!m_accounts || !m_accounts->select(accountId.toStdString()))
     return QStringLiteral("No such account");
+  detachAccount();
   m_account.reset(); // switching means unlocking the other account
   publishIdentityState();
   return QString();
@@ -654,7 +831,19 @@ QString ForumerBackend::deleteAccount(QString password) {
     return qs(check.error);
   if (!m_accounts->remove(id))
     return QStringLiteral("Couldn't remove the account's files");
+  // Its outbox goes with it (the encrypted file is gone; drop the copy in
+  // memory and any rows a 0.2.2 log still kept in clear).
+  m_ownSaveScheduled = false;
+  if (m_posts) {
+    m_posts->forgetOwn();
+    m_posts->takeLegacy(id);
+    m_posts->dropLegacyTablesIfEmpty();
+  }
+  m_ownKeys.clear();
+  m_ownKeysTo = 0;
   m_account.reset();
+  publishOwnStates();
+  publishSyncState();
   logEvent("removed account " + id + " from this device");
   publishIdentityState();
   return QString();
@@ -663,7 +852,10 @@ QString ForumerBackend::deleteAccount(QString password) {
 QString ForumerBackend::rotatePersona() {
   if (!m_account)
     return QStringLiteral("Unlock first");
+  if (m_posts)
+    m_account->skipKnown([this](const fc::Bytes &pk) { return m_posts->hasAuthor(pk); });
   m_account->rotate();
+  extendOwnKeys();
   saveAccount();
   publishIdentityState();
   return QString();
@@ -747,6 +939,7 @@ QString ForumerBackend::markRepliesRead(QString ids) {
       list.push_back(id.trimmed().toStdString());
     ok = m_posts->markRead(account, list, nowMs());
   }
+  saveOwn();
   publishInbox();
   return ok ? QString() : QStringLiteral("Could not save that replies were read");
 }
@@ -1250,6 +1443,10 @@ QString ForumerBackend::publish(fc::post::Draft draft, const QString &disclosure
   const std::string alias = m_account->state().alias;
   if (disclosure == Disclosure::Alias && alias.empty())
     return QStringLiteral("Set an alias first, or post as persona / anonymous");
+  if (m_account->restorePending())
+    return QStringLiteral("This account was just restored and its history is still arriving. "
+                          "Posting now could reuse a persona you rotated away from - wait for "
+                          "it to sync, or choose \"post anyway\".");
 
   // Sender-side flood limit, per account (so rotating personas or posting
   // anonymously doesn't lift it). Peers enforce the same numbers per persona.
@@ -1264,7 +1461,11 @@ QString ForumerBackend::publish(fc::post::Draft draft, const QString &disclosure
 
   // Picking the persona may allocate a new one (Auto, Anonymous); save at once
   // so a crash can never hand the same persona out twice.
+  // Never sign with a persona something in the log already used (another
+  // device with the same phrase, or history that arrived after a restore).
+  m_account->skipKnown([this](const fc::Bytes &pk) { return m_posts->hasAuthor(pk); });
   const fc::identity::Persona persona = m_account->personaForPost(disclosure);
+  extendOwnKeys();
   saveAccount();
 
   const int pow = disclosure == Disclosure::Anonymous ? kAnonymousPowBits : kPowBits;
@@ -1277,7 +1478,7 @@ QString ForumerBackend::publish(fc::post::Draft draft, const QString &disclosure
   // survives a crash and goes out on the next retry tick at the latest.
   const qint64 now = nowMs();
   if (m_posts->insert(*signedPost, now) == fc::PostStore::Insert::Failed ||
-      !m_posts->enqueue(signedPost->id, m_account->state().id, now)) {
+      !m_posts->enqueue(signedPost->id, m_account->state().id, now) || !saveOwn()) {
     logEvent("could not store our own post " + signedPost->id);
     return QStringLiteral("Couldn't save the post");
   }
@@ -1306,7 +1507,8 @@ QString ForumerBackend::loadBacklog() {
   if (!m_posts)
     return QStringLiteral("[]");
 
-  // Delivery state of our own posts, so they come back marked after a restart.
+  // Delivery state of the unlocked account's posts, so they come back marked
+  // after a restart (ownStatesJson keeps it current across lock / unlock).
   QHash<QString, QString> states;
   for (const auto &e : m_posts->outbox())
     states.insert(qs(e.postId), QLatin1String(fc::toString(e.state)));
@@ -1430,7 +1632,14 @@ void ForumerBackend::handlePost(fc::post::Post post) {
       ++m_historyReceived;
     }
     logEvent("received " + post.id);
+    if (m_firstArrivalMs == 0)
+      m_firstArrivalMs = nowMs();
     emitPost(post);
+    if (m_account) {
+      const auto own = m_ownKeys.find(post.publicKey);
+      if (own != m_ownKeys.end())
+        noteOwnPost(post, own->second);
+    }
     publishSyncState();
     if (post.content.kind == fc::post::Kind::Reply)
       scheduleInbox();
@@ -1597,6 +1806,7 @@ void ForumerBackend::historyStep() {
       logEvent("history: complete back to " + std::to_string(m_historyFloor));
     m_historyActive = false;
     publishHistory();
+    maybeFinishRestore();
     return;
   }
   m_historyActive = true;
@@ -1683,6 +1893,8 @@ void ForumerBackend::startStoreHistory() {
     return;
   if (qEnvironmentVariableIsSet("FORUMER_NO_STORE")) {
     logEvent("store: skipped (FORUMER_NO_STORE)");
+    m_storeState = QStringLiteral("skipped");  // counts as done for a pending restore
+    publishHistory();
     return;
   }
   m_storeStarted = true;
@@ -1704,6 +1916,7 @@ void ForumerBackend::storeQueryNext() {
                                             : QStringLiteral("unreachable");
     logEvent("store: finished, " + std::to_string(m_storeGot) + " new post(s)");
     publishHistory();
+    maybeFinishRestore();
     return;
   }
   const QString peer = peers.at(m_storePeer);
@@ -1804,11 +2017,14 @@ void ForumerBackend::sendOwn(const std::string &id) {
     return;
   }
 
-  m_posts->markAttempt(id, nowMs());
+  if (!m_posts->markAttempt(id, nowMs()))
+    return;  // not the unlocked account's post
+  scheduleOwnSave();
   m_lastSeenOnWire.insert(qs(id), nowMs());
   const auto r = m_transport->publish(m_topic, fc::sync::encodePost(*post));
   if (!r.ok) {
     m_posts->markState(id, fc::SendState::Failed, r.error);
+    publishOwnStates();
     logEvent("send of " + id + " failed: " + r.error);
     emit messageStateChanged(qs(id), QStringLiteral("failed"), qs(r.error));
     publishSyncState();
@@ -1903,6 +2119,7 @@ void ForumerBackend::sendDigest(const char *why) {
     m_posts->setMeta("covered_until", std::to_string(now));
   }
   publishSyncState();
+  maybeFinishRestore();
 }
 
 void ForumerBackend::scheduleFollowUp() {
@@ -1961,14 +2178,21 @@ void ForumerBackend::settleSend(const QString &requestId, const QString &state,
   if (state != QLatin1String("propagated")) {
     m_pendingSends.remove(requestId);
     if (m_posts) {
-      // A late failure from an earlier attempt must not undo a success.
+      // Settles only a post of the unlocked account. One sent before a lock
+      // stays pending in its account's file and is retried after unlock.
       auto entry = m_posts->outboxEntry(postId.toStdString());
-      if (entry && entry->state == fc::SendState::Sent)
+      if (!entry)
+        return;
+      // A late failure from an earlier attempt must not undo a success.
+      if (entry->state == fc::SendState::Sent)
         return;
       m_posts->markState(postId.toStdString(),
                          state == QLatin1String("sent") ? fc::SendState::Sent : fc::SendState::Failed,
                          detail.toStdString());
+      scheduleOwnSave();
     }
+  } else if (m_posts && !m_posts->outboxEntry(postId.toStdString())) {
+    return;
   }
 
   logEvent("send " + requestId.toStdString() + " -> " + state.toStdString() +
@@ -2001,6 +2225,7 @@ void ForumerBackend::publishQuota() {
 void ForumerBackend::publishSyncState() {
   if (!m_posts)
     return;
+  publishOwnStates();
   publishQuota();
   setUnsentCount(static_cast<int>(m_posts->unsent().size()));
 

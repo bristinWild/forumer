@@ -1,5 +1,6 @@
 #pragma once
 
+#include <map>
 #include <memory>
 #include <optional>
 #include <set>
@@ -35,7 +36,10 @@ class QTimer;
  *
  * Post log (forumer_core::PostStore): every verified post this device knows,
  * append-only — the first valid copy of a post is kept and nothing can change
- * or remove it afterwards — plus the outbox of posts this device wrote.
+ * or remove it afterwards. Which of them the unlocked account wrote (its
+ * outbox) and which replies it has read are kept in that account's encrypted
+ * file (AccountStore::savePrivate "own") and only in memory while it is
+ * unlocked: the log file itself never says who wrote what.
  *
  * Sync (forumer_core::sync over delivery_module): one content topic for the
  * public forum carrying signed posts and digests. Inbound posts are verified
@@ -73,6 +77,7 @@ public:
   QString changePassword(QString oldPassword, QString newPassword) override;
   QString renameAccount(QString label) override;
   QString deleteAccount(QString password) override;
+  QString postAfterRestore() override;
 
   // ── .rep SLOTs: persona controls ───────────────────────────────────────────
   QString rotatePersona() override;
@@ -213,6 +218,26 @@ private:
   // that allocated a persona). Logs on failure; the in-memory state stands.
   void saveAccount();
 
+  // The unlocked account's private part of the log ("own" data: its outbox
+  // and read marks). attach loads it (migrating rows a 0.2.2 log kept in
+  // clear) after unlock / create / restore; detach drops it from memory on
+  // lock. saveOwn writes it back, encrypted, after every change;
+  // scheduleOwnSave batches the writes when history brings many at once.
+  void attachAccount();
+  void detachAccount();
+  bool saveOwn();
+  void scheduleOwnSave();
+  void publishOwnStates();
+
+  // Public keys of the unlocked account's personas [0, nextIndex + gap), to
+  // recognise its posts as they arrive (after a restore, or from another
+  // device with the same phrase).
+  void extendOwnKeys();
+  // A stored post turned out to be signed by one of our personas.
+  void noteOwnPost(const forumer::post::Post &post, uint64_t index);
+  // Clear restorePending once history has synced from a peer.
+  void maybeFinishRestore();
+
   // ── Constants ──────────────────────────────────────────────────────────────
   static const char kForum[];  // "public" — private forums come later
 
@@ -223,6 +248,10 @@ private:
   // ── State ──────────────────────────────────────────────────────────────────
   std::unique_ptr<forumer::AccountStore> m_accounts;
   std::optional<forumer::identity::Account> m_account;  // set while unlocked
+  std::map<forumer::Bytes, uint64_t> m_ownKeys;          // persona public key -> index
+  uint64_t m_ownKeysTo = 0;                              // m_ownKeys covers [0, this)
+  bool m_ownSaveScheduled = false;
+  qint64 m_firstArrivalMs = 0;                           // first new post from the network, this session
 
   std::unique_ptr<forumer::PostStore> m_posts;
   std::unique_ptr<DeliveryModuleTransport> m_transport;

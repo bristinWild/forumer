@@ -21,6 +21,7 @@
 #include <set>
 #include <string>
 #include <string_view>
+#include <utility>
 #include <vector>
 
 #include "forumer_core/bytes.h"
@@ -60,6 +61,20 @@ struct InboxItem {
     bool inMyTopic = false;     // sits in a topic we wrote (else: a thread we joined)
     bool read = false;
     int64_t timestampMs = 0;    // the author's clock
+};
+
+/// What one account wrote on this device and which replies it has read: the
+/// private part of the log. Never stored in the post log file; the app keeps
+/// it in the account's encrypted file (AccountStore::savePrivate) and loads
+/// it into the store while the account is unlocked (importOwn).
+struct OwnData {
+    std::string accountId;
+    std::vector<OutboxEntry> outbox;
+    std::vector<std::pair<std::string, int64_t>> read;  // post id, read at
+
+    std::string toJson() const;
+    /// "" (no file yet) gives empty data; nullopt if the text is malformed.
+    static std::optional<OwnData> fromJson(std::string_view text, const std::string& accountId);
 };
 
 /// The minimum the sync protocol needs to know about a stored post.
@@ -155,7 +170,27 @@ public:
     /// Mark everything currently in the account's inbox read.
     bool markAllRead(const std::string& accountId, int64_t nowMs);
 
-    // Outbox 
+    // Outbox
+    //
+    // The outbox and read marks are held in memory only (TEMP tables), for
+    // the accounts whose data was imported with importOwn(). Nothing about
+    // which posts this device wrote reaches the log file.
+
+    /// Load an account's private data (on unlock). Merges with what's there.
+    bool importOwn(const OwnData& data);
+    /// An account's private data as it stands now (to save after a change).
+    OwnData exportOwn(const std::string& accountId) const;
+    /// Drop every account's private data from memory (on lock / switch).
+    void forgetOwn();
+
+    /// Logs written by Forumer 0.2.2 kept the outbox and read marks in clear
+    /// (main.outbox, main.inbox_read). Remove one account's rows from there
+    /// and return them, to be imported and saved encrypted.
+    OwnData takeLegacy(const std::string& accountId);
+    /// Whether any account's rows are still in the clear tables.
+    bool legacyRowsLeft() const;
+    /// Once no rows are left, drop the clear tables and VACUUM the file.
+    void dropLegacyTablesIfEmpty();
 
     /// Record that this device wrote `postId` (state Pending, 0 attempts).
     /// The post itself must already be stored. Idempotent.

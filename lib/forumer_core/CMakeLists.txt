@@ -58,6 +58,7 @@ add_library(forumer_core STATIC
     src/sync.cpp
     src/thread.cpp
     src/flood.cpp
+    src/sealed.cpp
 )
 
 target_include_directories(forumer_core PUBLIC

@@ -2,6 +2,9 @@
 
 #include <sqlite3.h>
 
+#include <nlohmann/json.hpp>
+
+#include <cstdio>
 #include <system_error>
 #include <utility>
 
@@ -33,9 +36,18 @@ CREATE INDEX IF NOT EXISTS idx_posts_ts   ON posts(ts);
 CREATE INDEX IF NOT EXISTS idx_posts_root ON posts(root);
 CREATE INDEX IF NOT EXISTS idx_posts_author ON posts(author, ts);
 
--- Posts this device wrote, and how sending them is going.
-CREATE TABLE IF NOT EXISTS outbox (
-    post_id      TEXT PRIMARY KEY REFERENCES posts(id),
+CREATE INDEX IF NOT EXISTS idx_posts_parent ON posts(parent);
+)SQL";
+
+// What a device wrote, and which replies an account has read, never touch
+// this file: they live in TEMP tables (memory only, see temp_store), filled
+// from the unlocked account's encrypted file and cleared on lock. Forumer
+// 0.2.2 kept them in main.outbox / main.inbox_read in clear; takeLegacy()
+// moves an account's rows out of those as it unlocks.
+constexpr const char* kTempSchema = R"SQL(
+PRAGMA temp_store = MEMORY;
+CREATE TEMP TABLE IF NOT EXISTS own_outbox (
+    post_id      TEXT PRIMARY KEY,
     account_id   TEXT NOT NULL,
     state        TEXT NOT NULL,
     attempts     INTEGER NOT NULL DEFAULT 0,
@@ -43,12 +55,8 @@ CREATE TABLE IF NOT EXISTS outbox (
     last_attempt INTEGER NOT NULL DEFAULT 0,
     last_error   TEXT NOT NULL DEFAULT ''
 );
-CREATE INDEX IF NOT EXISTS idx_outbox_state ON outbox(state);
-CREATE INDEX IF NOT EXISTS idx_outbox_account ON outbox(account_id);
-CREATE INDEX IF NOT EXISTS idx_posts_parent ON posts(parent);
-
--- Replies an account has seen in its "replies to you" list.
-CREATE TABLE IF NOT EXISTS inbox_read (
+CREATE INDEX IF NOT EXISTS temp.idx_own_account ON own_outbox(account_id);
+CREATE TEMP TABLE IF NOT EXISTS own_read (
     account_id TEXT NOT NULL,
     post_id    TEXT NOT NULL,
     read_at    INTEGER NOT NULL,
@@ -120,12 +128,37 @@ OutboxEntry readOutbox(const Stmt& s) {
     return e;
 }
 
-std::vector<OutboxEntry> queryOutbox(sqlite3* db, const std::string& sql) {
+std::vector<OutboxEntry> queryOutbox(sqlite3* db, const std::string& sql,
+                                     const std::string& accountId = {}) {
     std::vector<OutboxEntry> out;
     Stmt s(db, sql.c_str());
+    if (!accountId.empty()) s.text(1, accountId);
     while (s.step() == SQLITE_ROW)
         out.push_back(readOutbox(s));
     return out;
+}
+
+bool tableExists(sqlite3* db, const char* name) {
+    Stmt s(db, "SELECT 1 FROM main.sqlite_master WHERE type = 'table' AND name = ?1;");
+    s.text(1, name);
+    return s.step() == SQLITE_ROW;
+}
+
+// Owner-only (0700 directory, 0600 files). SQLite gives the -wal and -shm
+// files the database file's own permissions, so restricting it first covers
+// them; any that already exist are restricted too.
+void restrictFiles(const std::filesystem::path& file) {
+    namespace fs = std::filesystem;
+    std::error_code ec;
+    if (file.has_parent_path())
+        fs::permissions(file.parent_path(), fs::perms::owner_all, fs::perm_options::replace, ec);
+    for (const char* suffix : {"", "-wal", "-shm"}) {
+        fs::path f = file;
+        f += suffix;
+        if (fs::exists(f, ec))
+            fs::permissions(f, fs::perms::owner_read | fs::perms::owner_write,
+                            fs::perm_options::replace, ec);
+    }
 }
 
 } // namespace
@@ -162,6 +195,11 @@ std::unique_ptr<PostStore> PostStore::open(const std::filesystem::path& file, st
         std::filesystem::create_directories(file.parent_path(), ec);
     if (ec)
         return fail("can't create " + file.parent_path().string() + ": " + ec.message());
+    // Create the file empty and owner-only before SQLite writes anything.
+    if (!std::filesystem::exists(file, ec)) {
+        if (FILE* f = std::fopen(file.string().c_str(), "ab")) std::fclose(f);
+    }
+    restrictFiles(file);
 
     sqlite3* db = nullptr;
     if (sqlite3_open(file.string().c_str(), &db) != SQLITE_OK) {
@@ -173,12 +211,14 @@ std::unique_ptr<PostStore> PostStore::open(const std::filesystem::path& file, st
     char* msg = nullptr;
     const char* pragmas = "PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON; PRAGMA busy_timeout=2000;";
     if (sqlite3_exec(db, pragmas, nullptr, nullptr, &msg) != SQLITE_OK ||
-        sqlite3_exec(db, kSchema, nullptr, nullptr, &msg) != SQLITE_OK) {
+        sqlite3_exec(db, kSchema, nullptr, nullptr, &msg) != SQLITE_OK ||
+        sqlite3_exec(db, kTempSchema, nullptr, nullptr, &msg) != SQLITE_OK) {
         std::string why = msg ? msg : "schema setup failed";
         sqlite3_free(msg);
         sqlite3_close(db);
         return fail(why);
     }
+    restrictFiles(file);
     return std::unique_ptr<PostStore>(new PostStore(db));
 }
 
@@ -306,7 +346,7 @@ bool PostStore::hasAuthor(const Bytes& author) const {
 size_t PostStore::countOwn(const std::string& accountId, post::Kind kind, int64_t sinceMs) const {
     std::lock_guard lock(mutex_);
     Stmt s(db_,
-           "SELECT COUNT(*) FROM outbox o JOIN posts p ON p.id = o.post_id "
+           "SELECT COUNT(*) FROM own_outbox o JOIN posts p ON p.id = o.post_id "
            "WHERE o.account_id = ?1 AND p.kind = ?2 AND p.ts >= ?3;");
     s.text(1, accountId).i64(2, kind == post::Kind::Post ? 0 : 1).i64(3, sinceMs);
     return s.step() == SQLITE_ROW ? static_cast<size_t>(s.colI64(0)) : 0;
@@ -317,7 +357,7 @@ std::vector<int64_t> PostStore::ownTimestamps(const std::string& accountId, post
     std::lock_guard lock(mutex_);
     std::vector<int64_t> out;
     Stmt s(db_,
-           "SELECT p.ts FROM outbox o JOIN posts p ON p.id = o.post_id "
+           "SELECT p.ts FROM own_outbox o JOIN posts p ON p.id = o.post_id "
            "WHERE o.account_id = ?1 AND p.kind = ?2 AND p.ts >= ?3 ORDER BY p.ts ASC;");
     s.text(1, accountId).i64(2, kind == post::Kind::Post ? 0 : 1).i64(3, sinceMs);
     while (s.step() == SQLITE_ROW)
@@ -335,7 +375,7 @@ namespace {
 //     dated after its first post in that thread — joining a long thread
 //     doesn't flood the inbox with the replies that were already there.
 // Its own replies are never in its inbox.
-constexpr const char* kMine = "(SELECT post_id FROM outbox WHERE account_id = ?1)";
+constexpr const char* kMine = "(SELECT post_id FROM own_outbox WHERE account_id = ?1)";
 
 std::string inboxWhere() {
     return std::string("p.kind = 1 "
@@ -354,7 +394,7 @@ std::vector<InboxItem> PostStore::inbox(const std::string& accountId, size_t lim
         std::string("SELECT p.id, p.root, p.parent, p.ts, "
                     "  p.parent IN ") + kMine + ", "
                     "  p.root IN " + kMine + ", "
-                    "  EXISTS (SELECT 1 FROM inbox_read r WHERE r.account_id = ?1 AND r.post_id = p.id) "
+                    "  EXISTS (SELECT 1 FROM own_read r WHERE r.account_id = ?1 AND r.post_id = p.id) "
                     "FROM posts p WHERE " +
         inboxWhere() + " ORDER BY p.ts DESC, p.id LIMIT ?2;";
     Stmt s(db_, sql.c_str());
@@ -377,7 +417,7 @@ size_t PostStore::unreadCount(const std::string& accountId) const {
     std::lock_guard lock(mutex_);
     const std::string sql =
         std::string("SELECT COUNT(*) FROM posts p WHERE ") + inboxWhere() +
-        " AND NOT EXISTS (SELECT 1 FROM inbox_read r WHERE r.account_id = ?1 AND r.post_id = p.id);";
+        " AND NOT EXISTS (SELECT 1 FROM own_read r WHERE r.account_id = ?1 AND r.post_id = p.id);";
     Stmt s(db_, sql.c_str());
     s.text(1, accountId);
     return s.step() == SQLITE_ROW ? static_cast<size_t>(s.colI64(0)) : 0;
@@ -387,7 +427,7 @@ bool PostStore::markRead(const std::string& accountId, const std::vector<std::st
                          int64_t nowMs) {
     std::lock_guard lock(mutex_);
     const std::string sql =
-        std::string("INSERT OR IGNORE INTO inbox_read(account_id, post_id, read_at) "
+        std::string("INSERT OR IGNORE INTO own_read(account_id, post_id, read_at) "
                     "SELECT ?1, p.id, ?3 FROM posts p WHERE p.id = ?2 AND ") +
         inboxWhere() + ";";
     bool ok = true;
@@ -402,7 +442,7 @@ bool PostStore::markRead(const std::string& accountId, const std::vector<std::st
 bool PostStore::markAllRead(const std::string& accountId, int64_t nowMs) {
     std::lock_guard lock(mutex_);
     const std::string sql =
-        std::string("INSERT OR IGNORE INTO inbox_read(account_id, post_id, read_at) "
+        std::string("INSERT OR IGNORE INTO own_read(account_id, post_id, read_at) "
                     "SELECT ?1, p.id, ?2 FROM posts p WHERE ") +
         inboxWhere() + ";";
     Stmt s(db_, sql.c_str());
@@ -429,17 +469,22 @@ size_t PostStore::count() const {
 
 bool PostStore::enqueue(const std::string& postId, const std::string& accountId, int64_t nowMs) {
     std::lock_guard lock(mutex_);
+    {
+        Stmt exists(db_, "SELECT 1 FROM posts WHERE id = ?1;");
+        exists.text(1, postId);
+        if (exists.step() != SQLITE_ROW) return false;  // the post must be stored first
+    }
     Stmt s(db_,
-           "INSERT OR IGNORE INTO outbox(post_id, account_id, state, created) "
+           "INSERT OR IGNORE INTO own_outbox(post_id, account_id, state, created) "
            "VALUES (?1, ?2, 'pending', ?3);");
     s.text(1, postId).text(2, accountId).i64(3, nowMs);
-    return s.step() == SQLITE_DONE;  // fails if the post isn't stored (foreign key)
+    return s.step() == SQLITE_DONE;
 }
 
 bool PostStore::markAttempt(const std::string& postId, int64_t nowMs) {
     std::lock_guard lock(mutex_);
     Stmt s(db_,
-           "UPDATE outbox SET attempts = attempts + 1, last_attempt = ?2, state = 'pending' "
+           "UPDATE own_outbox SET attempts = attempts + 1, last_attempt = ?2, state = 'pending' "
            "WHERE post_id = ?1;");
     s.text(1, postId).i64(2, nowMs);
     return s.step() == SQLITE_DONE && sqlite3_changes(db_) > 0;
@@ -447,7 +492,7 @@ bool PostStore::markAttempt(const std::string& postId, int64_t nowMs) {
 
 bool PostStore::markState(const std::string& postId, SendState state, const std::string& error) {
     std::lock_guard lock(mutex_);
-    Stmt s(db_, "UPDATE outbox SET state = ?2, last_error = ?3 WHERE post_id = ?1;");
+    Stmt s(db_, "UPDATE own_outbox SET state = ?2, last_error = ?3 WHERE post_id = ?1;");
     s.text(1, postId)
         .text(2, toString(state))
         .text(3, state == SendState::Failed ? error : std::string());
@@ -456,7 +501,7 @@ bool PostStore::markState(const std::string& postId, SendState state, const std:
 
 std::optional<OutboxEntry> PostStore::outboxEntry(const std::string& postId) const {
     std::lock_guard lock(mutex_);
-    Stmt s(db_, (std::string("SELECT ") + kOutboxColumns + " FROM outbox WHERE post_id = ?1;").c_str());
+    Stmt s(db_, (std::string("SELECT ") + kOutboxColumns + " FROM own_outbox WHERE post_id = ?1;").c_str());
     s.text(1, postId);
     if (s.step() != SQLITE_ROW)
         return std::nullopt;
@@ -466,13 +511,158 @@ std::optional<OutboxEntry> PostStore::outboxEntry(const std::string& postId) con
 std::vector<OutboxEntry> PostStore::outbox() const {
     std::lock_guard lock(mutex_);
     return queryOutbox(db_, std::string("SELECT ") + kOutboxColumns +
-                                " FROM outbox ORDER BY created DESC, post_id DESC;");
+                                " FROM own_outbox ORDER BY created DESC, post_id DESC;");
 }
 
 std::vector<OutboxEntry> PostStore::unsent() const {
     std::lock_guard lock(mutex_);
     return queryOutbox(db_, std::string("SELECT ") + kOutboxColumns +
-                                " FROM outbox WHERE state != 'sent' ORDER BY created ASC, post_id ASC;");
+                                " FROM own_outbox WHERE state != 'sent' ORDER BY created ASC, post_id ASC;");
+}
+
+//  Own data: export, import, legacy
+
+namespace {
+
+using json = nlohmann::json;
+constexpr int kOwnDataVersion = 1;
+
+} // namespace
+
+std::string OwnData::toJson() const {
+    json posts = json::array();
+    for (const auto& e : outbox)
+        posts.push_back({{"id", e.postId},
+                         {"state", toString(e.state)},
+                         {"attempts", e.attempts},
+                         {"created", e.createdMs},
+                         {"last", e.lastAttemptMs},
+                         {"error", e.lastError}});
+    json reads = json::array();
+    for (const auto& [id, at] : read)
+        reads.push_back({{"id", id}, {"at", at}});
+    return json{{"v", kOwnDataVersion}, {"posts", posts}, {"read", reads}}.dump();
+}
+
+std::optional<OwnData> OwnData::fromJson(std::string_view text, const std::string& accountId) {
+    OwnData data;
+    data.accountId = accountId;
+    if (text.empty()) return data;  // no file yet
+    const json doc = json::parse(text, nullptr, /*allow_exceptions=*/false);
+    if (doc.is_discarded() || !doc.is_object() || doc.value("v", 0) != kOwnDataVersion)
+        return std::nullopt;
+    try {
+        for (const auto& p : doc.value("posts", json::array())) {
+            OutboxEntry e;
+            e.postId = p.at("id").get<std::string>();
+            e.accountId = accountId;
+            e.state = sendStateFrom(p.value("state", std::string())).value_or(SendState::Failed);
+            e.attempts = p.value("attempts", 0);
+            e.createdMs = p.value("created", int64_t(0));
+            e.lastAttemptMs = p.value("last", int64_t(0));
+            e.lastError = p.value("error", std::string());
+            if (!e.postId.empty()) data.outbox.push_back(std::move(e));
+        }
+        for (const auto& r : doc.value("read", json::array()))
+            data.read.emplace_back(r.at("id").get<std::string>(), r.value("at", int64_t(0)));
+    } catch (const json::exception&) {
+        return std::nullopt;
+    }
+    return data;
+}
+
+OwnData PostStore::exportOwn(const std::string& accountId) const {
+    OwnData data;
+    data.accountId = accountId;
+    {
+        std::lock_guard lock(mutex_);
+        data.outbox = queryOutbox(db_,
+                                  std::string("SELECT ") + kOutboxColumns +
+                                      " FROM own_outbox WHERE account_id = ?1 ORDER BY created ASC, post_id ASC;",
+                                  accountId);
+        Stmt s(db_, "SELECT post_id, read_at FROM own_read WHERE account_id = ?1 ORDER BY read_at, post_id;");
+        s.text(1, accountId);
+        while (s.step() == SQLITE_ROW)
+            data.read.emplace_back(s.colText(0), s.colI64(1));
+    }
+    return data;
+}
+
+bool PostStore::importOwn(const OwnData& data) {
+    std::lock_guard lock(mutex_);
+    bool ok = sqlite3_exec(db_, "BEGIN;", nullptr, nullptr, nullptr) == SQLITE_OK;
+    for (const auto& e : data.outbox) {
+        Stmt s(db_,
+               "INSERT OR REPLACE INTO own_outbox(post_id, account_id, state, attempts, created, "
+               "last_attempt, last_error) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7);");
+        s.text(1, e.postId)
+            .text(2, data.accountId)
+            .text(3, toString(e.state))
+            .i64(4, e.attempts)
+            .i64(5, e.createdMs)
+            .i64(6, e.lastAttemptMs)
+            .text(7, e.lastError);
+        ok = s.step() == SQLITE_DONE && ok;
+    }
+    for (const auto& [id, at] : data.read) {
+        Stmt s(db_, "INSERT OR IGNORE INTO own_read(account_id, post_id, read_at) VALUES (?1, ?2, ?3);");
+        s.text(1, data.accountId).text(2, id).i64(3, at);
+        ok = s.step() == SQLITE_DONE && ok;
+    }
+    sqlite3_exec(db_, ok ? "COMMIT;" : "ROLLBACK;", nullptr, nullptr, nullptr);
+    return ok;
+}
+
+void PostStore::forgetOwn() {
+    std::lock_guard lock(mutex_);
+    sqlite3_exec(db_, "DELETE FROM own_outbox; DELETE FROM own_read;", nullptr, nullptr, nullptr);
+}
+
+OwnData PostStore::takeLegacy(const std::string& accountId) {
+    std::lock_guard lock(mutex_);
+    OwnData data;
+    data.accountId = accountId;
+    if (tableExists(db_, "outbox")) {
+        data.outbox = queryOutbox(db_,
+                                  std::string("SELECT ") + kOutboxColumns +
+                                      " FROM main.outbox WHERE account_id = ?1 ORDER BY created ASC;",
+                                  accountId);
+        Stmt del(db_, "DELETE FROM main.outbox WHERE account_id = ?1;");
+        del.text(1, accountId);
+        del.step();
+    }
+    if (tableExists(db_, "inbox_read")) {
+        Stmt s(db_, "SELECT post_id, read_at FROM main.inbox_read WHERE account_id = ?1;");
+        s.text(1, accountId);
+        while (s.step() == SQLITE_ROW)
+            data.read.emplace_back(s.colText(0), s.colI64(1));
+        Stmt del(db_, "DELETE FROM main.inbox_read WHERE account_id = ?1;");
+        del.text(1, accountId);
+        del.step();
+    }
+    return data;
+}
+
+bool PostStore::legacyRowsLeft() const {
+    std::lock_guard lock(mutex_);
+    for (const char* table : {"outbox", "inbox_read"}) {
+        if (!tableExists(db_, table)) continue;
+        Stmt s(db_, (std::string("SELECT 1 FROM main.") + table + " LIMIT 1;").c_str());
+        if (s.step() == SQLITE_ROW) return true;
+    }
+    return false;
+}
+
+void PostStore::dropLegacyTablesIfEmpty() {
+    if (legacyRowsLeft()) return;
+    std::lock_guard lock(mutex_);
+    // VACUUM afterwards so the freed pages that held the clear rows are
+    // rewritten, not just marked free.
+    if (tableExists(db_, "outbox") || tableExists(db_, "inbox_read")) {
+        sqlite3_exec(db_, "DROP TABLE IF EXISTS main.outbox; DROP TABLE IF EXISTS main.inbox_read;",
+                     nullptr, nullptr, nullptr);
+        sqlite3_exec(db_, "VACUUM;", nullptr, nullptr, nullptr);
+    }
 }
 
 } // namespace forumer

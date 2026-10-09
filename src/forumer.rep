@@ -84,8 +84,14 @@ class Forumer
     SLOT(QString renameAccount(QString label))
 
     // Remove the unlocked account from this device (password re-entered as
-    // confirmation). Irreversible without the recovery phrase.
+    // confirmation). Irreversible without the recovery phrase. Its outbox
+    // goes with it: unsent posts are not sent.
     SLOT(QString deleteAccount(QString password))
+
+    // A restored account holds posting until its history has arrived (see
+    // restorePending). This is "post anyway": the user accepts that a persona
+    // they rotated away from may be used again. "" on success.
+    SLOT(QString postAfterRestore())
 
     // ── Persona controls ──────────────────────────────────────────────────────
     SLOT(QString rotatePersona())                       // "Rotate now"
@@ -136,8 +142,21 @@ class Forumer
     // The content topic this forum runs on (for display).
     PROP(QString topic="" READONLY)
 
-    // Posts of ours not yet confirmed by the network (pending or failed).
+    // The unlocked account's posts not yet confirmed by the network (pending
+    // or failed). 0 while locked.
     PROP(int unsentCount=0 READONLY)
+
+    // Delivery state of every post the unlocked account wrote:
+    //   {"<post id>": "pending" | "sent" | "failed", …}
+    // "{}" while locked. Replaces whatever the view marked as its own: this
+    // is the only list of "my posts", and it belongs to one account.
+    PROP(QString ownStatesJson="{}" READONLY)
+
+    // The unlocked account was rebuilt from its recovery phrase on this
+    // device and its history is still arriving: posting now could reuse a
+    // persona it rotated away from. Clears itself once history has synced
+    // from at least one peer, or with postAfterRestore().
+    PROP(bool restorePending=false READONLY)
 
     // One line about sync for the status bar, e.g. "synced 14:02 · 3 recovered".
     PROP(QString syncInfo="" READONLY)
@@ -209,8 +228,9 @@ class Forumer
     // itself for a level-1 reply, a level-1 reply for a level-2 one).
     SIGNAL(replyReceived(QString id, QString topicId, QString parentId, QString body, QString author, qint64 timestamp))
 
-    // Delivery state of a post *this* install made: "pending", "propagated",
-    // "sent" or "failed" (reason in `detail`). Failed posts stay in the outbox
-    // and are retried automatically, so "failed" can later become "sent".
+    // Delivery state of a post the unlocked account made: "pending",
+    // "propagated", "sent" or "failed" (reason in `detail`). Failed posts stay
+    // in the outbox and are retried automatically (while the account is
+    // unlocked), so "failed" can later become "sent".
     SIGNAL(messageStateChanged(QString id, QString state, QString detail))
 }
