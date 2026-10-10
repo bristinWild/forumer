@@ -112,6 +112,20 @@ public:
     /// the author's timestamp (ties broken by id, so the order is stable).
     std::vector<post::Post> all() const;
 
+    /// One page of the log in storage order, for handing it to the view in
+    /// pieces (review F18): up to `limit` posts stored after `afterCursor`
+    /// (0 for the first page). `next` is the cursor for the following page.
+    struct Page {
+        std::vector<post::Post> posts;
+        int64_t next = 0;
+        bool done = true;
+    };
+    Page page(int64_t afterCursor, size_t limit) const;
+
+    /// Keep the log at most `maxPosts` posts: drop the oldest (by author
+    /// timestamp) beyond that and compact the file. Returns how many went.
+    size_t pruneTo(size_t maxPosts);
+
     /// Posts whose author timestamp is >= sinceMs, newest first.
     std::vector<PostSummary> recent(int64_t sinceMs) const;
 
@@ -138,6 +152,10 @@ public:
     /// Posts of `kind` signed by `author` whose author timestamp lies in
     /// [fromMs, toMs]. The flood limits are counted with this.
     size_t countByAuthor(const Bytes& author, post::Kind kind, int64_t fromMs, int64_t toMs) const;
+
+    /// Posts of `kind` signed by `author` that WE stored at or after
+    /// sinceReceivedMs (our clock) - the arrival-time limit (flood.h, 2a).
+    size_t countByAuthorArrival(const Bytes& author, post::Kind kind, int64_t sinceReceivedMs) const;
 
     /// Whether `author` has signed any stored post.
     bool hasAuthor(const Bytes& author) const;

@@ -53,7 +53,7 @@ Built for [λPrize LP-0026: Forum App](https://github.com/logos-co/lambda-prize/
 | **Full history** | A newcomer gets the whole forum, not just the last two days. On joining, Forumer asks the network's own **store nodes** for what they kept, so this works even when nobody else is online; older posts are fetched from peers a week at a time, back to the oldest post anyone holds. |
 | **Formatting** | Topics and replies are written in Markdown with a toolbar (headings, bold, italic, code, lists, quotes, links), ⌘B / ⌘I / ⌘E, and a Write / Preview switch. Images and HTML in posts are never loaded, so reading a post can't reveal your IP address to its author. |
 | **Replies to you** | A badge and a list of replies to your posts and new replies in threads you started or joined, plus a notice when one arrives. Worked out on your device only — it even works for posts you made anonymously, and nobody can tell who was notified. |
-| **Missed tab** | Your unsent posts plus a *Catch up* button. |
+| **Missed tab** | Your unsent posts, posts written while this device was away (since it last synced; a new device has none), plus a *Catch up* button. |
 | **My posts** | Everything this account wrote, under any persona. Only you can see this list. |
 | **Flood control** | Proof-of-work on every post, hourly limits per persona and per account, with a counter in the composer. |
 | **Backup & restore** | Show the recovery phrase (password required), or restore an account from one. |
@@ -118,6 +118,20 @@ Forumer is served pre-built from its own Logos module catalog, [`bristinWild/for
 3. Open **Forumer** from the sidebar.
 
 Packages are built for macOS (Apple silicon) and Linux (x86_64).
+
+**If the install says "Download failed".** Basecamp downloads `delivery_module` (about 100 MB) from GitHub with the app, and on a slow connection its downloader can give up before it finishes. Two things help:
+
+- Leave the **optional** modules the install dialog preselects unticked (the RLN modules and `libp2p`). Forumer doesn't need them on `logos.dev`; they only add to the download.
+- Install from files instead with `lgpm`, the Logos package manager's command line. Download `forumer-<version>-<platform>.lgx` from this repo's [Releases](https://github.com/bristinWild/forumer/releases) and the matching `delivery_module` and `storage_module` packages from the official Logos catalog, then, with Basecamp closed:
+
+  ```bash
+  lgpm --modules-dir    ~/.local/share/Logos/LogosBasecamp/modules \
+       --ui-plugins-dir ~/.local/share/Logos/LogosBasecamp/plugins \
+       --allow-unsigned install --file delivery_module-<version>.lgx
+  # the same for storage_module-<version>.lgx and forumer-<version>-<platform>.lgx
+  ```
+
+  Those are Basecamp's folders on Linux; on macOS use the `modules` and `plugins` folders of Basecamp's own data folder. `--allow-unsigned` is needed because Forumer's packages aren't signed yet.
 
 ### Build the package yourself
 
@@ -205,7 +219,7 @@ forumer/                       (0700; every file below is 0600)
 │       ├── state.enc          rotation policy, persona counter, alias, followed domains (encrypted)
 │       └── own.enc            which posts this account wrote, their send state, replies read (encrypted)
 └── posts/
-    └── posts.sqlite3          every verified post: public data only
+    └── posts.sqlite3          every verified post: public data only (at most 50,000; the oldest beyond that are pruned at start)
 ```
 
 `state.enc` and `own.enc` are encrypted (XChaCha20-Poly1305) under a key derived from the account's master key, bound to the account and to the file's purpose. While an account is locked, nothing on disk says which posts it wrote, links its personas, or reveals its alias; only its name (shown on the lock screen) is readable. The unlocked account's list of its own posts lives in memory only.
@@ -280,11 +294,11 @@ Anyone can check, without trusting the sender, that a post was written by the ke
 
 | Limit | Value |
 |---|---|
-| Title / body | 200 / 10,000 characters |
-| Domains per topic | 3, normalised to `[a-z0-9-]`, 2–32 characters |
+| Title / body | 200 / 10,000 bytes of UTF-8 (a Latin letter is 1, accented and non-Latin letters 2–4, an emoji 4); the composer counts them as you type |
+| Domains per topic | 3, normalised to `[a-z0-9-]`, 2–32 characters; the composer shows what a domain becomes (`café` → `#caf`) and refuses a topic none of whose domains survive |
 | Alias | 32 bytes; always shown with its fingerprint; can't contain `fr:`, `·`, or invisible / direction-changing characters, or be `Anonymous` |
 | Whole envelope | 16 KB (media will travel by reference, never inline) |
-| Proof-of-work | 16 bits (persona/alias), 20 bits (anonymous) |
+| Proof-of-work | 16 bits (persona/alias; 18 for a persona's first post), 20 bits (anonymous) |
 | Clock | posts dated more than 10 minutes in the future are refused |
 
 ### Two-level threads
@@ -386,12 +400,16 @@ There is no server to throttle anyone, so every peer applies the same rules to w
 |---|---|
 | Proof-of-work | Every post pays CPU time: 16 bits signed, 20 bits anonymous. |
 | Per persona (checked by every peer) | At most **10 topics** and **60 replies** per hour, counted on the posts' own timestamps, so catching up after a day offline doesn't look like a flood. |
-| Per account (checked by the sender) | The same hourly limits across *all* of an account's personas, including anonymous ones, so rotating doesn't lift them. The composer shows *"7 of 10 topics left this hour"* and disables posting at the limit. |
-| Brand-new keys | Posts from keys never seen before draw from a shared budget (60 per minute, bursts of 120). A post that finds it empty isn't lost: the next digest offers it again. |
+| Per persona, by arrival | Timestamps are the author's to choose, so the hourly limit alone let one key back-date hundreds of posts into past hours. Live posts are also counted by when **they reach us**: at most twice the hourly limit (20 topics, 120 replies) per hour of arrival. More are deferred, not lost: peers offer them again with later digests. |
+| Per persona, history | Posts that arrive in bulk from history walks and store nodes skip the arrival limit (or history would trickle in) and are held to **40 topics / 240 replies** per key in any 24 h of author time instead. |
+| Per account (checked by the sender) | The same hourly and daily limits across *all* of an account's personas, including anonymous ones, so rotating doesn't lift them. The composer shows *"7 of 10 topics left this hour"* and disables posting at the limit. |
+| Brand-new keys | Posts from keys never seen before draw from a shared budget (60 per minute, bursts of 120). Posts with at least **18 bits** of work first use a lane of their own (30 per minute), so a stream of cheap fresh keys can't crowd them out; Forumer mines a key's first post at 18 bits, and anonymous posts carry 20. A post that finds the budget empty isn't lost: the next digest offers it again. |
 | Re-sends | Answers to digests are capped (240 per minute), so digests can't turn a peer into an amplifier. |
 | Sizes | 16 KB per post, 24 KB per network message. |
 
 Rate-Limiting Nullifiers (RLN), which Delivery v0.3 enforces on `logos.test`, could later replace the new-key budget with a per-member cryptographic limit.
+
+Proof-of-work hashes the whole post on every try, so a long post costs more to mine (a 10 KB anonymous post takes seconds). Mining, like unlocking (Argon2id, 256 MiB), runs on a worker thread, so sync carries on meanwhile; the composer shows *signing…*. Changing the work to a fixed-size hash would make it cheaper for long posts, but every peer would have to upgrade at once, so it waits for a format version change.
 
 ---
 
@@ -427,7 +445,7 @@ Rate-Limiting Nullifiers (RLN), which Delivery v0.3 enforces on `logos.test`, co
 |---|---|
 | **Plain relay, not reliable channels (SDS)** | SDS's causal ordering held back later messages until earlier ones arrived. The re-sent copy of a lost post was itself held back as "missing dependencies", so one lost post blocked repair. Digests over plain relay repair gaps reliably. The reliable-channel code path is kept behind a switch (`useChannels`). |
 | **Digest repair instead of store queries** | It works with no store node and no server: any peer holding a post can restore it. |
-| **History over Delivery, not Logos Storage (for now)** | We built a Storage probe (Settings → storage) and tested sharing a file between two instances with storage_module v2.1.2. Findings: (1) a node behind a home router reports *NotReachable* and never announces what it holds; (2) fetching a file's manifest only asks the DHT for providers, so even a peer we dialled directly can't be fetched from ("Failed to fetch manifest … after 10 attempts"); (3) the module's own download gives up on the manifest after 3 s. So files shared from home laptops can't be found by others. Retested on storage_module v3.0.0 (UPnP, relays, hole punching): the node takes ~2 min to start and its reachability goes *Unknown* → *NotReachable* on a home network, but sharing now **works** once both nodes have settled — two instances fetched each other's test file, in both directions, in 73–83 s (an attempt in the first minutes timed out). So Storage is usable, but slow to find content. History keeps travelling as posts over Delivery (seconds, crosses home routers); Storage is the path for media and history snapshots. |
+| **History over Delivery, not Logos Storage (for now)** | We built a Storage probe (Settings → storage; a developer tool, shown only when Forumer starts with `FORUMER_DEV=1`, since the share code it makes carries this machine's addresses) and tested sharing a file between two instances with storage_module v2.1.2. Findings: (1) a node behind a home router reports *NotReachable* and never announces what it holds; (2) fetching a file's manifest only asks the DHT for providers, so even a peer we dialled directly can't be fetched from ("Failed to fetch manifest … after 10 attempts"); (3) the module's own download gives up on the manifest after 3 s. So files shared from home laptops can't be found by others. Retested on storage_module v3.0.0 (UPnP, relays, hole punching): the node takes ~2 min to start and its reachability goes *Unknown* → *NotReachable* on a home network, but sharing now **works** once both nodes have settled — two instances fetched each other's test file, in both directions, in 73–83 s (an attempt in the first minutes timed out). So Storage is usable, but slow to find content. History keeps travelling as posts over Delivery (seconds, crosses home routers); Storage is the path for media and history snapshots. |
 | **Local SQLite, not Logos SQL** | The post log is per-device and private (it also holds the outbox). Logos SQL runs as a blockchain zone, and the blockchain module is out of scope for LP-0026. |
 | **Own keys instead of `keystore_signer`** | Forumer needs keys derived from one master key and the ability to verify, not only sign. |
 | **One topic for all domains** | No per-domain duplication, and the network doesn't learn what anyone reads. |

@@ -33,6 +33,11 @@ class Forumer
     // — there is no replay for a late joiner.
     SLOT(QString loadBacklog())
 
+    // The same, a page at a time (review F18), so a big log never crosses as
+    // one huge string: {"posts": [ … as above … ], "cursor": "…", "done": bool}.
+    // Start with cursor "", pass back the returned one until done.
+    SLOT(QString loadBacklogPage(QString cursor))
+
     // ── Sync ──────────────────────────────────────────────────────────────────
     // Posts travel on one content topic per forum; gaps are repaired by
     // digests (forumer_core/sync.h). Both run automatically — these are the
@@ -211,7 +216,14 @@ class Forumer
     //    fetched, "received": older posts that arrived this session}
     PROP(QString historyJson="{}" READONLY)
 
-    // The storage probe, for Settings:
+    // When this device was last online and syncing before this session (ms;
+    // 0 = never: a new device). "Missed" lists only posts written since then.
+    PROP(qint64 awaySinceMs=0 READONLY)
+
+    // Developer tools (the storage probe) are on: FORUMER_DEV=1 at launch.
+    PROP(bool devMode=false READONLY)
+
+    // The storage probe, for Settings (developer mode only):
     //   {"state": "off"|"starting"|"running"|"failed", "detail": "…",
     //    "attached": bool, "peerId": "…", "reachability": "Reachable"|…,
     //    "peers": n, "sharing": bool, "lastCid": "…", "shareCode": "…",

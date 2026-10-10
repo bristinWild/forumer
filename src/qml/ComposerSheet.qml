@@ -61,6 +61,7 @@ Sheet {
         id: titleField
         Layout.fillWidth: true
         label: "title"
+        hint: titleField.text.length > 0 ? composer.store.sizeNote(titleField.text, composer.store.maxTitleBytes) : ""
         placeholder: "What do you want to ask or share?"
         onAccepted: bodyArea.focusInput()
     }
@@ -74,6 +75,17 @@ Sheet {
         minHeight: 140
         maxHeight: 300
     }
+    Text {
+        textFormat: Text.PlainText
+        Layout.fillWidth: true
+        Layout.topMargin: -10
+        visible: bodyArea.text.length > 0
+        horizontalAlignment: Text.AlignRight
+        text: composer.store.sizeNote(bodyArea.text, composer.store.maxBodyBytes)
+        font.family: Ui.mono
+        font.pixelSize: Ui.size.caption
+        color: composer.store.utf8Bytes(bodyArea.text) > composer.store.maxBodyBytes ? Ui.failedText : Ui.text3
+    }
 
     ColumnLayout {
         Layout.fillWidth: true
@@ -82,7 +94,10 @@ Sheet {
             id: domainsField
             Layout.fillWidth: true
             label: "domains"
-            hint: "up to 3 · type your own, comma-separated"
+            readonly property var preview: composer.store.domainPreview(text)
+            hint: text.trim().length === 0 ? "up to 3 · type your own, comma-separated"
+                : preview.kept.length === 0 ? "no usable domain: a-z, 0-9 and -"
+                : "posts in #" + preview.kept.join(" #") + (preview.changed.length > 0 ? " · " + preview.changed.join(", ") : "")
             placeholder: "privacy, campus"
             mono: true
             onAccepted: composer.post()
@@ -148,6 +163,9 @@ Sheet {
             text: composer.sending ? "signing…" : "post"
             enabled: titleField.text.trim().length > 0 && !composer.sending && composer.store.canPost
                      && composer.store.topicsLeft
+                     && composer.store.utf8Bytes(titleField.text) <= composer.store.maxTitleBytes
+                     && composer.store.utf8Bytes(bodyArea.text) <= composer.store.maxBodyBytes
+                     && (domainsField.text.trim().length === 0 || domainsField.preview.kept.length > 0)
             onClicked: composer.post()
         }
     ]

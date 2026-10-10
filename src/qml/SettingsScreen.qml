@@ -150,7 +150,9 @@ Page {
         }
     }
 
+    // A developer tool (review F17): it shares this machine's addresses.
     StorageProbe {
+        visible: settings.store.devMode
         store: settings.store
     }
 

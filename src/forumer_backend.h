@@ -63,6 +63,7 @@ public:
   QString replyToTopic(QString topicId, QString body, QString disclosure) override;
   QString replyToPost(QString postId, QString body, QString disclosure) override;
   QString loadBacklog() override;
+  QString loadBacklogPage(QString cursor) override;
   QString catchUp() override;
   QString retryUnsent() override;
   QString loadOlderHistory() override;
@@ -136,7 +137,8 @@ private:
   void queueAnswers(const std::vector<std::string> &ids, const char *why);
 
   // Full acceptance check for a post from anywhere. "" if acceptable.
-  std::string checkPost(const forumer::post::Post &post) const;
+  // `fromHistory`: it came from a history walk or a store node (bulk, old).
+  std::string checkPost(const forumer::post::Post &post, bool fromHistory) const;
 
   // ── Outbound ───────────────────────────────────────────────────────────────
   // Sign `draft` with the unlocked account, store it, queue it. "" on success.
@@ -171,6 +173,8 @@ private:
 
   // ── View ───────────────────────────────────────────────────────────────────
   void emitPost(const forumer::post::Post &post);
+  QJsonObject backlogEntry(const forumer::post::Post &post, const QHash<QString, QString> &states) const;
+  QHash<QString, QString> ownStates() const;
   void publishSyncState();
 
   // ── History walk ───────────────────────────────────────────────────────────
@@ -242,6 +246,8 @@ private:
   void noteOwnPost(const forumer::post::Post &post, uint64_t index);
   // Clear restorePending once history has synced from a peer.
   void maybeFinishRestore();
+  // First sign of the network this session (a new post or a peer's digest).
+  void noteNetworkContact();
   // After a restore, replies dated before it count as read.
   void markRestoredRepliesRead();
 
@@ -252,13 +258,23 @@ private:
   static constexpr int kPowBits = 16;
   static constexpr int kAnonymousPowBits = 20;
 
+  // Most posts kept in the log (F18); the oldest beyond it are pruned at start.
+  static constexpr size_t kMaxStoredPosts = 50'000;
+
   // ── State ──────────────────────────────────────────────────────────────────
+  // An identity or posting slot is running work off the thread (Argon2id,
+  // proof-of-work); others answer "busy" until it's done.
+  bool m_busy = false;
+
   std::unique_ptr<forumer::AccountStore> m_accounts;
   std::optional<forumer::identity::Account> m_account;  // set while unlocked
   std::map<forumer::Bytes, uint64_t> m_ownKeys;          // persona public key -> index
   uint64_t m_ownKeysTo = 0;                              // m_ownKeys covers [0, this)
   bool m_ownSaveScheduled = false;
-  qint64 m_firstArrivalMs = 0;                           // first new post from the network, this session
+  qint64 m_firstArrivalMs = 0;                           // first network contact this session (noteNetworkContact)
+  qint64 m_lastRestoreWaitLogMs = 0;
+  qint64 m_lastPeerMs = 0;                               // last post or digest from another peer
+  int64_t m_historyLimitMs = 0;                          // pruned below here: the walk stops there
 
   std::unique_ptr<forumer::PostStore> m_posts;
   std::unique_ptr<DeliveryModuleTransport> m_transport;
@@ -297,6 +313,7 @@ private:
   // Flood control (forumer_core/flood.h): posts from never-seen keys, and
   // re-sends in answer to digests.
   forumer::flood::TokenBucket m_newKeyBudget{forumer::flood::kNewKeyPerMinute, forumer::flood::kNewKeyBurst};
+  forumer::flood::TokenBucket m_priorityKeyBudget{forumer::flood::kPriorityPerMinute, forumer::flood::kPriorityBurst};
   forumer::flood::TokenBucket m_resendBudget{forumer::flood::kResendPerMinute, forumer::flood::kResendBurst};
 
   bool m_inboxScheduled = false;

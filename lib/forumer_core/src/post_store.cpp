@@ -276,6 +276,43 @@ std::vector<post::Post> PostStore::all() const {
     return out;
 }
 
+PostStore::Page PostStore::page(int64_t afterCursor, size_t limit) const {
+    std::lock_guard lock(mutex_);
+    Page out;
+    Stmt s(db_, "SELECT rowid, envelope FROM posts WHERE rowid > ?1 ORDER BY rowid ASC LIMIT ?2;");
+    s.i64(1, afterCursor).i64(2, static_cast<int64_t>(limit) + 1);
+    size_t rows = 0;
+    while (s.step() == SQLITE_ROW) {
+        if (++rows > limit) {
+            out.done = false;   // one more exists
+            break;
+        }
+        out.next = s.colI64(0);
+        if (auto p = post::Post::fromJson(s.colText(1)))
+            out.posts.push_back(std::move(*p));
+    }
+    if (rows == 0) out.next = afterCursor;
+    return out;
+}
+
+size_t PostStore::pruneTo(size_t maxPosts) {
+    size_t removed = 0;
+    {
+        std::lock_guard lock(mutex_);
+        Stmt count(db_, "SELECT COUNT(*) FROM posts;");
+        const int64_t n = count.step() == SQLITE_ROW ? count.colI64(0) : 0;
+        if (n <= static_cast<int64_t>(maxPosts)) return 0;
+        Stmt del(db_, "DELETE FROM posts WHERE id IN (SELECT id FROM posts ORDER BY ts ASC, id ASC LIMIT ?1);");
+        del.i64(1, n - static_cast<int64_t>(maxPosts));
+        if (del.step() == SQLITE_DONE) removed = static_cast<size_t>(sqlite3_changes(db_));
+    }
+    if (removed > 0) {
+        std::lock_guard lock(mutex_);
+        sqlite3_exec(db_, "VACUUM;", nullptr, nullptr, nullptr);
+    }
+    return removed;
+}
+
 std::vector<PostSummary> PostStore::recent(int64_t sinceMs) const {
     std::lock_guard lock(mutex_);
     std::vector<PostSummary> out;
@@ -333,6 +370,14 @@ size_t PostStore::countByAuthor(const Bytes& author, post::Kind kind, int64_t fr
     std::lock_guard lock(mutex_);
     Stmt s(db_, "SELECT COUNT(*) FROM posts WHERE author = ?1 AND kind = ?2 AND ts >= ?3 AND ts <= ?4;");
     s.blob(1, author).i64(2, kind == post::Kind::Post ? 0 : 1).i64(3, fromMs).i64(4, toMs);
+    return s.step() == SQLITE_ROW ? static_cast<size_t>(s.colI64(0)) : 0;
+}
+
+size_t PostStore::countByAuthorArrival(const Bytes& author, post::Kind kind,
+                                       int64_t sinceReceivedMs) const {
+    std::lock_guard lock(mutex_);
+    Stmt s(db_, "SELECT COUNT(*) FROM posts WHERE author = ?1 AND kind = ?2 AND received >= ?3;");
+    s.blob(1, author).i64(2, kind == post::Kind::Post ? 0 : 1).i64(3, sinceReceivedMs);
     return s.step() == SQLITE_ROW ? static_cast<size_t>(s.colI64(0)) : 0;
 }
 

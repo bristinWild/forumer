@@ -45,6 +45,8 @@ Item {
     // locked. The one source of "my posts" (see applyOwnStates).
     readonly property string ownStatesJson:      hasBackend && backend.ownStatesJson ? backend.ownStatesJson : "{}"
     readonly property bool   restorePending:     hasBackend && backend.restorePending === true
+    readonly property real   awaySinceMs:        hasBackend && backend.awaySinceMs ? Number(backend.awaySinceMs) : 0
+    readonly property bool   devMode:            hasBackend && backend.devMode === true
     // Fetching older posts: see historyJson in forumer.rep.
     readonly property var history: {
         try { return JSON.parse(store.historyJson); } catch (e) { return {}; }
@@ -57,13 +59,15 @@ Item {
 
     // What's left of this account's hourly limits:
     //   { topics: {left, max, waitMin}, replies: {left, max, waitMin} }
-    // Empty objects until the backend reports (QuotaLine hides itself then).
+    // Until the backend reports, the full limits (forumer_core/flood.h) - so
+    // the quota line is there from the first look, not a moment later (F15).
     readonly property var quota: {
+        const full = { topics: { left: 10, max: 10, waitMin: 0 }, replies: { left: 60, max: 60, waitMin: 0 } };
         try {
             const q = JSON.parse(quotaJson);
-            return { topics: q.topics || ({}), replies: q.replies || ({}) };
+            return { topics: q.topics || full.topics, replies: q.replies || full.replies };
         } catch (e) {
-            return { topics: ({}), replies: ({}) };
+            return full;
         }
     }
     readonly property bool topicsLeft:  quota.topics.left  === undefined || quota.topics.left  > 0
@@ -230,22 +234,45 @@ Item {
     // de-duplicated by id.
     property bool backlogLoaded: false
     property bool viewReady: false          // set by Main once the replica is connected
+    function addBacklogEntries(list) {
+        for (var i = 0; i < list.length; ++i) {
+            var e = list[i];
+            if (e.kind === "topic")
+                store.addTopic(e.id, e.title, e.body, e.author, e.domains || "", e.ts, false, e.authorKey);
+            else if (e.kind === "reply")
+                store.addReply(e.id, e.topicId, e.parentId || e.topicId, e.body, e.author, e.ts, false, e.authorKey);
+        }
+    }
+    // A page at a time (review F18), each one a short trip, so a big log
+    // never crosses as one huge string and the view stays usable meanwhile.
     function loadBacklog() {
         if (store.backlogLoaded || !store.hasBackend || !store.viewReady || !store.nodeReady) return;
         store.backlogLoaded = true;
+        var total = 0;
+        var paged = typeof store.backend.loadBacklogPage === "function";
+        function next(cursor) {
+            logos.watch(store.backend.loadBacklogPage(cursor), function (json) {
+                var page = {};
+                try { page = JSON.parse(json); } catch (e) {
+                    store.log("could not parse a backlog page: " + e);
+                    return;
+                }
+                store.addBacklogEntries(page.posts || []);
+                total += (page.posts || []).length;
+                if (!page.done && page.cursor !== cursor) { next(page.cursor); return; }
+                store.applyOwnStates();
+                store.log("backlog restored: " + total + " post(s)");
+            }, function (err) {
+                store.log("backlog load failed: " + err);
+                store.backlogLoaded = false;
+            });
+        }
+        if (paged) { next(""); return; }
+        // An older backend without pages.
         logos.watch(store.backend.loadBacklog(), function (json) {
             var list = [];
-            try { list = JSON.parse(json); } catch (e) {
-                store.log("could not parse backlog: " + e);
-                return;
-            }
-            for (var i = 0; i < list.length; ++i) {
-                var e = list[i];
-                if (e.kind === "topic")
-                    store.addTopic(e.id, e.title, e.body, e.author, e.domains || "", e.ts, false, e.authorKey);
-                else if (e.kind === "reply")
-                    store.addReply(e.id, e.topicId, e.parentId || e.topicId, e.body, e.author, e.ts, false, e.authorKey);
-            }
+            try { list = JSON.parse(json); } catch (e) { store.log("could not parse backlog: " + e); return; }
+            store.addBacklogEntries(list);
             store.applyOwnStates();
             store.log("backlog restored: " + list.length + " post(s)");
         }, function (err) {
@@ -477,7 +504,10 @@ Item {
     readonly property var missed: {
         store.rev; store.tick;
         var cutoff = store.sessionStartMs - 60000;
-        var oldest = store.sessionStartMs - 7 * 24 * 3600 * 1000;
+        // Written while this device was away: since it last synced, at most
+        // a week back. A new device (never synced) missed nothing (F15).
+        if (store.awaySinceMs <= 0) return [];
+        var oldest = Math.max(store.sessionStartMs - 7 * 24 * 3600 * 1000, store.awaySinceMs - 60000);
         var out = [];
         function consider(p, isTopic) {
             if (!p.live || p.tsMs >= cutoff || p.tsMs < oldest || p.placeholder) return;
@@ -611,6 +641,53 @@ Item {
             try { r = JSON.parse(json); } catch (e) { r = { error: "Unexpected reply" }; }
             if (r.error) onErr(r.error); else onOk(r);
         }, function (e) { onErr(String(e)); });
+    }
+
+    // ── Limits (forumer_core/post.h), counted the same way: bytes of UTF-8 ──
+    readonly property int maxTitleBytes: 200
+    readonly property int maxBodyBytes: 10000
+    function utf8Bytes(s) {
+        var n = 0;
+        s = String(s || "");
+        for (var i = 0; i < s.length; ++i) {
+            var c = s.charCodeAt(i);
+            if (c < 0x80) n += 1;
+            else if (c < 0x800) n += 2;
+            else if (c >= 0xd800 && c <= 0xdbff && i + 1 < s.length) { n += 4; ++i; }  // surrogate pair
+            else n += 3;
+        }
+        return n;
+    }
+    // "123 / 200", or how far over.
+    function sizeNote(s, max) {
+        var n = store.utf8Bytes(s);
+        return n > max ? (n - max) + " over the limit" : n + " / " + max;
+    }
+
+    // What the backend will make of typed domains (post::normalizeDomains):
+    // { kept: ["privacy", "caf"], changed: ["café → caf"] } - so the composer
+    // can say what a domain becomes, or that it can't be one, before posting.
+    function domainPreview(text) {
+        var kept = [], changed = [];
+        String(text || "").split(",").forEach(function (raw) {
+            var tag = raw.trim();
+            if (tag.length === 0) return;
+            var clean = "", dash = false;
+            for (var i = 0; i < tag.length; ++i) {
+                var ch = tag[i];
+                if (/\s|-|_/.test(ch)) dash = clean.length > 0;
+                else if (/[A-Za-z0-9]/.test(ch)) {
+                    if (dash) clean += "-";
+                    dash = false;
+                    clean += ch.toLowerCase();
+                }
+            }
+            if (clean.length < 2 || clean.length > 32) { changed.push(tag + " can't be a domain"); return; }
+            if (clean !== tag.toLowerCase().replace(/^#/, "").replace(/[\s_]+/g, "-"))
+                changed.push(tag + " → " + clean);
+            if (kept.indexOf(clean) < 0 && kept.length < 3) kept.push(clean);
+        });
+        return { kept: kept, changed: changed };
     }
 
     function postAfterRestore() {

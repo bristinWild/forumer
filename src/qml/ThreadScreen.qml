@@ -387,6 +387,7 @@ Item {
                                     implicitHeight: 38
                                     enabled: thread.store.canPost && composerArea.text.trim().length > 0 && !thread.sending
                                              && thread.store.repliesLeft
+                                             && thread.store.utf8Bytes(composerArea.text) <= thread.store.maxBodyBytes
                                     onClicked: thread.send()
                                 }
                             }
@@ -398,6 +399,15 @@ Item {
                                 font.family: Ui.mono
                                 font.pixelSize: Ui.size.caption
                                 color: Ui.text3
+                            }
+                            Text {
+                                textFormat: Text.PlainText
+                                Layout.fillWidth: true
+                                visible: composerArea.text.length > 0
+                                text: thread.store.sizeNote(composerArea.text, thread.store.maxBodyBytes)
+                                font.family: Ui.mono
+                                font.pixelSize: Ui.size.caption
+                                color: thread.store.utf8Bytes(composerArea.text) > thread.store.maxBodyBytes ? Ui.failedText : Ui.text3
                             }
                             QuotaLine {
                                 visible: thread.store.unlocked && limit > 0

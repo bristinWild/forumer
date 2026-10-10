@@ -14,6 +14,7 @@
 
 #include "forumer_core/account_store.h"
 #include "forumer_core/crypto.h"
+#include "forumer_core/flood.h"
 #include "forumer_core/identity.h"
 #include "forumer_core/mnemonic.h"
 #include "forumer_core/post.h"
@@ -513,4 +514,66 @@ TEST(restore_marks_older_replies_read) {
     CHECK_EQ(store->unreadCount(me.state().id), size_t(2));
     CHECK(store->markReadBefore(me.state().id, t + 20'000, nowMs()));
     CHECK_EQ(store->unreadCount(me.state().id), size_t(1));  // the newer one stays unread
+}
+
+//  F6 / F7: limits that back-dating and cheap fresh keys can't get around 
+
+TEST(f6_arrival_limit_counts_by_our_clock) {
+    TempDir dir;
+    auto store = PostStore::open(dir.path / "posts.sqlite3");
+    Account a = Account::create("A");
+    const Persona p = a.currentPersona();
+    const int64_t now = nowMs();
+    // 25 topics back-dated one per hour over the last day: within the hourly
+    // limit by author time, but all arriving now.
+    for (int i = 0; i < 25; ++i)
+        store->insert(topic(p, Disclosure::Persona, "t" + std::to_string(i), now - (i + 1) * 3'600'000LL), now);
+    CHECK_EQ(store->countByAuthorArrival(p.publicKey(), post::Kind::Post, now - flood::kWindowMs), size_t(25));
+    CHECK(25 >= flood::maxPerArrival(post::Kind::Post));            // so the next one is refused
+    CHECK_EQ(store->countByAuthorArrival(p.publicKey(), post::Kind::Post, now + 1), size_t(0));
+    CHECK_EQ(flood::maxPerArrival(post::Kind::Post), 2 * flood::kMaxTopics);
+    CHECK_EQ(flood::maxPerDay(post::Kind::Reply), flood::kMaxRepliesPerDay);
+    CHECK(flood::kPriorityPowBits > 16 && flood::kPriorityPowBits <= 20);  // anonymous (20) qualifies
+}
+
+//  F18: the log goes to the view in pages, and stays bounded 
+
+TEST(f18_backlog_pages_cover_every_post_once) {
+    TempDir dir;
+    auto store = PostStore::open(dir.path / "posts.sqlite3");
+    Account a = Account::create("A");
+    const int64_t t = nowMs() - 100'000;
+    std::set<std::string> ids;
+    for (int i = 0; i < 23; ++i) {
+        auto p = topic(a.persona(i), Disclosure::Persona, "p" + std::to_string(i), t + i);
+        ids.insert(p.id);
+        store->insert(p, t);
+    }
+    std::set<std::string> seen;
+    int64_t cursor = 0;
+    int pages = 0;
+    for (;;) {
+        auto page = store->page(cursor, 10);
+        ++pages;
+        for (const auto& p : page.posts) CHECK(seen.insert(p.id).second);
+        if (page.done) break;
+        cursor = page.next;
+        if (pages > 10) break;
+    }
+    CHECK_EQ(pages, 3);
+    CHECK(seen == ids);
+    CHECK(store->page(0, 100).done);
+}
+
+TEST(f18_prune_keeps_the_newest) {
+    TempDir dir;
+    auto store = PostStore::open(dir.path / "posts.sqlite3");
+    Account a = Account::create("A");
+    const int64_t t = nowMs() - 100'000;
+    for (int i = 0; i < 12; ++i)
+        store->insert(topic(a.persona(i), Disclosure::Persona, "p" + std::to_string(i), t + i * 1000), t);
+    CHECK_EQ(store->pruneTo(20), size_t(0));
+    CHECK_EQ(store->pruneTo(5), size_t(7));
+    CHECK_EQ(store->count(), size_t(5));
+    CHECK(store->oldestTimestamp() == std::optional<int64_t>(t + 7 * 1000));
 }

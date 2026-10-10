@@ -124,7 +124,8 @@ bool forbiddenInAlias(uint32_t cp) {
 
 const char* aliasProblem(std::string_view alias) {
     if (alias.empty()) return "an alias can't be empty";
-    if (alias.size() > kMaxAlias) return "an alias can be at most 32 characters";
+    if (alias.size() > kMaxAlias)
+        return "an alias can be at most 32 bytes (accented and non-Latin letters take 2-4 each)";
     if (alias.front() == ' ' || alias.back() == ' ') return "an alias can't start or end with a space";
     std::string lower;
     for (size_t i = 0; i < alias.size();) {

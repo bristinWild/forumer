@@ -32,8 +32,9 @@ namespace forumer::post {
 
 inline constexpr int kFormatVersion = 1;
 
-// Size limits (characters of UTF-8, counted as bytes). Kept modest: media
-// travels by reference (CID), never inside a post.
+// Size limits, in bytes of UTF-8 (a Latin letter is 1, accented and
+// non-Latin ones 2-4, an emoji 4). The composers count them the same way.
+// Kept modest: media travels by reference (CID), never inside a post.
 inline constexpr size_t kMaxTitle = 200;
 inline constexpr size_t kMaxBody = 10000;
 inline constexpr size_t kMaxDomains = 3;
