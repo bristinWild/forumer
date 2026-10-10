@@ -1572,7 +1572,9 @@ void ForumerBackend::handlePayload(const QString &topic, const QByteArray &paylo
     handlePost(std::move(*decoded.message->post));
     break;
   case fc::sync::MessageType::Digest:
-    handleDigest(decoded.message->digest);
+    // Our own digests come back to us too; only another peer's digest says
+    // what someone else holds.
+    handleDigest(decoded.message->digest, !m_ownDigests.contains(payloadHash(bytes)));
     break;
   case fc::sync::MessageType::Range:
     handleRange(decoded.message->digest);
@@ -1671,8 +1673,41 @@ void ForumerBackend::handlePost(fc::post::Post post) {
   }
 }
 
-void ForumerBackend::handleDigest(const fc::sync::Digest &digest) {
+QByteArray ForumerBackend::payloadHash(const std::vector<uint8_t> &payload) {
+  const fc::Bytes h = fc::crypto::blake2b(payload, 16);
+  return QByteArray(reinterpret_cast<const char *>(h.data()), static_cast<int>(h.size()));
+}
+
+void ForumerBackend::confirmHeldByPeers(const fc::sync::Digest &digest) {
+  // delivery_module may never settle a send ("messageSent") when the
+  // connection is flaky, though the post went out: other peers have it, and
+  // it stays "sending…" here. A peer's digest listing it is proof it is on
+  // the network.
+  const auto unsent = m_posts->unsent();
+  if (unsent.empty())
+    return;
+  const std::set<std::string> have(digest.have.begin(), digest.have.end());
+  bool changed = false;
+  for (const auto &entry : unsent) {
+    if (!have.count(fc::sync::shortId(entry.postId)))
+      continue;
+    m_posts->markState(entry.postId, fc::SendState::Sent);
+    for (auto it = m_pendingSends.begin(); it != m_pendingSends.end();)
+      it = it.value() == qs(entry.postId) ? m_pendingSends.erase(it) : std::next(it);
+    logEvent("send of " + entry.postId + " confirmed: a peer holds it");
+    emit messageStateChanged(qs(entry.postId), QStringLiteral("sent"), QString());
+    changed = true;
+  }
+  if (changed) {
+    scheduleOwnSave();
+    publishSyncState();
+  }
+}
+
+void ForumerBackend::handleDigest(const fc::sync::Digest &digest, bool fromPeer) {
   const qint64 now = nowMs();
+  if (fromPeer && m_account)
+    confirmHeldByPeers(digest);
 
   // The sender's oldest post tells us how far back the forum's history goes.
   // oldestMs before Forumer existed is already dropped by decode (F10).
@@ -2141,7 +2176,13 @@ void ForumerBackend::sendDigest(const char *why) {
   const auto held = m_posts->recent(now - liveWindowMs());
   fc::sync::Digest digest = fc::sync::makeDigest(held, now - liveWindowMs());
   digest.oldestMs = m_posts->oldestTimestamp().value_or(0);
-  const auto r = m_transport->publish(m_topic, fc::sync::encodeDigest(digest));
+  const std::vector<uint8_t> payload = fc::sync::encodeDigest(digest);
+  // Remember it, to tell it apart from a peer's when it comes back to us.
+  m_ownDigests.insert(payloadHash(payload));
+  m_ownDigestOrder.append(payloadHash(payload));
+  while (m_ownDigestOrder.size() > 64)
+    m_ownDigests.remove(m_ownDigestOrder.takeFirst());
+  const auto r = m_transport->publish(m_topic, payload);
   if (!r.ok) {
     logEvent(std::string("digest (") + why + ") failed: " + r.error);
     return;

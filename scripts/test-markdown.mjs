@@ -16,7 +16,7 @@ const here = path.dirname(fileURLToPath(import.meta.url));
 const source = fs
     .readFileSync(path.join(here, "../src/qml/markdown.js"), "utf8")
     .replace(/^\.pragma library\s*$/m, "");
-const Md = new Function(source + "; return { safe, plain, codeSpans };")();
+const Md = new Function(source + "; return { safe, plain, codeSpans, scanCode };")();
 
 let failures = 0;
 function check(name, ok, detail) {
@@ -26,21 +26,41 @@ function check(name, ok, detail) {
 }
 
 // Remove what we emit on purpose (our link anchors) and what Markdown shows
-// verbatim (fenced blocks, code spans as codeSpans() finds them); whatever
-// "<" is left would reach the renderer as markup.
+// verbatim - fenced blocks opened at column 0, and code spans on lines with
+// no backtick left open earlier in the paragraph; any "<" left that isn't
+// escaped by an odd run of backslashes would reach the renderer as markup.
+// (The real check is rendering with Qt: see the end of this file.)
 function liveMarkup(out) {
-    let inFence = false;
-    const lines = out.split("\n").map(function (line) {
-        if (/^\s*(```|~~~)/.test(line)) { inFence = !inFence; return ""; }
-        if (inFence) return "";
+    let fence = null, paragraphOpen = false;
+    const live = [];
+    for (const line of out.split("\n")) {
+        if (fence) {
+            const m = /^ {0,3}(`+|~+)[ \t]*$/.exec(line);
+            if (m && m[1][0] === fence.ch && m[1].length >= fence.n) fence = null;
+            continue;
+        }
+        const f = /^(`{3,}|~{3,})(.*)$/.exec(line);
+        if (f && !(f[1][0] === "`" && f[2].includes("`"))) {
+            fence = { ch: f[1][0], n: f[1].length };
+            paragraphOpen = false;
+            continue;
+        }
+        if (/^\s*$/.test(line)) { paragraphOpen = false; continue; }
         let rest = "", at = 0;
-        for (const s of Md.codeSpans(line)) { rest += line.slice(at, s.start); at = s.end; }
+        if (!paragraphOpen)
+            for (const s of Md.codeSpans(line)) { rest += line.slice(at, s.start); at = s.end; }
         rest += line.slice(at);
-        return rest
+        if (Md.scanCode(line).open) paragraphOpen = true;
+        rest = rest
             .replace(/<a href="https?:\/\/[^\s"'<>]+"><span style="color:#[0-9a-fA-F]{6,8};">/g, "")
             .replace(/<\/span><\/a>/g, "");
-    });
-    return lines.join("\n").match(/<[^ ]{0,20}/g) || [];
+        let run = 0;
+        for (let i = 0; i < rest.length; ++i) {
+            if (rest[i] === "<" && run % 2 === 0) live.push(rest.slice(i, i + 20));
+            run = rest[i] === "\\" ? run + 1 : 0;
+        }
+    }
+    return live;
 }
 
 const attacks = [
@@ -59,7 +79,12 @@ const attacks = [
     "[x](http://a\"onmouseover=\"y)",
     "[label <b>x</b>](https://ok.example)",
     "```\n<b>in a fence</b>\n```\n<b>after the fence</b>",
-    "~~~\n```\n~~~\n<img src=x>",
+    "~~~\n```\n~~~\n<img src=x>",      // a ``` can't close a ~~~ fence
+    "    ```\n<img src=x>",              // indented: not a fence
+    "- a\n\n  ```\n<img src=x>",          // a fence inside a list item ends with it
+    "`x\n`<img src=x>`",                 // a code span across lines
+    "a `b\nc` <img src=x> `d`",
+    "```js `x`\n<img src=x>",            // backticks in the info string: not a fence
 ];
 for (const input of attacks) {
     const out = Md.safe(input, "#60a5fa");
@@ -67,6 +92,11 @@ for (const input of attacks) {
     check("no live markup: " + JSON.stringify(input), live.length === 0,
           "output " + JSON.stringify(out) + " still has " + JSON.stringify(live));
 }
+
+// No HTML entities in the output: some Qt versions show them as typed.
+for (const input of attacks)
+    check("no entities: " + JSON.stringify(input),
+          Md.safe(input, "#60a5fa").indexOf("&lt;") < 0 || input.indexOf("&lt;") >= 0);
 
 // What should keep working.
 check("plain text unchanged", Md.safe("hello world", "#60a5fa") === "hello world");

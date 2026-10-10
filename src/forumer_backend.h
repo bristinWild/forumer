@@ -9,6 +9,7 @@
 
 #include <QHash>
 #include <QJsonObject>
+#include <QList>
 #include <QSet>
 #include <QString>
 
@@ -124,7 +125,11 @@ private:
   // shared by every Basecamp app).
   void handlePayload(const QString &topic, const QByteArray &payload);
   void handlePost(forumer::post::Post post);
-  void handleDigest(const forumer::sync::Digest &digest);
+  // `fromPeer`: false for our own digest coming back to us.
+  void handleDigest(const forumer::sync::Digest &digest, bool fromPeer);
+  // Our unsent posts that a peer's digest lists are on the network: sent.
+  void confirmHeldByPeers(const forumer::sync::Digest &digest);
+  static QByteArray payloadHash(const std::vector<uint8_t> &payload);
   // A history request: answer with what we hold in its window (rate-limited).
   void handleRange(const forumer::sync::Digest &range);
   // Queue posts to re-send for someone else (digest and range answers).
@@ -263,6 +268,10 @@ private:
 
   // In-flight sends of our own posts: delivery_module requestId -> post id.
   QHash<QString, QString> m_pendingSends;
+
+  // Hashes of the digests we sent recently (they echo back to us).
+  QSet<QByteArray> m_ownDigests;
+  QList<QByteArray> m_ownDigestOrder;
 
   // When each post id was last seen on the wire (sent or received), ms. Lets
   // a peer skip re-sending what another peer has just re-sent.
