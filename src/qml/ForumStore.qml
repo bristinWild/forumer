@@ -721,7 +721,7 @@ Item {
             return store.alias.length > 0 ? "shows as " + store.alias + " · " + store.myPersona
                                           : "set an alias first, in profile";
         if (d === "anonymous")
-            return "one-time key, never reused · 20-bit proof of work (about a second)";
+            return "one-time key, never reused · 20-bit proof of work (a second or so; longer for long posts)";
         var rot = store.rotationPolicy === "auto" ? "a fresh persona for this post (auto rotation)"
                 : "signs as " + store.myPersona + " · rotation: " + store.rotationPolicy;
         return rot;
