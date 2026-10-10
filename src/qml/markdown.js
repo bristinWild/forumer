@@ -141,6 +141,7 @@ function plain(md) {
         .replace(/(\*\*|__|~~)(.+?)\1/g, "$2")          // bold, strike
         .replace(/(^|[^\w*])[*_]([^*_\n]+)[*_](?=[^\w*]|$)/g, "$1$2")  // italic
         .replace(/`([^`]*)`/g, "$1")                    // code spans
+        .replace(/\\([!-\/:-@\[-`{-~])/g, "$1")         // backslash escapes: \< -> <
         .replace(/\s+/g, " ")
         .trim();
 }

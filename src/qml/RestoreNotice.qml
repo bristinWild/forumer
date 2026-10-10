@@ -17,7 +17,8 @@ ColumnLayout {
         textFormat: Text.PlainText
         Layout.fillWidth: true
         text: "Your account was just restored and its posts are still arriving from the network. "
-              + "Posting waits until they have, so you don't sign as a persona you had rotated away from."
+              + "Posting waits until they have, so you don't sign as a persona you had rotated away from. "
+              + "This can take a few minutes (progress: missed → history)."
         wrapMode: Text.WordWrap
         font.family: Ui.sans
         font.pixelSize: Ui.size.small

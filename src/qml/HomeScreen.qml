@@ -57,9 +57,17 @@ Item {
                     icon: "plus"
                     text: "new topic"
                     implicitHeight: 44
-                    enabled: home.store.canPost
+                    enabled: home.store.canCompose
                     onClicked: home.newTopic()
                 }
+            }
+
+            // A just-restored account: say why posting waits, and offer to go on.
+            RestoreNotice {
+                Layout.fillWidth: true
+                Layout.leftMargin: 64
+                Layout.rightMargin: 64
+                store: home.store
             }
 
             // ── Domain chips ──────────────────────────────────────────────────

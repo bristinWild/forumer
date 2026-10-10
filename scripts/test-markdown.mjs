@@ -108,6 +108,7 @@ check("non-http link keeps only its text", Md.safe("[x](javascript:alert)", "#60
 check("image becomes its alt text", Md.safe("![cat](http://x/c.png)", "#60a5fa") === "cat");
 check("bad link colour falls back", Md.safe("[a](https://a.b)", "red;x").indexOf("#60a5fa") >= 0);
 check("plain() strips markup", Md.plain("**bold** and `code`") === "bold and code");
+check("plain() drops escape backslashes", Md.plain("\\<b>bold</b> after") === "<b>bold</b> after");
 
 // codeSpans: CommonMark's backtick rule, conservative around backslashes.
 const spans = function (s) { return JSON.stringify(Md.codeSpans(s)); };

@@ -227,7 +227,7 @@ Item {
     }
     Shortcut {
         sequence: "Ctrl+N"
-        enabled: store.unlocked && store.canPost
+        enabled: store.unlocked && store.canCompose
         onActivated: composer.open()
     }
     Shortcut {

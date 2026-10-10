@@ -70,7 +70,10 @@ Item {
     readonly property bool repliesLeft: quota.replies.left === undefined || quota.replies.left > 0
 
     readonly property bool unlocked: identityState === "unlocked"
-    readonly property bool canPost: nodeReady && unlocked && !restorePending
+    // canCompose: the composers open (the restore notice lives in them);
+    // canPost: posting itself, which also waits for a just-restored account.
+    readonly property bool canCompose: nodeReady && unlocked
+    readonly property bool canPost: canCompose && !restorePending
     readonly property bool connected: status === "Connected" || status === "PartiallyConnected"
 
     // Replying to a reply needs the backend's replyToPost; an older backend

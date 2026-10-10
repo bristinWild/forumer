@@ -249,7 +249,7 @@ Item {
                             text: "reply"
                             icon: "reply"
                             implicitHeight: 36
-                            enabled: thread.store.canPost
+                            enabled: thread.store.canCompose
                             onClicked: { thread.store.replyTargetId = ""; thread.focusComposer(); }
                         }
                         FButton {
@@ -300,7 +300,7 @@ Item {
                                 required property var modelData
                                 Layout.fillWidth: true
                                 item: modelData
-                                canReply: thread.store.canNestReplies && thread.store.canPost
+                                canReply: thread.store.canNestReplies && thread.store.canCompose
                                 replyTarget: thread.store.replyTargetId === modelData.id
                                 onReplyClicked: {
                                     thread.store.replyTargetId = modelData.id;
@@ -357,8 +357,8 @@ Item {
                                 bare: true
                                 compact: true
                                 minHeight: 72
-                                placeholder: thread.store.canPost ? "Write a reply…" : "Unlock and connect to reply"
-                                editable: thread.store.canPost
+                                placeholder: thread.store.canCompose ? "Write a reply…" : "Unlock and connect to reply"
+                                editable: thread.store.canCompose
                             }
 
                             Rectangle { Layout.fillWidth: true; implicitHeight: 1; color: Ui.border }
