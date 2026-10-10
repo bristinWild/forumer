@@ -26,7 +26,6 @@ ColumnLayout {
     }
     FButton {
         text: "post anyway"
-        compact: true
         tooltip: "Resume posting now. A persona you rotated away from may be used again."
         onClicked: notice.store.postAfterRestore()
     }

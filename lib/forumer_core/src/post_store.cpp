@@ -450,6 +450,17 @@ bool PostStore::markAllRead(const std::string& accountId, int64_t nowMs) {
     return s.step() == SQLITE_DONE;
 }
 
+bool PostStore::markReadBefore(const std::string& accountId, int64_t beforeMs, int64_t nowMs) {
+    std::lock_guard lock(mutex_);
+    const std::string sql =
+        std::string("INSERT OR IGNORE INTO own_read(account_id, post_id, read_at) "
+                    "SELECT ?1, p.id, ?3 FROM posts p WHERE p.ts < ?2 AND ") +
+        inboxWhere() + ";";
+    Stmt s(db_, sql.c_str());
+    s.text(1, accountId).i64(2, beforeMs).i64(3, nowMs);
+    return s.step() == SQLITE_DONE;
+}
+
 std::set<Bytes> PostStore::authors() const {
     std::lock_guard lock(mutex_);
     std::set<Bytes> out;

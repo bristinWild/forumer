@@ -170,6 +170,10 @@ public:
     /// Mark everything currently in the account's inbox read.
     bool markAllRead(const std::string& accountId, int64_t nowMs);
 
+    /// Mark read every reply in the account's inbox dated before `beforeMs`
+    /// (after a restore: those were seen on the device the account came from).
+    bool markReadBefore(const std::string& accountId, int64_t beforeMs, int64_t nowMs);
+
     // Outbox
     //
     // The outbox and read marks are held in memory only (TEMP tables), for

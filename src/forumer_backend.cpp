@@ -685,8 +685,9 @@ void ForumerBackend::maybeFinishRestore() {
   const bool storeDone = !m_storeState.isEmpty() && m_storeState != QLatin1String("asking");
   const bool historyDone = !m_historyActive && !m_historyScheduled &&
                            (m_historyTarget == 0 || m_historyTarget >= m_historyFloor);
-  if (!peerSeen || !storeDone || !historyDone || m_followUpScheduled || m_followUps > 0)
+  if (!peerSeen || !storeDone || !historyDone || m_followUps > 0)
     return;
+  markRestoredRepliesRead();
   m_account->finishRestore();
   saveAccount();
   logEvent("restore: history has synced; posting resumes as " +
@@ -694,10 +695,21 @@ void ForumerBackend::maybeFinishRestore() {
   publishIdentityState();
 }
 
+void ForumerBackend::markRestoredRepliesRead() {
+  // Read marks never leave the device they were made on, so a restored
+  // account would see every old reply to it as new. Those dated before the
+  // restore were read (or skipped) on the device it came from.
+  if (!m_account || !m_posts || m_account->restoredAtMs() <= 0)
+    return;
+  m_posts->markReadBefore(m_account->state().id, m_account->restoredAtMs(), nowMs());
+  scheduleOwnSave();
+}
+
 QString ForumerBackend::postAfterRestore() {
   if (!m_account)
     return QStringLiteral("Unlock first");
   if (m_account->restorePending()) {
+    markRestoredRepliesRead();
     m_account->finishRestore();
     saveAccount();
     logEvent("restore: posting resumed by the user before history finished");
@@ -961,6 +973,10 @@ void ForumerBackend::scheduleInbox() {
 
 void ForumerBackend::publishInbox() {
   constexpr size_t kInboxLimit = 200;
+  // While a restore is pending, replies keep arriving from history: mark
+  // the old ones read before they're shown as new.
+  if (m_account && m_account->restorePending())
+    markRestoredRepliesRead();
   QJsonArray inbox;
   if (m_account && m_posts) {
     for (const auto &item : m_posts->inbox(m_account->state().id, kInboxLimit))
@@ -1653,8 +1669,10 @@ void ForumerBackend::handlePost(fc::post::Post post) {
       ++m_historyReceived;
     }
     logEvent("received " + post.id);
-    if (m_firstArrivalMs == 0)
+    if (m_firstArrivalMs == 0) {
       m_firstArrivalMs = nowMs();
+      QTimer::singleShot(61'000, this, [this]() { maybeFinishRestore(); });
+    }
     emitPost(post);
     if (m_account) {
       const auto own = m_ownKeys.find(post.publicKey);
@@ -2215,6 +2233,7 @@ void ForumerBackend::scheduleFollowUp() {
       sendDigest("follow-up");   // resets the count and schedules the next check
     } else {
       m_followUps = 0;           // burst over
+      maybeFinishRestore();
     }
   });
 }

@@ -85,6 +85,7 @@ struct AccountState {
     uint64_t nextIndex = 1;               // first never-allocated index
     std::vector<std::string> followed;    // followed domains, in the order followed
     bool restored = false;                // rebuilt from a phrase; personas still being recovered
+    int64_t restoredAtMs = 0;             // when (while `restored`): replies older than this were seen elsewhere
 
     /// Most domains one account can follow.
     static constexpr size_t kMaxFollowed = 64;
@@ -129,7 +130,11 @@ public:
     /// from its phrase and not every persona it used may be known yet; the
     /// app holds posting until history has arrived (or the user says go).
     bool restorePending() const { return state_.restored; }
-    void finishRestore() { state_.restored = false; }
+    int64_t restoredAtMs() const { return state_.restoredAtMs; }
+    void finishRestore() {
+        state_.restored = false;
+        state_.restoredAtMs = 0;
+    }
 
     /// A post signed by persona `index` of this account turned up (from
     /// history, or from another device with the same phrase): never allocate

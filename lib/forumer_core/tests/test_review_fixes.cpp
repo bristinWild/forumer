@@ -483,3 +483,34 @@ TEST(f11_ranges_cant_overflow_the_span_cap) {
     CHECK(sync::spanExceeds(100, 101 + cap, cap));
     CHECK(!sync::spanExceeds(500, 100, cap));                 // inverted: empty
 }
+
+//  Restore follow-ups: read marks, timestamp 
+
+TEST(restore_records_when_and_clears_on_finish) {
+    Account a = Account::create("A");
+    auto restored = Account::restore(a.masterSecret(), "Phone", [](const Bytes&) { return false; });
+    CHECK(restored.has_value());
+    CHECK(restored->restoredAtMs() > 0);
+    auto state = AccountState::fromJson(restored->state().toJson());
+    CHECK(state.has_value() && state->restored && state->restoredAtMs == restored->restoredAtMs());
+    restored->finishRestore();
+    CHECK_EQ(restored->restoredAtMs(), int64_t(0));
+}
+
+TEST(restore_marks_older_replies_read) {
+    TempDir dir;
+    auto store = PostStore::open(dir.path / "posts.sqlite3");
+    Account me = Account::create("me");
+    Account other = Account::create("other");
+    const int64_t t = nowMs() - 100'000;
+    const auto mine = topic(me.currentPersona(), Disclosure::Persona, "mine", t);
+    const auto oldReply = reply(other.currentPersona(), mine, t + 10);
+    const auto newReply = reply(other.persona(1), mine, t + 50'000);
+    store->insert(mine, t);
+    store->insert(oldReply, t);
+    store->insert(newReply, t);
+    store->enqueue(mine.id, me.state().id, t);
+    CHECK_EQ(store->unreadCount(me.state().id), size_t(2));
+    CHECK(store->markReadBefore(me.state().id, t + 20'000, nowMs()));
+    CHECK_EQ(store->unreadCount(me.state().id), size_t(1));  // the newer one stays unread
+}

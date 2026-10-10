@@ -1,6 +1,7 @@
 #include "forumer_core/identity.h"
 
 #include <algorithm>
+#include <chrono>
 
 #include <nlohmann/json.hpp>
 
@@ -89,7 +90,10 @@ std::string AccountState::toJson() const {
         {"next", nextIndex},
         {"followed", followed},
     };
-    if (restored) doc["restored"] = true;
+    if (restored) {
+        doc["restored"] = true;
+        doc["restoredAt"] = restoredAtMs;
+    }
     return doc.dump();
 }
 
@@ -118,6 +122,7 @@ std::optional<AccountState> AccountState::fromJson(std::string_view text) {
         }
 
         s.restored = doc.value("restored", false);
+        s.restoredAtMs = s.restored ? doc.value("restoredAt", int64_t(0)) : 0;
 
         auto policy = rotationPolicyFrom(doc.value("policy", std::string("manual")));
         auto disclosure = disclosureFrom(doc.value("disclosure", std::string("persona")));
@@ -236,6 +241,9 @@ std::optional<Account> Account::restore(SecretBytes master, std::string label,
     // This device may not hold the account's whole history yet, so newer
     // personas may still turn up: see notePersonaUsed() and restorePending().
     state.restored = true;
+    state.restoredAtMs = std::chrono::duration_cast<std::chrono::milliseconds>(
+                             std::chrono::system_clock::now().time_since_epoch())
+                             .count();
     return Account(std::move(master), std::move(state));
 }
 

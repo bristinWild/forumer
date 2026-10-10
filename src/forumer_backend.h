@@ -242,6 +242,8 @@ private:
   void noteOwnPost(const forumer::post::Post &post, uint64_t index);
   // Clear restorePending once history has synced from a peer.
   void maybeFinishRestore();
+  // After a restore, replies dated before it count as read.
+  void markRestoredRepliesRead();
 
   // ── Constants ──────────────────────────────────────────────────────────────
   static const char kForum[];  // "public" — private forums come later
