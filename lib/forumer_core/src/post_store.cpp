@@ -38,6 +38,18 @@ CREATE INDEX IF NOT EXISTS idx_posts_author ON posts(author, ts);
 
 CREATE INDEX IF NOT EXISTS idx_posts_parent ON posts(parent);
 CREATE INDEX IF NOT EXISTS idx_posts_forum_ts ON posts(forum, ts);
+
+-- Image previews that came with posts (media.h "Previews"): sealed blobs and
+-- the author's signature, kept to show and to send on to others.
+CREATE TABLE IF NOT EXISTS previews (
+    post_id   TEXT NOT NULL,
+    idx       INTEGER NOT NULL,
+    cid       TEXT NOT NULL,
+    blob      BLOB NOT NULL,
+    signature BLOB NOT NULL,
+    PRIMARY KEY (post_id, idx)
+);
+CREATE INDEX IF NOT EXISTS idx_previews_cid ON previews(cid);
 )SQL";
 
 // What a device wrote, and which replies an account has read, never touch
@@ -310,6 +322,7 @@ size_t PostStore::pruneTo(size_t maxPosts) {
         Stmt del(db_, "DELETE FROM posts WHERE id IN (SELECT id FROM posts ORDER BY ts ASC, id ASC LIMIT ?1);");
         del.i64(1, n - static_cast<int64_t>(maxPosts));
         if (del.step() == SQLITE_DONE) removed = static_cast<size_t>(sqlite3_changes(db_));
+        sqlite3_exec(db_, "DELETE FROM previews WHERE post_id NOT IN (SELECT id FROM posts);", nullptr, nullptr, nullptr);
     }
     if (removed > 0) {
         std::lock_guard lock(mutex_);
@@ -326,8 +339,38 @@ std::optional<PostStore::Stored> PostStore::stored(const std::string& id) const 
     return Stored{s.colText(0), s.colText(1)};
 }
 
+bool PostStore::putPreview(const Preview& p) {
+    std::lock_guard lock(mutex_);
+    Stmt s(db_, "INSERT OR IGNORE INTO previews(post_id, idx, cid, blob, signature) VALUES (?1, ?2, ?3, ?4, ?5);");
+    s.text(1, p.postId).i64(2, p.index).text(3, p.cid).blob(4, p.blob).blob(5, p.signature);
+    return s.step() == SQLITE_DONE;
+}
+
+std::optional<PostStore::Preview> PostStore::preview(const std::string& postId, uint32_t index) const {
+    std::lock_guard lock(mutex_);
+    Stmt s(db_, "SELECT cid, blob, signature FROM previews WHERE post_id = ?1 AND idx = ?2;");
+    s.text(1, postId).i64(2, index);
+    if (s.step() != SQLITE_ROW) return std::nullopt;
+    return Preview{postId, index, s.colText(0), s.colBlob(1), s.colBlob(2)};
+}
+
+std::vector<PostStore::Preview> PostStore::previewsOf(const std::string& cid) const {
+    std::lock_guard lock(mutex_);
+    std::vector<Preview> out;
+    Stmt s(db_, "SELECT post_id, idx, blob, signature FROM previews WHERE cid = ?1 LIMIT 4;");
+    s.text(1, cid);
+    while (s.step() == SQLITE_ROW)
+        out.push_back({s.colText(0), static_cast<uint32_t>(s.colI64(1)), cid, s.colBlob(2), s.colBlob(3)});
+    return out;
+}
+
 size_t PostStore::removeForum(const std::string& forum) {
     std::lock_guard lock(mutex_);
+    {
+        Stmt pv(db_, "DELETE FROM previews WHERE post_id IN (SELECT id FROM posts WHERE forum = ?1);");
+        pv.text(1, forum);
+        pv.step();
+    }
     // The unlocked account's outbox and read marks for them go too (nothing
     // left to send; exportOwn then saves the account without them).
     for (const char* sql : {"DELETE FROM own_outbox WHERE post_id IN (SELECT id FROM posts WHERE forum = ?1);",

@@ -47,6 +47,14 @@ Sheet {
             function (err) { composer.sending = false; composer.error = err; });
     }
 
+    // Drop pictures anywhere on the sheet to attach them.
+    DropArea {
+        parent: composer
+        anchors.fill: parent
+        enabled: composer.visible && composer.store.canAttachImages && composer.store.canCompose
+        onDropped: (drop) => { if (drop.hasUrls) topicMedia.attach(drop.urls); }
+    }
+
     title: composer.store.inPrivateForum ? "new topic in " + composer.store.forumName(composer.store.currentForum)
                                          : "new topic"
     onOpened: {
@@ -65,6 +73,15 @@ Sheet {
         hint: titleField.text.length > 0 ? composer.store.sizeNote(titleField.text, composer.store.maxTitleBytes) : ""
         placeholder: "What do you want to ask or share?"
         onAccepted: bodyArea.focusInput()
+    }
+
+    // Pictures, right under the title.
+    MediaStrip {
+        id: topicMedia
+        Layout.fillWidth: true
+        store: composer.store
+        group: "topic"
+        forum: composer.store.currentForum
     }
 
     MdEditor {
@@ -176,6 +193,7 @@ Sheet {
             text: composer.sending ? "signing…" : "post"
             enabled: titleField.text.trim().length > 0 && !composer.sending && composer.store.canPost
                      && composer.store.topicsLeft
+                     && composer.store.attachmentsReady("topic")
                      && composer.store.utf8Bytes(titleField.text) <= composer.store.maxTitleBytes
                      && composer.store.utf8Bytes(bodyArea.text) <= composer.store.maxBodyBytes
                      && (domainsField.text.trim().length === 0 || domainsField.preview.kept.length > 0)

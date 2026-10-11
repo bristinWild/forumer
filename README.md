@@ -59,7 +59,8 @@ Built for [λPrize LP-0026: Forum App](https://github.com/logos-co/lambda-prize/
 | **Flood control** | Proof-of-work on every post, hourly limits per persona and per account, with a counter in the composer. |
 | **Backup & restore** | Show the recovery phrase (password required), or restore an account from one. |
 | **Night-city theme** | Dark and light palettes with Chakra Petch and Share Tech Mono; delivery states colour-coded (sending, live, failed). |
-| Media and history snapshots via Logos Storage | **(investigated, planned)** — see [§10](#10-design-decisions-and-findings) |
+| **Images** | Attach up to 4 pictures to a topic or reply. They are re-encoded on your device (location, camera and other metadata never leave it), encrypted, and stored in **Logos Storage**; the post carries their IDs. Readers see a card and fetch a picture only when they click it, and it is shown only if it is exactly what the author signed. See [Images](#images). |
+| History snapshots via Logos Storage | **(planned)** — see [§10](#10-design-decisions-and-findings) |
 | Private messages between personas | **(planned)** |
 | Mute a persona / hide a post | **(planned)** |
 
@@ -156,7 +157,8 @@ This produces a self-contained `.lgx` package for Basecamp's package manager.
 8. **My posts** lists everything this account wrote, whichever persona it used.
 9. **Backup & restore:** show your phrase, or restore an account on another instance.
 10. **Lock** (bottom of the sidebar) locks the account again.
-11. **Private forums:** in the sidebar under *forums*, **new private forum** asks for a name and gives you an invite link to send to the people you want in. They open the link (or paste it into search, or press **join** and paste it), confirm, and the forum appears in their sidebar. On the forum's page, **copy invite link** gives the link again and **leave** removes the forum and its posts from this device.
+11. **Images:** in the new-topic sheet or under a reply, press **attach images** under the title and choose them in the system's file picker, or drop them on the composer. (The picker runs as its own program - `osascript` on macOS, `zenity` or `kdialog` on Linux - because inside Basecamp the view is drawn offscreen and a dialog opened from it would take it down.) The first time, the storage node starts (about two minutes); each picture then uploads, and **post** turns on once all of them are *ready*. In a thread, an image shows as a card - click it to fetch it (often a minute or more), and it replaces the card.
+12. **Private forums:** in the sidebar under *forums*, **new private forum** asks for a name and gives you an invite link to send to the people you want in. They open the link (or paste it into search, or press **join** and paste it), confirm, and the forum appears in their sidebar. On the forum's page, **copy invite link** gives the link again and **leave** removes the forum and its posts from this device.
 
 ### Sharing links
 
@@ -221,6 +223,9 @@ forumer/                       (0700; every file below is 0600)
 │       ├── vault.json         master key, encrypted with the password
 │       ├── state.enc          rotation policy, persona counter, alias, followed domains, private forums and their keys (encrypted)
 │       └── own.enc            which posts this account wrote, their send state, replies read (encrypted)
+├── media/tmp/                 a picture being uploaded or fetched (encrypted), deleted once done
+├── storage/                   this device's Logos Storage node (encrypted image blobs only)
+├── media-rehost               whether fetched images are offered to others ("1"/"0")
 └── posts/
     └── posts.sqlite3          every verified post (at most 50,000; the oldest beyond that are pruned at start); a private forum's posts are stored encrypted with its key
 ```
@@ -350,6 +355,23 @@ Inside the seal a post is an ordinary signed post whose `forum` field is the for
 
 **What it does not do.** Anyone with the link can read and post, and can pass the link on; there is no admin and no way to remove a member. If a link leaks, make a new forum and share the new link. Members can recognise a persona you also use in public - post anonymously or rotate if that matters. The topic name and message timing are visible on the network, as for any Waku traffic. Memberships live in the account's state on this device: restoring an account from its recovery phrase on another device brings back its personas, not its forums - ask for the links again.
 
+### Images
+
+Pictures go through **Logos Storage**; posts only carry references to them (`lib/forumer_core/include/forumer_core/media.h`, `src/image_prep.cpp`).
+
+| Step | What happens |
+|---|---|
+| Attach | The picture is decoded and written out again - JPEG, or PNG when it has transparency - at most 2048 px on its longest side and 5 MB. Only pixels survive: EXIF (GPS, camera, dates), comments and colour profiles stay behind. JPEG, PNG and WebP are accepted. |
+| Seal | Encrypted with XChaCha20-Poly1305 under a key derived from the picture's own SHA-256 (in a private forum, also from the forum key). Storage nodes and the DHT see only ciphertext. |
+| Upload | One at a time, in the background, as soon as the storage node runs (it starts in the background shortly after unlocking, and takes one to two minutes). The file is uploaded under a fixed name, so its manifest says nothing about it. |
+| Post | Signed only once every picture has a CID. Each reference - `{cid, mime, size, sha256}` - is inside the signature (this field has existed since 0.2.2, so older versions still verify the post and show its text). |
+| Preview | Right after the post, the author's app sends a **preview** of each picture (JPEG, at most 96 KB, up to 1024 px) on the forum's topic, in up to three `mprev` pieces. It is sealed with a key derived from the full picture's signed hash (and the forum key in a private forum), and **signed with the post's own key** together with the post id and the picture's index - nobody else can attach a preview to a post. Receivers check the signature and keep it (sealed) next to the post, so **a thread shows its pictures the moment it opens, with no network contact**. Store nodes keep the pieces too; someone who missed them asks (`mask`) and any holder sends them again. |
+| Read | Opening a thread shows each preview at once and, with Settings → images → *load full images* (default), fetches the full picture from Storage in the background - otherwise on a click. The manifest's size is checked first, then the file is downloaded, decrypted and compared with the signed hash, size and type; anything else is refused, never shown. Pictures reach the view in memory, never written to disk in clear. A download that stops moving for a minute is restarted once. |
+| Find the holder | Storage's own lookup (its DHT) takes a minute or more from a home connection, so Forumer also asks the forum: on click it sends `{"t":"mask","cid":…}` on the post's topic (sealed in a private forum), and a peer whose storage node holds the picture answers `{"t":"mhere","cid":…,"peer":…,"addrs":[…]}` after a short random delay (staying quiet if someone else answered first). The asker dials that node directly and asks it for the manifest. A peer answers only for pictures it uploaded (already announced on the DHT anyway) or, with re-hosting on, pictures it fetched; at most three holders are dialled per picture, and only ip4/ip6/dns addresses are accepted. |
+| Re-host | By default a picture you opened stays in your storage node and is offered to others, so it stays reachable while its author is offline. Settings → images → *just view* turns this off. |
+
+**Limits.** Fetches can be slow - a minute or more without a holder hint - because Storage first has to find who holds the file; a holder answers hints only while its storage node runs. Previews avoid all of this: they arrive with the post. A node behind a home router may be unreachable for others until it has settled, and fetching across two different home networks is still untested. Whoever serves you a picture can see your storage node's address, and while re-hosting is on, so can whoever fetches from you. In the public forum, someone who already has a given picture can tell whether a stored blob is that picture (the key comes from the picture); in a private forum the forum key prevents that.
+
 ### Which network
 
 | Network | What it is | Default |
@@ -456,6 +478,7 @@ Proof-of-work hashes the whole post on every try, so a long post costs more to m
 | Links you click | Opening a link in a post visits that site from your own connection. Images and HTML in posts are never loaded, so merely reading a post contacts no one. |
 | A compromised device while unlocked | Malware can read the unlocked key. |
 | Deleting posts | Nothing published peer to peer can be reliably deleted, so Forumer doesn't offer delete. |
+| Fetching an image | The node that serves a picture sees your storage node's address; images are fetched only when you click, and re-hosting can be turned off. |
 | A leaked invite link | Whoever has a private forum's link can read it - including everything the store nodes kept - and post. Links can't be revoked; replace the forum instead. |
 | Honest clocks | `ts` is set by the author; ordering is best-effort (future dates are capped). |
 
@@ -508,7 +531,7 @@ forumer/
 
 | Layer | What | How |
 |---|---|---|
-| Unit | crypto, vault, recovery phrase, personas and rotation, account store, envelope signing and verification, PoW, post log and outbox, sync rules (digests, answers, retry backoff), thread placement, flood limits, private forums (keys, sealing on the wire and at rest, memberships) | `./scripts/test-core.sh` |
+| Unit | crypto, vault, recovery phrase, personas and rotation, account store, envelope signing and verification, PoW, post log and outbox, sync rules (digests, answers, retry backoff), thread placement, flood limits, private forums (keys, sealing on the wire and at rest, memberships), images (sealing, checks against the signed reference, private-forum keys) | `./scripts/test-core.sh` |
 | View | Markdown sanitiser; link and invite parsing | `node scripts/test-markdown.mjs`, `node scripts/test-links.mjs` |
 | End to end | post → received; nested replies; offline → catch-up; outbox retry; hourly limits; restore | `./scripts/two-instances.sh` (needs the live `logos.dev` network) |
 | CI | GitHub Actions on every push: the `forumer_core` unit tests, then the full module build on Linux (Ubuntu 24.04) and macOS 14 | `.github/workflows/ci.yml` |
@@ -522,7 +545,7 @@ Backend logs are prefixed `[forumer backend]` on the host's stderr.
 | Requirement | Status | How |
 |---|---|---|
 | No central server or service | ✅ | Peer-to-peer over Logos Delivery; all state on the device |
-| Uses the Logos stack | ✅ / ⏳ | Delivery for posts, sync and history. Storage evaluated (see §10) and planned for media/snapshots; Chat planned |
+| Uses the Logos stack | ✅ | Delivery for posts, sync and history; Storage for images in posts ([Images](#images)); Chat planned |
 | Accounts, topics, replies | ✅ | Several accounts; topics with domains; two-level replies |
 | Reply by unique id, alias, or no id | ✅ | Persona / alias / anonymous per post |
 | Privacy of one identity everywhere | ✅ | Keep / manual / auto rotation ([§5](#5-identity-and-privacy)) |
@@ -555,7 +578,7 @@ Backend logs are prefixed `[forumer backend]` on the host's stderr.
 - [x] Markdown formatting with toolbar and preview; user text never rendered as HTML
 - [x] Shareable `basecamp://` links to threads and domains
 - [x] Private forums with invite links (sealed on the wire and at rest)
-- [ ] Media attachments through Logos Storage
+- [x] Images in posts through Logos Storage (re-encoded, encrypted, click to load, re-hosting)
 - [ ] Private messages between personas
 - [ ] Mute a persona / hide a post
 - [x] CI (unit tests + module build on Linux and macOS)

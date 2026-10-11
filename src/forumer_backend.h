@@ -11,15 +11,18 @@
 #include <QHash>
 #include <QJsonObject>
 #include <QList>
+#include <QPair>
 #include <QSet>
 #include <QString>
 
 class QTimer;
+class QProcess;
 
 #include "delivery_module_transport.h"
 #include "forumer_core/account_store.h"
 #include "forumer_core/flood.h"
 #include "forumer_core/forums.h"
+#include "forumer_core/media.h"
 #include "forumer_core/identity.h"
 #include "forumer_core/post.h"
 #include "forumer_core/post_store.h"
@@ -66,6 +69,9 @@ public:
                       QString disclosure) override;
   QString createTopicIn(QString forum, QString title, QString body, QString domains,
                         QString disclosure) override;
+  QString postTopic(QString forum, QString title, QString body, QString domains, QString disclosure,
+                    QString attachments) override;
+  QString postReply(QString postId, QString body, QString disclosure, QString attachments) override;
   QString replyToTopic(QString topicId, QString body, QString disclosure) override;
   QString replyToPost(QString postId, QString body, QString disclosure) override;
   QString loadBacklog() override;
@@ -101,6 +107,17 @@ public:
   QString joinPrivateForum(QString key, QString name) override;
   QString leavePrivateForum(QString id) override;
   QString privateForumInvite(QString id) override;
+
+  // ── .rep SLOTs: images ─────────────────────────────────────────────────────
+  QString attachImage(QString group, QString forum, QString path) override;
+  QString removeAttachment(QString group, QString id) override;
+  QString retryAttachment(QString group, QString id) override;
+  QString clearAttachments(QString group) override;
+  QString pickImages(QString group, QString forum) override;
+  QString loadMedia(QString postId, int index) override;
+  QString chooseMediaRehost(bool on) override;
+  QString chooseMediaAutoFull(bool on) override;
+  QString showMedia(QString postId, int index) override;
 
   // ── .rep SLOTs: replies to you ─────────────────────────────────────────────
   QString markRepliesRead(QString ids) override;
@@ -155,7 +172,9 @@ private:
 
   // ── Outbound ───────────────────────────────────────────────────────────────
   // Sign `draft` with the unlocked account, store it, queue it. "" on success.
-  QString publish(forumer::post::Draft draft, const QString &disclosure);
+  // `attachments`: the composer whose ready images go with it ("" = none).
+  QString publish(forumer::post::Draft draft, const QString &disclosure,
+                  const QString &attachments = QString());
 
   // One send attempt of our own post `id` (outbox bookkeeping included).
   void sendOwn(const std::string &id);
@@ -241,12 +260,47 @@ private:
   // ── Storage probe ──────────────────────────────────────────────────────────
   // Subscribe to storage_module's events (once).
   void wireStorage();
+  void wireMediaProgress();
+  // Create or attach to the storage node and start it ("" = on its way).
+  QString startStorageNode();
   // Peer id, reachability and peer count from the running node.
   void refreshStorageInfo();
   void publishStorage();
   // A fetch: dial the holder (storageFetch), look up the manifest, download.
   void storageFetchManifest();
   void storageDownload();
+
+  // ── Media (see "Media" in forumer_backend.cpp) ────────────────────────────
+  QString mediaDir() const;
+  QString mediaSummary(const forumer::post::Post &post) const;   // JSON for the view
+  void loadMediaSettings();
+  void publishMedia();
+  void dropAttachment(const QString &id);
+  void forgetAccountMedia();          // on lock: attachments and private pictures go
+  void cachePut(const QString &key, const QString &url);
+  void pumpUploads();                 // start the next queued upload, if any
+  void mediaUploadDone(const QJsonObject &payload);
+  void mediaStorageReady();
+  void mediaStorageFailed();
+  void startMediaFetch(const std::string &cid);
+  void startMediaFetchFromNetwork(const std::string &cid);
+  void mediaManifestDone(const QJsonObject &payload);
+  void mediaDownload(const std::string &cid, bool local);
+  void mediaDownloadDone(const QJsonObject &payload);
+  void failMediaFetch(const std::string &cid, const QString &why);
+  void notifyMediaFetching(const std::string &cid, const QString &phase);
+  void watchDownload(const std::string &cid, int gen);
+  void restartDownload(const std::string &cid);
+  void sendPreview(const std::string &postId, uint32_t index, const std::string &forum);
+  void handlePreviewPart(forumer::sync::PreviewPart part, const std::string &forum);
+  void acceptPreview(const std::string &postId, uint32_t index, const forumer::Bytes &blob,
+                     const forumer::Bytes &sig, const std::string &forum);
+  void previewsForPost(const std::string &postId);
+  void askForHolders(const std::string &cid, const std::string &forum);
+  void handleMediaAsk(const std::string &cid, const std::string &forum);
+  void handleMediaHere(const forumer::sync::MediaHint &hint);
+  void dialHolder(const std::string &cid, const forumer::sync::MediaHint &hint);
+  bool pickerAvailable() const;
 
   // ── Identity ───────────────────────────────────────────────────────────────
   // Base directory for this app's local data (accounts + posts), scoped to the
@@ -420,6 +474,81 @@ private:
   QJsonObject m_storageFetch;              // last fetch
   QString m_storageFetchPath;              // where that fetch is written
   QTimer *m_storageTimer = nullptr;        // refreshes reachability while running
+
+  // Images being attached: uploaded one at a time (m_mediaUploadId).
+  struct Attachment {
+    QString id;
+    QString group;       // which composer ("topic", "reply")
+    QString forum;       // sealed for this forum
+    QString name;        // file name, shown in the composer only
+    QString state;       // "queued" | "uploading" | "ready" | "failed"
+    QString error;
+    int progress = 0;
+    forumer::post::MediaRef ref;   // cid set once uploaded
+    QString blobPath;
+    QString thumb;       // data: URL
+    QByteArray preview;  // JPEG sent with the post (media.h "Previews")
+    int width = 0;
+    int height = 0;
+  };
+  std::vector<Attachment> m_attachments;
+  QProcess *m_picker = nullptr;   // the system file picker, while open
+  QString m_pickerGroup;
+  QString m_pickerForum;
+  QString m_mediaNotice;          // why a picked file couldn't be attached
+  QString m_mediaNoticeGroup;
+  QString m_mediaUploadId;
+  QString m_mediaUploadSession;
+
+  // Images being fetched, by CID; each may be wanted by several posts.
+  struct MediaFetch {
+    forumer::post::MediaRef ref;
+    std::string forum;
+    QString state;       // "storage" (node starting) | "manifest" | "fetching"
+    qint64 startedMs = 0;
+    QList<QPair<QString, int>> waiters;   // (post id, index)
+    QString path;
+    bool local = false;
+    int generation = 0;  // stale timeouts ignore themselves
+    int progress = -1;
+    QString phase;       // "lookup" | "holder" | "download"
+    qint64 lastProgressMs = 0;
+    qint64 downloadStartedMs = 0;
+    int retries = 0;
+    std::vector<forumer::sync::MediaHint> hints;   // holders that answered (mhere)
+  };
+  std::map<std::string, MediaFetch> m_mediaFetches;
+  std::set<std::string> m_ownMediaCids;               // uploaded this session
+  std::map<std::string, qint64> m_hintAskedAt;        // cid -> when we last asked
+  std::map<std::string, qint64> m_hintSentAt;         // cid -> when we last answered
+  std::map<std::string, qint64> m_hintSeenAt;         // cid -> last answer seen from anyone
+
+  // Previews in pieces, "<post>:<index>" -> pieces so far.
+  struct PreviewAssembly {
+    qint64 firstMs = 0;
+    std::string forum;
+    forumer::Bytes signature;
+    std::vector<std::optional<forumer::Bytes>> pieces;
+  };
+  std::map<std::string, PreviewAssembly> m_previewParts;
+  // Complete previews whose post hasn't arrived yet.
+  struct WaitingPreview {
+    std::string postId;
+    uint32_t index = 0;
+    forumer::Bytes blob;
+    forumer::Bytes signature;
+    std::string forum;
+    qint64 receivedMs = 0;
+  };
+  std::vector<WaitingPreview> m_previewsWaiting;
+  std::map<std::string, qint64> m_previewSentAt;      // "<post>:<index>" -> when we sent it
+  std::map<std::string, qint64> m_previewSeenAt;      // "<post>:<index>" -> when a piece was last seen
+  std::map<std::string, qint64> m_previewAskedAt;     // cid -> when we asked for its preview
+
+  // Opened images as data: URLs, "<sha256>|<forum>" -> URL (memory only).
+  QHash<QString, QString> m_mediaCache;
+  QList<QString> m_mediaCacheOrder;
+  qint64 m_mediaCacheBytes = 0;
 
   // For the status line.
   int m_receivedCount = 0;  // new posts that arrived from the network this session

@@ -15,6 +15,12 @@ class Forumer
     // of the post they answer.
     SLOT(QString createTopicIn(QString forum, QString title, QString body, QString domains, QString disclosure))
 
+    // The same with images: `attachments` names the composer ("topic",
+    // "reply") whose attached images go with the post - all of them must be
+    // "ready" (see mediaJson). "" = no images.
+    SLOT(QString postTopic(QString forum, QString title, QString body, QString domains, QString disclosure, QString attachments))
+    SLOT(QString postReply(QString postId, QString body, QString disclosure, QString attachments))
+
     // Reply to a topic (by its id). `disclosure` as above.
     SLOT(QString replyToTopic(QString topicId, QString body, QString disclosure))
 
@@ -28,6 +34,7 @@ class Forumer
     // first and oldest first within each kind:
     //   [{"kind":"topic","id":…,"title":…,"body":…,"author":…,"domains":…,"ts":…}, …]
     // Replies carry "topicId" and "parentId" (= topicId for level-1 replies).
+    // Entries carry "media" as in topicReceived.
     // Every entry carries "forum" ("public" or a private forum's id); posts of
     // private forums appear only while their account is unlocked.
     // `author` is the display form (fingerprint, alias, or "Anonymous");
@@ -85,6 +92,40 @@ class Forumer
 
     // The invite link of a joined forum, to share again: {"error": "", "invite": link}.
     SLOT(QString privateForumInvite(QString id))
+
+    // ── Images (forumer_core/media.h) ─────────────────────────────────────────
+    // Pictures are re-encoded (metadata stripped), sealed and uploaded to
+    // Logos Storage while the post is being written; the post carries their
+    // CIDs. Nothing is fetched until the reader asks (loadMedia).
+
+    // Attach the image at `path` (a path or file:// URL) to composer `group`
+    // ("topic" | "reply"), sealed for `forum`. "" on success; it then shows in
+    // mediaJson and uploads in the background (starting the storage node).
+    SLOT(QString attachImage(QString group, QString forum, QString path))
+    SLOT(QString removeAttachment(QString group, QString id))
+    SLOT(QString retryAttachment(QString group, QString id))
+    SLOT(QString clearAttachments(QString group))
+
+    // Open the system's file picker (a separate program, so it can't take
+    // the view down) and attach what is chosen, as attachImage does. "" if it
+    // opened; mediaJson "picking" names the composer while it is open.
+    SLOT(QString pickImages(QString group, QString forum))
+
+    // Fetch image `index` of post `postId`. "" if started (or already here);
+    // the outcome arrives as mediaLoaded.
+    SLOT(QString loadMedia(QString postId, int index))
+
+    // Whether images this device fetched are announced and served to others.
+    SLOT(QString chooseMediaRehost(bool on))
+
+    // A thread showing image `index` of `postId` is on screen: shows what is
+    // here already (mediaLoaded "done", or "preview" with the preview's data:
+    // URL - no network), asks the forum for the preview if it's missing, and
+    // fetches the full image when mediaAutoFull is on.
+    SLOT(QString showMedia(QString postId, int index))
+
+    // Fetch full images automatically when their thread opens (default on).
+    SLOT(QString chooseMediaAutoFull(bool on))
 
     // ── Identity ──────────────────────────────────────────────────────────────
     // Accounts are master secrets kept in password-protected vaults on this
@@ -240,6 +281,20 @@ class Forumer
     // "[]" while locked; the view drops posts of forums not listed here.
     PROP(QString forumsJson="[]" READONLY)
 
+    // Images being attached, and the storage node they upload through:
+    //   {"storage": "off"|"starting"|"running"|"failed", "detail": "…",
+    //    "attachments": [{"id", "group", "forum", "name", "state": "queued"|
+    //      "uploading"|"ready"|"failed", "error", "progress", "thumb" (data:
+    //      URL), "mime", "size", "width", "height"}, …],
+    //    "picker": a system file picker exists, "picking": composer whose
+    //    picker is open (or ""), "notice"/"noticeGroup": why a picked file
+    //    couldn't be attached}
+    PROP(QString mediaJson="{}" READONLY)
+
+    // Fetched images are announced and served to others (default on).
+    PROP(bool mediaRehost=true READONLY)
+    PROP(bool mediaAutoFull=true READONLY)
+
     // Fetching older posts (forumer_core/sync.h, "History"):
     //   {"floorMs": complete back to here, "targetMs": oldest post peers know
     //    of (0: unknown), "active": bool, "fromMs"/"toMs": window being
@@ -267,11 +322,21 @@ class Forumer
     // (the author's clock); `authorKey` the signing persona's public key
     // (hex) - compare authors by this, never by the display text. `forum`:
     // "public" or a private forum's id.
-    SIGNAL(topicReceived(QString id, QString title, QString body, QString author, QString domains, qint64 timestamp, QString authorKey, QString forum))
+    // `media`: its images, [{"mime", "size", "ok"}] ("ok": one this version shows).
+    SIGNAL(topicReceived(QString id, QString title, QString body, QString author, QString domains, qint64 timestamp, QString authorKey, QString forum, QString media))
 
     // A verified reply in topic `topicId`, answering `parentId` (the topic
     // itself for a level-1 reply, a level-1 reply for a level-2 one).
-    SIGNAL(replyReceived(QString id, QString topicId, QString parentId, QString body, QString author, qint64 timestamp, QString authorKey, QString forum))
+    SIGNAL(replyReceived(QString id, QString topicId, QString parentId, QString body, QString author, qint64 timestamp, QString authorKey, QString forum, QString media))
+
+    // An image asked for with loadMedia / showMedia: "preview" (`detail`: its
+    // data: URL, while the full one is on its way), "starting" (storage node on
+    // its way), "fetching" (`detail`: percent, or ""), "done" (`detail`: a
+    // data: URL of the checked image) or "failed" (`detail`: why).
+    SIGNAL(mediaLoaded(QString postId, int index, QString state, QString detail))
+
+    // The preview of image `index` of `postId` arrived (call showMedia again).
+    SIGNAL(previewReady(QString postId, int index))
 
     // Delivery state of a post the unlocked account made: "pending",
     // "propagated", "sent" or "failed" (reason in `detail`). Failed posts stay

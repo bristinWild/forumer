@@ -116,6 +116,19 @@ public:
     };
     std::optional<Stored> stored(const std::string& id) const;
 
+    /// An image preview that came with a post (media.h "Previews"), sealed.
+    struct Preview {
+        std::string postId;
+        uint32_t index = 0;
+        std::string cid;      // of the full image
+        Bytes blob;
+        Bytes signature;      // the author's, over media::previewMessage
+    };
+    bool putPreview(const Preview& preview);   // first one kept
+    std::optional<Preview> preview(const std::string& postId, uint32_t index) const;
+    /// Previews of the image `cid` (to send on to someone asking for it).
+    std::vector<Preview> previewsOf(const std::string& cid) const;
+
     /// Drop every post of a forum (leaving a private forum), with the loaded
     /// account's outbox entries and read marks for them. Returns how many posts.
     size_t removeForum(const std::string& forum);

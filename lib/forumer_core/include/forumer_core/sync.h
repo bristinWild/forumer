@@ -24,6 +24,20 @@
 //           until). See "History" below. Live digests may also carry
 //           "oldest":<ms>, the sender's oldest post.
 //
+//   mask    {"v":1, "t":"mask", "cid":"<storage id>"}
+//   mhere   {"v":1, "t":"mhere", "cid":…, "peer":"<storage peer id>", "addrs":[…]}
+//           Finding an image's holder faster than the storage network's own
+//           lookup: someone about to fetch an image (media.h) asks; a peer
+//           whose storage node holds it - and who chose to serve images, or
+//           uploaded it - answers with that node's id and addresses, and the
+//           asker dials it directly. Nothing names a post or a person.
+//
+//   mprev   {"v":1, "t":"mprev", "post":<id>, "i":<image>, "k":<part>, "n":<parts>,
+//            "sig":"<base64url>", "data":"<base64url>"}
+//           A post's image preview (media.h "Previews"), sealed, in up to
+//           kMaxPreviewParts pieces. The author sends it right after the
+//           post; anyone holding it sends it again when asked (mask).
+//
 // Digests are what make delivery dependable. A post can be lost on the way in
 // (the receiver had only just joined, was offline, or the network dropped
 // it); the next digest from the receiver names what it holds, and whoever
@@ -92,12 +106,40 @@ struct Digest {
     int64_t oldestMs = 0;           // sender's oldest post (0: unknown); live digests only
 };
 
-enum class MessageType { Post, Digest, Range };
+enum class MessageType { Post, Digest, Range, MediaAsk, MediaHere, Preview };
+
+/// Who holds an image (mask / mhere).
+struct MediaHint {
+    std::string cid;
+    std::string peer;                 // mhere: the holder's storage peer id
+    std::vector<std::string> addrs;   // mhere: its multiaddrs (at most kMaxHintAddrs)
+};
+inline constexpr size_t kMaxHintAddrs = 8;
+
+/// One piece of a sealed preview (mprev).
+struct PreviewPart {
+    std::string postId;
+    uint32_t index = 0;   // which image of the post
+    uint32_t part = 0;    // 0 .. parts-1
+    uint32_t parts = 1;
+    Bytes signature;      // over media::previewMessage(postId, index, whole blob)
+    Bytes data;
+};
+inline constexpr size_t kMaxPreviewParts = 4;
+inline constexpr size_t kPreviewPartBytes = 40 * 1024;   // raw bytes per piece
+/// A preview piece is larger than other messages (kMaxPayload).
+inline constexpr size_t kMaxPreviewPayload = 64 * 1024;
+
+/// Split a sealed preview into pieces ready to send.
+std::vector<std::vector<uint8_t>> encodePreview(const std::string& postId, uint32_t index,
+                                                const Bytes& blob, const Bytes& signature);
 
 struct Message {
     MessageType type = MessageType::Post;
     std::optional<post::Post> post;  // Post: parsed but NOT yet verified
     Digest digest;                   // Digest and Range (a digest with untilMs set)
+    MediaHint media;                 // MediaAsk (cid only) and MediaHere
+    PreviewPart preview;             // Preview
 };
 
 enum class DecodeError {
@@ -122,6 +164,9 @@ std::vector<uint8_t> encodeDigest(const Digest& digest);
 /// peer that doesn't know it ignores it instead of answering a live digest.
 ///   {"v":1, "t":"range", "since":<ms>, "until":<ms>, "have":[…]}
 std::vector<uint8_t> encodeRange(const Digest& range);
+
+std::vector<uint8_t> encodeMediaAsk(const std::string& cid);
+std::vector<uint8_t> encodeMediaHere(const MediaHint& hint);
 
 /// Parse a payload. Checks shape and size only: a decoded post must still go
 /// through post::verify() and acceptTimestamp() before it is trusted.

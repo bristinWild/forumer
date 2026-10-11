@@ -29,11 +29,18 @@ logos_module(
         src/base64.cpp
         src/delivery_module_transport.h
         src/delivery_module_transport.cpp
+        src/image_prep.h
+        src/image_prep.cpp
     INCLUDE_DIRS
         src
     LINK_LIBRARIES
         forumer_core
 )
+
+# Images attached to posts are decoded and re-encoded in the backend
+# (src/image_prep.cpp), which needs QtGui's QImage - not linked by default.
+find_package(Qt6 REQUIRED COMPONENTS Gui)
+target_link_libraries(${MODULE_NAME}_module_plugin PRIVATE Qt6::Gui)
 
 # Surface the metadata.json version to the backend, which publishes it to the
 # QML view via the appVersion PROP (so the title's version stays in sync here).

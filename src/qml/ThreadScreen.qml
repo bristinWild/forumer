@@ -243,6 +243,14 @@ Item {
                         font.pixelSize: 17
                     }
 
+                    // Its images (fetched only when clicked)
+                    MediaCards {
+                        Layout.fillWidth: true
+                        store: thread.store
+                        postId: thread.store.selectedTopicId
+                        media: thread.topic && !thread.topic.placeholder && thread.topic.media ? thread.topic.media : []
+                    }
+
                     // Topic actions
                     Row {
                         visible: !linkPanel.visible
@@ -303,6 +311,7 @@ Item {
                             delegate: ReplyItem {
                                 required property var modelData
                                 Layout.fillWidth: true
+                                store: thread.store
                                 item: modelData
                                 canReply: thread.store.canNestReplies && thread.store.canCompose
                                 replyTarget: thread.store.replyTargetId === modelData.id
@@ -323,7 +332,15 @@ Item {
                         radius: Ui.radius.xl
                         color: Ui.surface
                         border.width: 1
-                        border.color: composerArea.input.activeFocus ? Ui.focus : Ui.borderStrong
+                        border.color: composerArea.input.activeFocus || replyDrop.containsDrag ? Ui.focus : Ui.borderStrong
+
+                        // Drop pictures on the composer to attach them.
+                        DropArea {
+                            id: replyDrop
+                            anchors.fill: parent
+                            enabled: thread.store.canAttachImages && thread.store.canCompose
+                            onDropped: (drop) => { if (drop.hasUrls) replyMedia.attach(drop.urls); }
+                        }
 
                         ColumnLayout {
                             id: composer
@@ -365,6 +382,14 @@ Item {
                                 editable: thread.store.canCompose
                             }
 
+                            MediaStrip {
+                                id: replyMedia
+                                Layout.fillWidth: true
+                                store: thread.store
+                                group: "reply"
+                                forum: thread.topic && thread.topic.forum ? thread.topic.forum : "public"
+                            }
+
                             Rectangle { Layout.fillWidth: true; implicitHeight: 1; color: Ui.border }
 
                             RowLayout {
@@ -391,6 +416,7 @@ Item {
                                     implicitHeight: 38
                                     enabled: thread.store.canPost && composerArea.text.trim().length > 0 && !thread.sending
                                              && thread.store.repliesLeft
+                                             && thread.store.attachmentsReady("reply")
                                              && thread.store.utf8Bytes(composerArea.text) <= thread.store.maxBodyBytes
                                     onClicked: thread.send()
                                 }

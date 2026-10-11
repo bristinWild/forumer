@@ -60,6 +60,7 @@ add_library(forumer_core STATIC
     src/flood.cpp
     src/sealed.cpp
     src/forums.cpp
+    src/media.cpp
 )
 
 target_include_directories(forumer_core PUBLIC

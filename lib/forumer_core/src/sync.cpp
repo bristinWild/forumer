@@ -5,6 +5,8 @@
 
 #include <nlohmann/json.hpp>
 
+#include "forumer_core/media.h"
+
 namespace forumer::sync {
 
 using json = nlohmann::json;
@@ -66,8 +68,67 @@ std::vector<uint8_t> encodeRange(const Digest& range) {
                     {"until", range.untilMs}, {"have", range.have}});
 }
 
+std::vector<uint8_t> encodeMediaAsk(const std::string& cid) {
+    return toBytes({{"v", kWireVersion}, {"t", "mask"}, {"cid", cid}});
+}
+
+std::vector<uint8_t> encodeMediaHere(const MediaHint& hint) {
+    return toBytes({{"v", kWireVersion}, {"t", "mhere"}, {"cid", hint.cid}, {"peer", hint.peer},
+                    {"addrs", hint.addrs}});
+}
+
+namespace {
+
+// A libp2p peer id as text: base58, 40..64 characters.
+bool peerIdShape(const std::string& s) {
+    if (s.size() < 40 || s.size() > 64) return false;
+    for (char c : s)
+        if (!((c >= '1' && c <= '9') || (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z')) || c == 'I' ||
+            c == 'O' || c == 'l')
+            return false;
+    return true;
+}
+
+// A multiaddr we are willing to dial: /ip4|ip6|dns4|dns6/<host>/tcp|udp/<port>[/...],
+// printable, short.
+bool addrShape(const std::string& s) {
+    if (s.size() < 8 || s.size() > 128) return false;
+    if (s.rfind("/ip4/", 0) != 0 && s.rfind("/ip6/", 0) != 0 && s.rfind("/dns4/", 0) != 0 &&
+        s.rfind("/dns6/", 0) != 0)
+        return false;
+    if (s.find("/tcp/") == std::string::npos && s.find("/udp/") == std::string::npos) return false;
+    for (char c : s)
+        if (!((c >= '0' && c <= '9') || (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || c == '/' ||
+              c == '.' || c == ':' || c == '-' || c == '_'))
+            return false;
+    return true;
+}
+
+} // namespace
+
+std::vector<std::vector<uint8_t>> encodePreview(const std::string& postId, uint32_t index,
+                                                const Bytes& blob, const Bytes& signature) {
+    std::vector<std::vector<uint8_t>> out;
+    const size_t parts = (blob.size() + kPreviewPartBytes - 1) / kPreviewPartBytes;
+    if (parts == 0 || parts > kMaxPreviewParts) return out;
+    for (size_t k = 0; k < parts; ++k) {
+        const size_t from = k * kPreviewPartBytes;
+        const size_t len = std::min(kPreviewPartBytes, blob.size() - from);
+        out.push_back(toBytes({{"v", kWireVersion}, {"t", "mprev"}, {"post", postId}, {"i", index},
+                               {"k", k}, {"n", parts}, {"sig", toBase64Url(signature)},
+                               {"data", toBase64Url(blob.data() + from, len)}}));
+    }
+    return out;
+}
+
 DecodeResult decode(const std::vector<uint8_t>& payload) {
-    if (payload.size() > kMaxPayload)
+    if (payload.size() > kMaxPreviewPayload)
+        return fail(DecodeError::TooLarge);
+    // Only a preview piece may be larger than kMaxPayload: don't even parse
+    // anything else that big.
+    static constexpr std::string_view kPreviewTag = "\"mprev\"";
+    if (payload.size() > kMaxPayload &&
+        std::search(payload.begin(), payload.end(), kPreviewTag.begin(), kPreviewTag.end()) == payload.end())
         return fail(DecodeError::TooLarge);
 
     const json j = json::parse(payload.begin(), payload.end(), nullptr, /*allow_exceptions=*/false);
@@ -85,6 +146,37 @@ DecodeResult decode(const std::vector<uint8_t>& payload) {
 
     const std::string type = t->get<std::string>();
     Message msg;
+    if (type != "mprev" && payload.size() > kMaxPayload)
+        return fail(DecodeError::TooLarge);
+
+    if (type == "mprev") {
+        auto pid = j.find("post");
+        auto i = j.find("i");
+        auto k = j.find("k");
+        auto n = j.find("n");
+        auto sig = j.find("sig");
+        auto data = j.find("data");
+        if (pid == j.end() || !pid->is_string() || i == j.end() || !i->is_number_unsigned() ||
+            k == j.end() || !k->is_number_unsigned() || n == j.end() || !n->is_number_unsigned() ||
+            sig == j.end() || !sig->is_string() || data == j.end() || !data->is_string())
+            return fail(DecodeError::Malformed);
+        const std::string id = pid->get<std::string>();
+        if (id.size() != 32 || !std::all_of(id.begin(), id.end(), [](char c) {
+                return (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f');
+            }))
+            return fail(DecodeError::Malformed);
+        const uint64_t index = i->get<uint64_t>(), part = k->get<uint64_t>(), parts = n->get<uint64_t>();
+        if (index >= post::kMaxMedia || parts == 0 || parts > kMaxPreviewParts || part >= parts)
+            return fail(DecodeError::Malformed);
+        auto sigBytes = fromBase64Url(sig->get<std::string>());
+        auto bytes = fromBase64Url(data->get<std::string>());
+        if (!sigBytes || sigBytes->size() != 64 || !bytes || bytes->empty() || bytes->size() > kPreviewPartBytes)
+            return fail(DecodeError::Malformed);
+        msg.type = MessageType::Preview;
+        msg.preview = {id, static_cast<uint32_t>(index), static_cast<uint32_t>(part),
+                       static_cast<uint32_t>(parts), std::move(*sigBytes), std::move(*bytes)};
+        return {std::move(msg), DecodeError::None};
+    }
 
     if (type == "post") {
         auto env = j.find("env");
@@ -128,6 +220,30 @@ DecodeResult decode(const std::vector<uint8_t>& payload) {
                 return fail(DecodeError::Malformed);
             msg.digest.have.push_back(id.get<std::string>());
         }
+        return {std::move(msg), DecodeError::None};
+    }
+
+    if (type == "mask" || type == "mhere") {
+        auto cid = j.find("cid");
+        if (cid == j.end() || !cid->is_string() || !media::cidShape(cid->get<std::string>()))
+            return fail(DecodeError::Malformed);
+        msg.media.cid = cid->get<std::string>();
+        if (type == "mask") {
+            msg.type = MessageType::MediaAsk;
+            return {std::move(msg), DecodeError::None};
+        }
+        auto peer = j.find("peer");
+        auto addrs = j.find("addrs");
+        if (peer == j.end() || !peer->is_string() || !peerIdShape(peer->get<std::string>()) ||
+            addrs == j.end() || !addrs->is_array() || addrs->empty() || addrs->size() > kMaxHintAddrs)
+            return fail(DecodeError::Malformed);
+        msg.media.peer = peer->get<std::string>();
+        for (const auto& a : *addrs) {
+            if (!a.is_string() || !addrShape(a.get<std::string>()))
+                return fail(DecodeError::Malformed);
+            msg.media.addrs.push_back(a.get<std::string>());
+        }
+        msg.type = MessageType::MediaHere;
         return {std::move(msg), DecodeError::None};
     }
 

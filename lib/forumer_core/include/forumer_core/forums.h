@@ -34,7 +34,7 @@ namespace forumer::forums {
 inline constexpr size_t kKeyBytes = 32;
 inline constexpr size_t kMaxName = 64;           // bytes of UTF-8
 inline constexpr size_t kMaxJoined = 32;         // per account
-inline constexpr size_t kMaxSealedPayload = 40 * 1024;
+inline constexpr size_t kMaxSealedPayload = 96 * 1024;   // fits a sealed image-preview piece
 
 struct Forum {
     std::string id;     // 16 lowercase hex
