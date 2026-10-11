@@ -90,6 +90,12 @@ std::string AccountState::toJson() const {
         {"next", nextIndex},
         {"followed", followed},
     };
+    if (!forums.empty()) {
+        json list = json::array();
+        for (const auto& f : forums)
+            list.push_back({{"id", f.id}, {"key", f.key}, {"name", f.name}, {"joined", f.joinedMs}});
+        doc["forums"] = list;
+    }
     if (restored) {
         doc["restored"] = true;
         doc["restoredAt"] = restoredAtMs;
@@ -121,6 +127,17 @@ std::optional<AccountState> AccountState::fromJson(std::string_view text) {
             }
         }
 
+        if (auto f = doc.find("forums"); f != doc.end() && f->is_array()) {
+            for (const auto& item : *f) {
+                if (!item.is_object() || s.forums.size() == 32) continue;
+                ForumMembership m;
+                m.id = item.value("id", std::string());
+                m.key = item.value("key", std::string());
+                m.name = item.value("name", std::string());
+                m.joinedMs = item.value("joined", int64_t(0));
+                if (!m.id.empty() && !m.key.empty()) s.forums.push_back(std::move(m));
+            }
+        }
         s.restored = doc.value("restored", false);
         s.restoredAtMs = s.restored ? doc.value("restoredAt", int64_t(0)) : 0;
 
@@ -156,6 +173,31 @@ void Account::unfollow(const std::string& domain) {
 bool Account::isFollowing(const std::string& domain) const {
     const auto& f = state_.followed;
     return std::find(f.begin(), f.end(), domain) != f.end();
+}
+
+//  Private forums 
+
+bool Account::joinForum(ForumMembership forum) {
+    for (auto& f : state_.forums)
+        if (f.id == forum.id) {
+            f.name = forum.name;
+            return true;
+        }
+    if (state_.forums.size() >= 32) return false;
+    state_.forums.push_back(std::move(forum));
+    return true;
+}
+
+void Account::leaveForum(const std::string& id) {
+    auto& f = state_.forums;
+    f.erase(std::remove_if(f.begin(), f.end(), [&](const ForumMembership& m) { return m.id == id; }),
+            f.end());
+}
+
+const ForumMembership* Account::forum(const std::string& id) const {
+    for (const auto& f : state_.forums)
+        if (f.id == id) return &f;
+    return nullptr;
 }
 
 //  Free functions 

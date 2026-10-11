@@ -47,7 +47,8 @@ Sheet {
             function (err) { composer.sending = false; composer.error = err; });
     }
 
-    title: "new topic"
+    title: composer.store.inPrivateForum ? "new topic in " + composer.store.forumName(composer.store.currentForum)
+                                         : "new topic"
     onOpened: {
         composer.error = "";
         composer.disclosure = composer.store.defaultDisclosure;
@@ -144,6 +145,18 @@ Sheet {
             font.pixelSize: Ui.size.caption
             color: Ui.text3
         }
+    }
+
+    Text {
+        textFormat: Text.PlainText
+        Layout.fillWidth: true
+        visible: composer.store.inPrivateForum
+        text: "private: only members of " + composer.store.forumName(composer.store.currentForum)
+              + " can read it - everyone who has the invite link."
+        wrapMode: Text.WordWrap
+        font.family: Ui.mono
+        font.pixelSize: Ui.size.caption
+        color: Ui.text3
     }
 
     QuotaLine {

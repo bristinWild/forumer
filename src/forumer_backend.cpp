@@ -41,6 +41,7 @@
 // Forumer's own engine (lib/forumer_core).
 #include "forumer_core/crypto.h"
 #include "forumer_core/flood.h"
+#include "forumer_core/forums.h"
 #include "forumer_core/mnemonic.h"
 #include "forumer_core/thread.h"
 
@@ -138,6 +139,9 @@ constexpr int kMaxFollowUps = 15;
 // How often "covered until" (we were online and syncing up to here) is saved.
 constexpr qint64 kCoveredSaveGapMs = 10 * 60'000;
 constexpr int kSeenPruneThreshold = 4'096;
+// Own digests remembered (to tell them from a peer's): one per round for the
+// public forum plus one per private forum, a couple of rounds' worth.
+constexpr int kOwnDigestMemory = 128;
 
 // Owner-only permissions (0700 directories, 0600 files) for everything this
 // app keeps on disk. Best effort: filesystems without POSIX modes keep theirs.
@@ -476,6 +480,7 @@ void ForumerBackend::joinForum() {
   }
   scheduleDigest(kFirstDigestMs);
   maybeStartHistory();
+  joinForumTopics();   // the unlocked account's private forums
   if (!m_storeStarted)
     QTimer::singleShot(kStoreStartDelayMs, this, [this]() { startStoreHistory(); });
 }
@@ -615,6 +620,7 @@ void ForumerBackend::saveAccount() {
 void ForumerBackend::attachAccount() {
   if (!m_account)
     return;
+  loadForums();
   m_ownKeys.clear();
   m_ownKeysTo = 0;
   extendOwnKeys();
@@ -642,6 +648,9 @@ void ForumerBackend::attachAccount() {
   publishOwnStates();
   publishSyncState();
   publishInbox();
+  // Its private forums' posts already on this device go to the view.
+  if (m_posts && !m_forums.empty())
+    emitForumPosts(std::string());
 }
 
 void ForumerBackend::detachAccount() {
@@ -651,6 +660,11 @@ void ForumerBackend::detachAccount() {
     m_posts->forgetOwn();
   m_ownKeys.clear();
   m_ownKeysTo = 0;
+  // Private forums close with the account: their keys go, the view drops
+  // their posts (forumsJson empties), what's stored stays sealed.
+  m_forums.clear();
+  m_forumByTopic.clear();
+  publishForums();
   publishOwnStates();
   publishSyncState();
 }
@@ -978,6 +992,7 @@ QString ForumerBackend::deleteAccount(QString password) {
   m_ownKeys.clear();
   m_ownKeysTo = 0;
   m_account.reset();
+  loadForums();   // none now
   publishOwnStates();
   publishSyncState();
   logEvent("removed account " + id + " from this device");
@@ -1535,13 +1550,21 @@ void ForumerBackend::publishStorage() {
 
 QString ForumerBackend::createTopic(QString title, QString body, QString domains,
                                     QString disclosure) {
+  return createTopicIn(QString::fromUtf8(kForum), title, body, domains, disclosure);
+}
+
+QString ForumerBackend::createTopicIn(QString forum, QString title, QString body, QString domains,
+                                      QString disclosure) {
   title = title.trimmed();
   if (title.isEmpty())
     return QStringLiteral("A topic needs a title");
+  const std::string where = forum.isEmpty() ? std::string(kForum) : forum.toStdString();
+  if (where != kForum && !privateForum(where))
+    return QStringLiteral("You're not in that private forum");
 
   fc::post::Draft draft;
   draft.kind = fc::post::Kind::Post;
-  draft.forum = kForum;
+  draft.forum = where;
   draft.title = title.toStdString();
   draft.body = body.toStdString();
   draft.domains = fc::post::parseDomains(domains.toStdString());
@@ -1572,14 +1595,14 @@ QString ForumerBackend::replyToPost(QString postId, QString body, QString disclo
 
   // Where the reply goes follows from what it answers (two levels at most,
   // see forumer_core/thread.h) — so we need that post.
-  auto answering = m_posts->get(postId.toStdString());
+  auto answering = loadPost(postId.toStdString());
   if (!answering)
     return QStringLiteral("That post isn't on this device yet");
   const fc::thread::Target target = fc::thread::replyTarget(*answering);
 
   fc::post::Draft draft;
   draft.kind = fc::post::Kind::Reply;
-  draft.forum = kForum;
+  draft.forum = answering->content.forum;   // a reply stays in its thread's forum
   draft.root = target.root;
   draft.parent = target.parent;
   draft.body = body.toStdString();
@@ -1594,6 +1617,8 @@ QString ForumerBackend::publish(fc::post::Draft draft, const QString &disclosure
     return QStringLiteral("Unlock your identity to post");
   if (m_busy)
     return QString::fromUtf8(kBusy);
+  if (draft.forum != kForum && !privateForum(draft.forum))
+    return QStringLiteral("You're not in that private forum");
 
   Disclosure disclosure = m_account->state().defaultDisclosure;
   if (!disclosureText.isEmpty()) {
@@ -1665,7 +1690,7 @@ QString ForumerBackend::publish(fc::post::Draft draft, const QString &disclosure
   // Durable before anything else: once these two writes land, the post
   // survives a crash and goes out on the next retry tick at the latest.
   const qint64 now = nowMs();
-  if (m_posts->insert(*signedPost, now) == fc::PostStore::Insert::Failed ||
+  if (storePost(*signedPost, now) == fc::PostStore::Insert::Failed ||
       !m_posts->enqueue(signedPost->id, m_account->state().id, now) || !saveOwn()) {
     logEvent("could not store our own post " + signedPost->id);
     return QStringLiteral("Couldn't save the post");
@@ -1688,10 +1713,10 @@ void ForumerBackend::emitPost(const fc::post::Post &post) {
   const QString key = qs(fc::toHex(post.publicKey));
   if (c.kind == fc::post::Kind::Post)
     emit topicReceived(qs(post.id), qs(c.title), qs(c.body), qs(post.authorDisplay()),
-                       joinDomains(c.domains), toNs(c.timestampMs), key);
+                       joinDomains(c.domains), toNs(c.timestampMs), key, qs(c.forum));
   else
     emit replyReceived(qs(post.id), qs(c.root), qs(c.parent), qs(c.body), qs(post.authorDisplay()),
-                       toNs(c.timestampMs), key);
+                       toNs(c.timestampMs), key, qs(c.forum));
 }
 
 QJsonObject ForumerBackend::backlogEntry(const fc::post::Post &p,
@@ -1704,6 +1729,7 @@ QJsonObject ForumerBackend::backlogEntry(const fc::post::Post &p,
       {"author", qs(p.authorDisplay())},
       {"authorKey", qs(fc::toHex(p.publicKey))},
       {"ts", QString::number(toNs(p.content.timestampMs))},
+      {"forum", qs(p.content.forum)},
   };
   if (isTopic) {
     entry.insert(QStringLiteral("title"), qs(p.content.title));
@@ -1757,6 +1783,15 @@ QString ForumerBackend::loadBacklogPage(QString cursor) {
   QJsonArray posts;
   for (const auto &p : page.posts)
     posts.append(backlogEntry(p, states));
+  // Private forums the unlocked account is in; the rest stay sealed.
+  for (const auto &row : page.sealed) {
+    const fc::forums::Forum *f = privateForum(row.forum);
+    if (!f)
+      continue;
+    auto json = fc::forums::openStored(*f, row.envelope);
+    if (auto p = json ? fc::post::Post::fromJson(*json) : std::nullopt)
+      posts.append(backlogEntry(*p, states));
+  }
   out.insert(QStringLiteral("posts"), posts);
   out.insert(QStringLiteral("cursor"), QString::number(page.next));
   out.insert(QStringLiteral("done"), page.done);
@@ -1766,32 +1801,285 @@ QString ForumerBackend::loadBacklogPage(QString cursor) {
 // ── Inbound ───────────────────────────────────────────────────────────────────
 
 void ForumerBackend::handlePayload(const QString &topic, const QByteArray &payload) {
-  if (!m_posts || topic.toStdString() != m_topic)
-    return; // another app's traffic — delivery_module is shared
+  if (!m_posts)
+    return;
+  const std::vector<uint8_t> raw(payload.begin(), payload.end());
 
-  const std::vector<uint8_t> bytes(payload.begin(), payload.end());
-  fc::sync::DecodeResult decoded = fc::sync::decode(bytes);
+  // The public forum's topic, or one of the unlocked account's private
+  // forums (sealed: open it first). Anything else is another app's traffic
+  // - delivery_module is shared - or a forum this account isn't in.
+  std::string forum = kForum;
+  std::vector<uint8_t> opened;
+  const std::vector<uint8_t> *bytes = &raw;
+  if (topic.toStdString() != m_topic) {
+    const auto it = m_forumByTopic.find(topic.toStdString());
+    if (it == m_forumByTopic.end())
+      return;
+    const fc::forums::Forum *f = privateForum(it->second);
+    if (!f)
+      return;
+    auto inner = fc::forums::openWire(*f, raw);
+    if (!inner) {
+      logEvent("ignored a message on a private forum's topic that doesn't open");
+      return;
+    }
+    forum = f->id;
+    opened = std::move(*inner);
+    bytes = &opened;
+  }
+
+  fc::sync::DecodeResult decoded = fc::sync::decode(*bytes);
   if (!decoded.message) {
     logEvent(std::string("ignored a message: ") + fc::sync::describe(decoded.error));
     return;
   }
   switch (decoded.message->type) {
   case fc::sync::MessageType::Post:
-    handlePost(std::move(*decoded.message->post));
+    handlePost(std::move(*decoded.message->post), forum);
     break;
   case fc::sync::MessageType::Digest:
     // Our own digests come back to us too; only another peer's digest says
-    // what someone else holds.
-    handleDigest(decoded.message->digest, !m_ownDigests.contains(payloadHash(bytes)));
+    // what someone else holds. (Hashed as sent, i.e. sealed for private.)
+    handleDigest(decoded.message->digest, !m_ownDigests.contains(payloadHash(raw)), forum);
     break;
   case fc::sync::MessageType::Range:
-    handleRange(decoded.message->digest);
+    if (forum == kForum)   // history walks are the public forum's only
+      handleRange(decoded.message->digest);
     break;
   }
 }
 
+// ── Private forums ────────────────────────────────────────────────────────────
+
+const fc::forums::Forum *ForumerBackend::privateForum(const std::string &id) const {
+  const auto it = m_forums.find(id);
+  return it == m_forums.end() ? nullptr : &it->second;
+}
+
+std::string ForumerBackend::topicOf(const std::string &forum) const {
+  return forum == kForum ? m_topic : fc::sync::contentTopic(fc::forums::topicName(forum));
+}
+
+DeliveryModuleTransport::SendResult ForumerBackend::publishTo(const std::string &forum,
+                                                              const std::vector<uint8_t> &payload,
+                                                              QByteArray *sentHash) {
+  DeliveryModuleTransport::SendResult r;
+  if (!m_transport) {
+    r.error = "not connected";
+    return r;
+  }
+  std::vector<uint8_t> wire = payload;
+  if (forum != kForum) {
+    const fc::forums::Forum *f = privateForum(forum);
+    if (!f) {
+      r.error = "not a member of that forum";
+      return r;
+    }
+    wire = fc::forums::sealWire(*f, payload);
+  }
+  if (sentHash)
+    *sentHash = payloadHash(wire);
+  return m_transport->publish(topicOf(forum), wire);
+}
+
+std::optional<fc::post::Post> ForumerBackend::loadPost(const std::string &id) const {
+  if (!m_posts)
+    return std::nullopt;
+  auto row = m_posts->stored(id);
+  if (!row)
+    return std::nullopt;
+  if (row->forum == kForum)
+    return fc::post::Post::fromJson(row->envelope);
+  const fc::forums::Forum *f = privateForum(row->forum);
+  if (!f)
+    return std::nullopt;   // a forum the unlocked account isn't in
+  auto json = fc::forums::openStored(*f, row->envelope);
+  return json ? fc::post::Post::fromJson(*json) : std::nullopt;
+}
+
+fc::PostStore::Insert ForumerBackend::storePost(const fc::post::Post &post, int64_t receivedMs) {
+  if (post.content.forum == kForum)
+    return m_posts->insert(post, receivedMs);
+  const fc::forums::Forum *f = privateForum(post.content.forum);
+  if (!f)
+    return fc::PostStore::Insert::Failed;
+  // Sealed at rest: the log file never holds a private forum's text.
+  const std::string sealed = fc::forums::sealStored(*f, post.toJson());
+  return m_posts->insert(post, receivedMs, &sealed);
+}
+
+void ForumerBackend::loadForums() {
+  m_forums.clear();
+  m_forumByTopic.clear();
+  if (m_account)
+    for (const auto &m : m_account->state().forums) {
+      auto key = fc::forums::keyFromText(m.key);
+      auto f = key ? fc::forums::fromKey(*key, m.name) : std::nullopt;
+      if (!f || f->id != m.id) {
+        logEvent("skipped a private forum whose key doesn't match its id");
+        continue;
+      }
+      m_forumByTopic[topicOf(f->id)] = f->id;
+      m_forums.emplace(f->id, std::move(*f));
+    }
+  joinForumTopics();
+  publishForums();
+}
+
+void ForumerBackend::joinForumTopics() {
+  if (!m_joined || !m_transport)
+    return;   // joinForum() calls this again once the public topic is joined
+  for (const auto &[id, f] : m_forums) {
+    const std::string topic = topicOf(id);
+    if (m_joinedTopics.count(topic))
+      continue;
+    const std::string error = m_transport->join(topic);
+    if (!error.empty()) {
+      logEvent("could not join a private forum's topic: " + error);
+      continue;
+    }
+    m_joinedTopics.insert(topic);
+    logEvent("joined private forum " + id);
+    // What the store nodes kept of it (sealed: only members can read it).
+    enqueueStore(id);
+  }
+}
+
+void ForumerBackend::publishForums() {
+  QJsonArray list;
+  if (m_account)
+    for (const auto &m : m_account->state().forums)
+      if (m_forums.count(m.id))
+        list.append(QJsonObject{{"id", qs(m.id)}, {"name", qs(m.name)},
+                                {"joinedMs", static_cast<qint64>(m.joinedMs)}});
+  const QString json = QString::fromUtf8(QJsonDocument(list).toJson(QJsonDocument::Compact));
+  if (json != forumsJson())
+    setForumsJson(json);
+}
+
+QString ForumerBackend::inviteLink(const fc::forums::Forum &f) const {
+  // The same link format as shared threads (links.js): an intent whose
+  // parameters are base64url JSON. links.js turns the decoded bytes into one
+  // character each, so the JSON is ASCII: anything else travels as \uXXXX.
+  auto asciiJson = [](const QString &v) {
+    QString out = QStringLiteral("\"");
+    for (const QChar c : v) {
+      const ushort u = c.unicode();
+      if (u == '"' || u == '\\')
+        out += QStringLiteral("\\") + c;
+      else if (u < 0x20 || u > 0x7e)
+        out += QStringLiteral("\\u%1").arg(u, 4, 16, QLatin1Char('0'));
+      else
+        out += c;
+    }
+    return out + QLatin1Char('"');
+  };
+  const std::string text = (QStringLiteral("{\"invite\":") + asciiJson(qs(fc::forums::keyToText(f.key))) +
+                            QStringLiteral(",\"name\":") + asciiJson(qs(f.name)) + QLatin1Char('}'))
+                               .toStdString();
+  return QStringLiteral("basecamp://intent/forumer.open?p=") +
+         qs(fc::toBase64Url(reinterpret_cast<const uint8_t *>(text.data()), text.size()));
+}
+
+QString ForumerBackend::createPrivateForum(QString name) {
+  if (!m_account)
+    return jsonResult(QStringLiteral("Unlock first"));
+  if (m_busy)
+    return jsonResult(QString::fromUtf8(kBusy));
+  auto f = fc::forums::create(name.trimmed().toStdString());
+  if (!f)
+    return jsonResult(QStringLiteral("A forum needs a name: up to 64 characters, no line breaks"));
+  if (!m_account->joinForum({f->id, fc::forums::keyToText(f->key), f->name, nowMs()}))
+    return jsonResult(QStringLiteral("You can be in at most %1 private forums").arg(fc::forums::kMaxJoined));
+  saveAccount();
+  logEvent("created private forum " + f->id);
+  loadForums();
+  QJsonObject out{{"error", QString()}, {"id", qs(f->id)}, {"invite", inviteLink(*f)}};
+  return QString::fromUtf8(QJsonDocument(out).toJson(QJsonDocument::Compact));
+}
+
+QString ForumerBackend::joinPrivateForum(QString key, QString name) {
+  if (!m_account)
+    return jsonResult(QStringLiteral("Unlock first"));
+  if (m_busy)
+    return jsonResult(QString::fromUtf8(kBusy));
+  auto secret = fc::forums::keyFromText(key.trimmed().toStdString());
+  wipe(key);
+  if (!secret)
+    return jsonResult(QStringLiteral("That invite link is damaged"));
+  QString shown = name.trimmed();
+  if (shown.isEmpty())
+    shown = QStringLiteral("Private forum");
+  auto f = fc::forums::fromKey(*secret, shown.toStdString());
+  if (!f)
+    return jsonResult(QStringLiteral("That invite link has an unusable forum name"));
+  if (!m_account->joinForum({f->id, fc::forums::keyToText(f->key), f->name, nowMs()}))
+    return jsonResult(QStringLiteral("You can be in at most %1 private forums").arg(fc::forums::kMaxJoined));
+  saveAccount();
+  logEvent("joined private forum " + f->id);
+  loadForums();
+  // Its posts already on this device (another account of this device is in
+  // it too, or it was left and joined again) go to the view now.
+  if (m_posts)
+    emitForumPosts(f->id);
+  QJsonObject out{{"error", QString()}, {"id", qs(f->id)}, {"name", qs(f->name)}};
+  return QString::fromUtf8(QJsonDocument(out).toJson(QJsonDocument::Compact));
+}
+
+QString ForumerBackend::leavePrivateForum(QString id) {
+  if (!m_account)
+    return QStringLiteral("Unlock first");
+  if (m_busy)
+    return QString::fromUtf8(kBusy);
+  const std::string fid = id.toStdString();
+  if (!m_account->forum(fid))
+    return QStringLiteral("Not a member of that forum");
+  m_account->leaveForum(fid);
+  saveAccount();
+  // Its posts go from this device; members who stay keep them.
+  if (m_posts) {
+    const size_t gone = m_posts->removeForum(fid);
+    logEvent("left private forum " + fid + " (" + std::to_string(gone) + " post(s) removed)");
+    saveOwn();   // its outbox entries went with them
+  }
+  loadForums();
+  publishOwnStates();
+  publishSyncState();
+  publishInbox();
+  return QString();
+}
+
+QString ForumerBackend::privateForumInvite(QString id) {
+  const fc::forums::Forum *f = privateForum(id.toStdString());
+  if (!f)
+    return jsonResult(QStringLiteral("Not a member of that forum"));
+  QJsonObject out{{"error", QString()}, {"invite", inviteLink(*f)}};
+  return QString::fromUtf8(QJsonDocument(out).toJson(QJsonDocument::Compact));
+}
+
+void ForumerBackend::emitForumPosts(const std::string &only) {
+  // One walk over the log: the posts of `only`, or of every joined forum.
+  int64_t cursor = 0;
+  for (;;) {
+    const auto page = m_posts->page(cursor, 500);
+    for (const auto &row : page.sealed) {
+      if (!only.empty() && row.forum != only)
+        continue;
+      const fc::forums::Forum *f = privateForum(row.forum);
+      if (!f)
+        continue;
+      auto json = fc::forums::openStored(*f, row.envelope);
+      if (auto p = json ? fc::post::Post::fromJson(*json) : std::nullopt)
+        emitPost(*p);
+    }
+    if (page.done)
+      break;
+    cursor = page.next;
+  }
+}
+
 std::string ForumerBackend::checkPost(const fc::post::Post &post, bool fromHistory) const {
-  if (post.content.forum != kForum)
+  if (post.content.forum != kForum && !privateForum(post.content.forum))
     return "belongs to another forum";
   const int minPow = post.disclosure == Disclosure::Anonymous ? kAnonymousPowBits : kPowBits;
   const fc::post::Error err = fc::post::verify(post, minPow);
@@ -1803,7 +2091,12 @@ std::string ForumerBackend::checkPost(const fc::post::Post &post, bool fromHisto
   // when we already hold it (a reply that arrives first is judged by the view,
   // which shows it at level 1 until the parent turns up).
   if (post.content.kind == fc::post::Kind::Reply) {
-    const auto placement = fc::thread::checkPlacement(post, m_posts->get(post.content.parent));
+    const auto parent = loadPost(post.content.parent);
+    if (!parent && m_posts->contains(post.content.parent))
+      return "answers a post in another forum";   // held, but sealed for a forum it isn't in
+    if (parent && parent->content.forum != post.content.forum)
+      return "answers a post in another forum";
+    const auto placement = fc::thread::checkPlacement(post, parent);
     if (placement != fc::thread::Placement::Ok)
       return fc::thread::describe(placement);
   }
@@ -1831,7 +2124,14 @@ std::string ForumerBackend::checkPost(const fc::post::Post &post, bool fromHisto
   return {};
 }
 
-void ForumerBackend::handlePost(fc::post::Post post) {
+void ForumerBackend::handlePost(fc::post::Post post, const std::string &forum) {
+  // A post names its forum inside what it signs; it must also have come on
+  // that forum's topic (a member can't slip a private post into public, or
+  // move one between forums, by re-sending it elsewhere).
+  if (post.content.forum != forum) {
+    logEvent("dropped " + post.id + ": arrived on another forum's topic");
+    return;
+  }
   // "Seen on the wire" lets a peer about to answer a digest skip a post
   // someone else has just re-sent. Only a genuine copy counts: a forged
   // message carrying a real post's id must not suppress its repair (F8).
@@ -1875,7 +2175,7 @@ void ForumerBackend::handlePost(fc::post::Post post) {
     }
   }
 
-  switch (m_posts->insert(post, nowMs())) {
+  switch (storePost(post, nowMs())) {
   case fc::PostStore::Insert::Added:
     ++m_receivedCount;
     ++m_roundArrivals;
@@ -1934,12 +2234,32 @@ void ForumerBackend::confirmHeldByPeers(const fc::sync::Digest &digest) {
   }
 }
 
-void ForumerBackend::handleDigest(const fc::sync::Digest &digest, bool fromPeer) {
+void ForumerBackend::handleDigest(const fc::sync::Digest &digest, bool fromPeer,
+                                  const std::string &forum) {
   const qint64 now = nowMs();
   if (fromPeer)
     noteNetworkContact();
   if (fromPeer && m_account)
     confirmHeldByPeers(digest);
+
+  // A private forum is repaired over the digest window (48 h) only; what's
+  // older comes from the store nodes' archive (storeQueryNext).
+  if (forum != kForum) {
+    const int64_t since = std::max<int64_t>(digest.sinceMs, now - 2 * liveWindowMs());
+    if (now - m_lastPromptedDigestMs >= kPromptedDigestGapMs &&
+        fc::sync::listsUnknown(digest, m_posts->recent(since, forum))) {
+      m_lastPromptedDigestMs = now;
+      logEvent("digest: a member of " + forum + " holds posts we don't — sending ours");
+      QTimer::singleShot(kPromptedDigestDelayMs + jitter(kPromptedDigestJitterMs), this, [this]() {
+        if (nowMs() - m_lastDigestMs >= kMinDigestGapMs)
+          sendDigest("prompted");
+      });
+    }
+    const auto missing = fc::sync::missingFrom(digest, m_posts->recent(now - liveWindowMs(), forum));
+    if (!missing.empty())
+      queueAnswers(missing, "private digest");
+    return;
+  }
 
   // The sender's oldest post tells us how far back the forum's history goes.
   // oldestMs before Forumer existed is already dropped by decode (F10).
@@ -2210,6 +2530,8 @@ void ForumerBackend::startStoreHistory() {
     return;
   }
   m_storeStarted = true;
+  m_storeRunning = true;
+  m_storeForum = kForum;
   m_storePeer = 0;
   m_storePage = 0;
   m_storeNodeMsgs = 0;
@@ -2220,22 +2542,63 @@ void ForumerBackend::startStoreHistory() {
   storeQueryNext();
 }
 
+void ForumerBackend::enqueueStore(const std::string &forum) {
+  // Asked once per private forum per session (when its topic is joined).
+  if (qEnvironmentVariableIsSet("FORUMER_NO_STORE") || !m_transport)
+    return;
+  if (forum == m_storeForum && m_storeRunning)
+    return;
+  if (std::find(m_storeQueue.begin(), m_storeQueue.end(), forum) == m_storeQueue.end())
+    m_storeQueue.push_back(forum);
+  // The public forum's archive goes first (startStoreHistory); after it the
+  // queue runs on. Already finished: start this one now.
+  if (m_storeStarted && !m_storeRunning) {
+    m_storeRunning = true;
+    m_storePeer = static_cast<int>(storePeers().size());   // "the current forum is done"
+    QTimer::singleShot(0, this, [this]() { storeQueryNext(); });
+  }
+}
+
 void ForumerBackend::storeQueryNext() {
   const QStringList peers = storePeers();
   if (m_storePeer >= peers.size()) {
-    m_storeState = m_storeGot > 0 ? QStringLiteral("done")
-                   : m_storeError.isEmpty() ? QStringLiteral("empty")
-                                            : QStringLiteral("unreachable");
-    logEvent("store: finished, " + std::to_string(m_storeGot) + " new post(s)");
-    publishHistory();
-    maybeFinishRestore();
+    if (m_storeForum == kForum && m_storeState == QLatin1String("asking")) {
+      m_storeState = m_storeGot > 0 ? QStringLiteral("done")
+                     : m_storeError.isEmpty() ? QStringLiteral("empty")
+                                              : QStringLiteral("unreachable");
+      logEvent("store: finished, " + std::to_string(m_storeGot) + " new post(s)");
+      publishHistory();
+      maybeFinishRestore();
+    } else if (m_storeForum != kForum) {
+      logEvent("store: private forum " + m_storeForum + " finished");
+    }
+    // Next: the private forums the unlocked account is in (sealed on the
+    // store nodes too; only members can read what they kept).
+    while (!m_storeQueue.empty() && !privateForum(m_storeQueue.front()))
+      m_storeQueue.pop_front();
+    if (m_storeQueue.empty()) {
+      m_storeRunning = false;
+      return;
+    }
+    m_storeForum = m_storeQueue.front();
+    m_storeQueue.pop_front();
+    m_storePeer = 0;
+    m_storePage = 0;
+    m_storeNodeMsgs = 0;
+    m_storeCursor.clear();
+    logEvent("store: asking for private forum " + m_storeForum);
+  }
+  if (m_storeForum != kForum && !privateForum(m_storeForum)) {
+    m_storePeer = static_cast<int>(peers.size());   // left or locked meanwhile: skip it
+    QTimer::singleShot(0, this, [this]() { storeQueryNext(); });
     return;
   }
   const QString peer = peers.at(m_storePeer);
   m_storeNode = peer.section(QLatin1Char('/'), 2, 2);  // "/dns4/<host>/tcp/..." -> host
   const int64_t since = nowMs() - (m_storeShortRange ? kStoreShortLookbackMs : kStoreLookbackMs);
   QPointer<ForumerBackend> self(this);
-  m_transport->queryStorePage(m_topic, deliveryCluster(), since, m_storeCursor, peer.toStdString(),
+  m_transport->queryStorePage(topicOf(m_storeForum), deliveryCluster(), since, m_storeCursor,
+                              peer.toStdString(),
                               kStoreTimeoutMs,
                               [self](DeliveryModuleTransport::StorePage page) {
                                 if (self)
@@ -2270,15 +2633,26 @@ void ForumerBackend::storePageArrived(DeliveryModuleTransport::StorePage page) {
   }
 
   const int before = m_receivedCount;
+  const std::string forum = m_storeForum;
+  const fc::forums::Forum *sealedFor = forum == kForum ? nullptr : privateForum(forum);
   m_storeImport = true;
   for (const auto &payload : page.payloads) {
-    fc::sync::DecodeResult decoded = fc::sync::decode(payload);
+    std::optional<std::vector<uint8_t>> opened;
+    if (sealedFor) {
+      opened = fc::forums::openWire(*sealedFor, payload);
+      if (!opened)
+        continue;
+    } else if (forum != kForum) {
+      break;   // left or locked while the page was on its way
+    }
+    fc::sync::DecodeResult decoded = fc::sync::decode(opened ? *opened : payload);
     if (decoded.message && decoded.message->type == fc::sync::MessageType::Post)
-      handlePost(std::move(*decoded.message->post));
+      handlePost(std::move(*decoded.message->post), forum);
   }
   m_storeImport = false;
   const int added = m_receivedCount - before;
-  m_storeGot += added;
+  if (forum == kForum)
+    m_storeGot += added;   // "archive" in the history line is the public forum's
   m_storeNodeMsgs += static_cast<int>(page.payloads.size());
   ++m_storePage;
   logEvent("store: " + m_storeNode.toStdString() + " page " + std::to_string(m_storePage) + ": " +
@@ -2323,7 +2697,7 @@ void ForumerBackend::sendOwn(const std::string &id) {
   if (!m_joined || !m_transport)
     return; // stays pending; the retry tick sends it once we've joined
 
-  auto post = m_posts->get(id);
+  auto post = loadPost(id);
   if (!post) {
     logEvent("outbox entry " + id + " has no stored post");
     return;
@@ -2333,7 +2707,7 @@ void ForumerBackend::sendOwn(const std::string &id) {
     return;  // not the unlocked account's post
   scheduleOwnSave();
   m_lastSeenOnWire.insert(qs(id), nowMs());
-  const auto r = m_transport->publish(m_topic, fc::sync::encodePost(*post));
+  const auto r = publishTo(post->content.forum, fc::sync::encodePost(*post));
   if (!r.ok) {
     m_posts->markState(id, fc::SendState::Failed, r.error);
     publishOwnStates();
@@ -2355,11 +2729,11 @@ bool ForumerBackend::resend(const std::string &id) {
   if (!m_resendBudget.take(now))
     return false; // over the re-send budget: keep it queued
 
-  auto post = m_posts->get(id);
+  auto post = loadPost(id);
   if (!post)
-    return true;
+    return true;   // gone, or a forum the unlocked account isn't in
   m_lastSeenOnWire.insert(qs(id), now);
-  const auto r = m_transport->publish(m_topic, fc::sync::encodePost(*post));
+  const auto r = publishTo(post->content.forum, fc::sync::encodePost(*post));
   if (!r.ok)
     logEvent("re-send of " + id + " failed: " + r.error);
   return true;
@@ -2418,7 +2792,7 @@ void ForumerBackend::sendDigest(const char *why) {
   // Remember it, to tell it apart from a peer's when it comes back to us.
   m_ownDigests.insert(payloadHash(payload));
   m_ownDigestOrder.append(payloadHash(payload));
-  while (m_ownDigestOrder.size() > 64)
+  while (m_ownDigestOrder.size() > kOwnDigestMemory)
     m_ownDigests.remove(m_ownDigestOrder.takeFirst());
   const auto r = m_transport->publish(m_topic, payload);
   if (!r.ok) {
@@ -2428,6 +2802,19 @@ void ForumerBackend::sendDigest(const char *why) {
   m_lastDigestMs = now;
   logEvent(std::string("digest (") + why + "): " + std::to_string(digest.have.size()) +
            " post(s) held");
+  // Each private forum gets its own, sealed, on its own topic.
+  for (const auto &[id, f] : m_forums) {
+    const fc::sync::Digest fd = fc::sync::makeDigest(m_posts->recent(now - liveWindowMs(), id),
+                                                     now - liveWindowMs());
+    QByteArray hash;
+    const auto fr = publishTo(id, fc::sync::encodeDigest(fd), &hash);
+    if (fr.ok) {
+      m_ownDigests.insert(hash);
+      m_ownDigestOrder.append(hash);
+    }
+  }
+  while (m_ownDigestOrder.size() > kOwnDigestMemory)
+    m_ownDigests.remove(m_ownDigestOrder.takeFirst());
   m_roundArrivals = 0;
   scheduleFollowUp();
   // We're online and syncing: everything up to now - window is covered by

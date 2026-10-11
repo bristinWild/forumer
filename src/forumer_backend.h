@@ -1,5 +1,6 @@
 #pragma once
 
+#include <deque>
 #include <map>
 #include <memory>
 #include <optional>
@@ -18,6 +19,7 @@ class QTimer;
 #include "delivery_module_transport.h"
 #include "forumer_core/account_store.h"
 #include "forumer_core/flood.h"
+#include "forumer_core/forums.h"
 #include "forumer_core/identity.h"
 #include "forumer_core/post.h"
 #include "forumer_core/post_store.h"
@@ -43,7 +45,9 @@ class QTimer;
  * unlocked: the log file itself never says who wrote what.
  *
  * Sync (forumer_core::sync over delivery_module): one content topic for the
- * public forum carrying signed posts and digests. Inbound posts are verified
+ * public forum carrying signed posts and digests, and one per private forum
+ * the unlocked account is in (forumer_core/forums.h), where every message is
+ * sealed with the forum's key. Inbound posts are verified
  * (signature, id, proof-of-work, timestamp) before they are stored or shown.
  * Our own posts are retried until the network confirms them, and digests —
  * sent shortly after joining, periodically, and on "Catch up" — make peers
@@ -60,6 +64,8 @@ public:
   // ── .rep SLOTs: posting and sync ───────────────────────────────────────────
   QString createTopic(QString title, QString body, QString domains,
                       QString disclosure) override;
+  QString createTopicIn(QString forum, QString title, QString body, QString domains,
+                        QString disclosure) override;
   QString replyToTopic(QString topicId, QString body, QString disclosure) override;
   QString replyToPost(QString postId, QString body, QString disclosure) override;
   QString loadBacklog() override;
@@ -89,6 +95,12 @@ public:
   QString followDomain(QString domain) override;
   QString unfollowDomain(QString domain) override;
   QString chooseNetwork(QString preset) override;
+
+  // ── .rep SLOTs: private forums ─────────────────────────────────────────────
+  QString createPrivateForum(QString name) override;
+  QString joinPrivateForum(QString key, QString name) override;
+  QString leavePrivateForum(QString id) override;
+  QString privateForumInvite(QString id) override;
 
   // ── .rep SLOTs: replies to you ─────────────────────────────────────────────
   QString markRepliesRead(QString ids) override;
@@ -125,9 +137,10 @@ private:
   // One payload from the network. Ignores other topics (delivery_module is
   // shared by every Basecamp app).
   void handlePayload(const QString &topic, const QByteArray &payload);
-  void handlePost(forumer::post::Post post);
+  // `forum`: whose topic it came on ("public" or a private forum's id).
+  void handlePost(forumer::post::Post post, const std::string &forum);
   // `fromPeer`: false for our own digest coming back to us.
-  void handleDigest(const forumer::sync::Digest &digest, bool fromPeer);
+  void handleDigest(const forumer::sync::Digest &digest, bool fromPeer, const std::string &forum);
   // Our unsent posts that a peer's digest lists are on the network: sent.
   void confirmHeldByPeers(const forumer::sync::Digest &digest);
   static QByteArray payloadHash(const std::vector<uint8_t> &payload);
@@ -170,6 +183,31 @@ private:
 
   // A delivery event about one of our requests: record it and tell the view.
   void settleSend(const QString &requestId, const QString &state, const QString &detail);
+
+  // ── Private forums ─────────────────────────────────────────────────────────
+  // The unlocked account's forum `id`, or null (not in it / locked).
+  const forumer::forums::Forum *privateForum(const std::string &id) const;
+  // Content topic of a forum ("public" or a private forum's id).
+  std::string topicOf(const std::string &forum) const;
+  // Publish on the forum's topic, sealed for a private one. `sentHash`: the
+  // hash of the bytes as sent (to recognise our own digest's echo).
+  DeliveryModuleTransport::SendResult publishTo(const std::string &forum,
+                                                const std::vector<uint8_t> &payload,
+                                                QByteArray *sentHash = nullptr);
+  // A stored post, opened if it is in a private forum the account is in.
+  std::optional<forumer::post::Post> loadPost(const std::string &id) const;
+  // Store a post; a private forum's sealed at rest.
+  forumer::PostStore::Insert storePost(const forumer::post::Post &post, int64_t receivedMs);
+  // Rebuild m_forums from the unlocked account (or clear it), join their
+  // topics, tell the view.
+  void loadForums();
+  void joinForumTopics();
+  void publishForums();
+  QString inviteLink(const forumer::forums::Forum &forum) const;
+  // Emit stored posts of private forum `only` ("" = all joined) to the view.
+  void emitForumPosts(const std::string &only);
+  // Ask the store nodes for a private forum's archive (after the public one).
+  void enqueueStore(const std::string &forum);
 
   // ── View ───────────────────────────────────────────────────────────────────
   void emitPost(const forumer::post::Post &post);
@@ -252,7 +290,7 @@ private:
   void markRestoredRepliesRead();
 
   // ── Constants ──────────────────────────────────────────────────────────────
-  static const char kForum[];  // "public" — private forums come later
+  static const char kForum[];  // "public"; private forums are named by their id
 
   // Proof-of-work: what we mine when sending, and the minimum we accept.
   static constexpr int kPowBits = 16;
@@ -279,6 +317,13 @@ private:
   std::unique_ptr<forumer::PostStore> m_posts;
   std::unique_ptr<DeliveryModuleTransport> m_transport;
   std::string m_topic;  // content topic of kForum
+
+  // The unlocked account's private forums (id -> forum, keys in memory only
+  // while unlocked), their content topics, and every topic joined this
+  // session (never unsubscribed: a left forum's topic is simply ignored).
+  std::map<std::string, forumer::forums::Forum> m_forums;
+  std::map<std::string, std::string> m_forumByTopic;
+  std::set<std::string> m_joinedTopics;
 
   bool m_joined = false;
   int m_joinAttempts = 0;
@@ -347,6 +392,10 @@ private:
   QString m_storeState;             // "" | "asking" | "done" | "empty" | "unreachable"
   QString m_storeNode;              // host of the node that answered last
   QString m_storeError;
+  // After the public forum: the private forums' archives, one at a time.
+  bool m_storeRunning = false;
+  std::string m_storeForum;         // forum being asked for
+  std::deque<std::string> m_storeQueue;
 
   // Catch-up bursts: posts that arrived (or were deferred) since our last
   // digest, and how many follow-up digests this burst has sent.

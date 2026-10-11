@@ -10,6 +10,11 @@ class Forumer
     // "persona" | "alias" | "anonymous", or "" for the account default.
     SLOT(QString createTopic(QString title, QString body, QString domains, QString disclosure))
 
+    // The same in forum `forum`: "public", or the id of a private forum the
+    // unlocked account is in. Replies need no forum: they stay in the forum
+    // of the post they answer.
+    SLOT(QString createTopicIn(QString forum, QString title, QString body, QString domains, QString disclosure))
+
     // Reply to a topic (by its id). `disclosure` as above.
     SLOT(QString replyToTopic(QString topicId, QString body, QString disclosure))
 
@@ -23,6 +28,8 @@ class Forumer
     // first and oldest first within each kind:
     //   [{"kind":"topic","id":…,"title":…,"body":…,"author":…,"domains":…,"ts":…}, …]
     // Replies carry "topicId" and "parentId" (= topicId for level-1 replies).
+    // Every entry carries "forum" ("public" or a private forum's id); posts of
+    // private forums appear only while their account is unlocked.
     // `author` is the display form (fingerprint, alias, or "Anonymous");
     // `authorKey` the signing persona's public key (hex).
     // Posts this device wrote also carry "state": "pending" | "sent" | "failed".
@@ -59,6 +66,25 @@ class Forumer
     // range request the history walk sends, so nobody learns which thread
     // was opened. The posts arrive through topicReceived / replyReceived.
     SLOT(QString fetchAround(qint64 day))
+
+    // ── Private forums ────────────────────────────────────────────────────────
+    // A private forum is a key (forumer_core/forums.h): whoever holds its
+    // invite link can read and post; everything on its topic is sealed with
+    // it. Memberships belong to the unlocked account (kept in its vault).
+
+    // New forum named `name`. Returns JSON {"error": "", "id": …, "invite": link}.
+    SLOT(QString createPrivateForum(QString name))
+
+    // Join from an invite: `key` and `name` as carried in the link. Returns
+    // JSON {"error": "", "id": …, "name": …}. Joining one already joined
+    // just renames it.
+    SLOT(QString joinPrivateForum(QString key, QString name))
+
+    // Leave: the membership and the forum's posts on this device go. "" on success.
+    SLOT(QString leavePrivateForum(QString id))
+
+    // The invite link of a joined forum, to share again: {"error": "", "invite": link}.
+    SLOT(QString privateForumInvite(QString id))
 
     // ── Identity ──────────────────────────────────────────────────────────────
     // Accounts are master secrets kept in password-protected vaults on this
@@ -210,6 +236,10 @@ class Forumer
     // "[]" while locked.
     PROP(QString inboxJson="[]" READONLY)
 
+    // The unlocked account's private forums: [{"id":…, "name":…, "joinedMs":…}, …].
+    // "[]" while locked; the view drops posts of forums not listed here.
+    PROP(QString forumsJson="[]" READONLY)
+
     // Fetching older posts (forumer_core/sync.h, "History"):
     //   {"floorMs": complete back to here, "targetMs": oldest post peers know
     //    of (0: unknown), "active": bool, "fromMs"/"toMs": window being
@@ -235,12 +265,13 @@ class Forumer
     // A verified topic arrived (or was just created locally). `author` is the
     // display form; `domains` comma-separated; `timestamp` ns since epoch
     // (the author's clock); `authorKey` the signing persona's public key
-    // (hex) - compare authors by this, never by the display text.
-    SIGNAL(topicReceived(QString id, QString title, QString body, QString author, QString domains, qint64 timestamp, QString authorKey))
+    // (hex) - compare authors by this, never by the display text. `forum`:
+    // "public" or a private forum's id.
+    SIGNAL(topicReceived(QString id, QString title, QString body, QString author, QString domains, qint64 timestamp, QString authorKey, QString forum))
 
     // A verified reply in topic `topicId`, answering `parentId` (the topic
     // itself for a level-1 reply, a level-1 reply for a level-2 one).
-    SIGNAL(replyReceived(QString id, QString topicId, QString parentId, QString body, QString author, qint64 timestamp, QString authorKey))
+    SIGNAL(replyReceived(QString id, QString topicId, QString parentId, QString body, QString author, qint64 timestamp, QString authorKey, QString forum))
 
     // Delivery state of a post the unlocked account made: "pending",
     // "propagated", "sent" or "failed" (reason in `detail`). Failed posts stay

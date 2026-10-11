@@ -77,6 +77,8 @@ Item {
             height: parent.height
             store: store
             onLockRequested: root.lock()
+            onNewForumRequested: newForum.open()
+            onJoinForumRequested: joinForum.open()
         }
 
         Item {
@@ -185,6 +187,21 @@ Item {
             objectName: "composer"
             store: store
         }
+        NewForumSheet {
+            id: newForum
+            store: store
+        }
+        JoinForumSheet {
+            id: joinForum
+            store: store
+        }
+        // An invite link was opened (intent, or pasted into search): ask.
+        Connections {
+            target: store
+            function onPendingInviteChanged() {
+                if (store.pendingInvite && !joinForum.visible) joinForum.open();
+            }
+        }
     }
 
     // ── Onboarding / unlock ───────────────────────────────────────────────────
@@ -232,7 +249,11 @@ Item {
     }
     Shortcut {
         sequence: "Escape"
-        enabled: composer.visible
-        onActivated: composer.close()
+        enabled: composer.visible || newForum.visible || joinForum.visible
+        onActivated: {
+            if (joinForum.visible) { joinForum.close(); store.pendingInvite = null; }
+            else if (newForum.visible) newForum.close();
+            else composer.close();
+        }
     }
 }

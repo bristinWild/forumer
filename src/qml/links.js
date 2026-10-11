@@ -11,6 +11,10 @@
 // What a link carries, and nothing else:
 //   thread:  {"topic": "<32-hex post id>", "day": <days since 1970, UTC>}
 //   domain:  {"domain": "<domain>"}
+//   invite:  {"invite": "<43-char base64url key>", "name": "<forum name>"}
+// An invite IS a private forum's key (forumer_core/forums.h): whoever holds
+// the link can read and post there. The backend makes these (inviteLink),
+// with every non-ASCII character escaped, so they decode here byte by byte.
 // The post id is a hash of the post, so the link says nothing about who
 // shared it. "day" lets a reader who doesn't hold the thread yet ask peers
 // for that whole stretch of days, the ordinary history request, instead of
@@ -51,6 +55,16 @@ function b64urlDecode(s) {
     return out;
 }
 
+function isInviteKey(s) { return typeof s === "string" && /^[A-Za-z0-9_-]{43}$/.test(s); }
+
+// A forum name from a link: trimmed, no control characters, at most 64
+// characters ("" when nothing is left; the backend checks it again).
+function cleanForumName(raw) {
+    if (typeof raw !== "string") return "";
+    var name = raw.replace(/[\u0000-\u001f\u007f]/g, " ").replace(/\s+/g, " ").trim();
+    return name.length > 64 ? name.substring(0, 64).trim() : name;
+}
+
 function isTopicId(s) { return typeof s === "string" && /^[0-9a-f]{32}$/.test(s); }
 
 // The same rule as forumer_core's normalizeDomains for one tag: lower-case
@@ -83,10 +97,15 @@ function domainLink(domain) {
 }
 
 // Checks an intent payload (or a decoded link). Returns
-// { kind: "topic", topic, day } | { kind: "domain", domain } | null.
+// { kind: "topic", topic, day } | { kind: "domain", domain }
+// | { kind: "invite", key, name } | null.
 // Everything in it is untrusted: anyone can write a link.
 function fromParams(p) {
     if (!p || typeof p !== "object") return null;
+    if (isInviteKey(p.invite)) {
+        var name = cleanForumName(p.name);
+        return { kind: "invite", key: p.invite, name: name.length > 0 ? name : "Private forum" };
+    }
     if (isTopicId(p.topic)) {
         var day = Number(p.day);
         var ok = isFinite(day) && day > 0 && day < 1000000 && Math.floor(day) === day;

@@ -4,7 +4,8 @@ import QtQuick.Layouts
 
 // Home: page title, "new topic", domain chips (filter / follow), and two
 // columns side by side - every domain, and only the ones you follow. Narrow
-// windows stack the columns.
+// windows stack the columns. It shows the current forum: the public one, or
+// a private one (then with its invite link and "leave").
 Item {
     id: home
 
@@ -34,7 +35,9 @@ Item {
                     spacing: 10
                     Text {
                         textFormat: Text.PlainText
-                        text: "home"
+                        Layout.fillWidth: true
+                        text: home.store.inPrivateForum ? home.store.forumName(home.store.currentForum) : "home"
+                        elide: Text.ElideRight
                         font.family: Ui.sans
                         font.pixelSize: Ui.size.page
                         font.weight: Ui.weight.bold
@@ -44,7 +47,9 @@ Item {
                     Text {
                         textFormat: Text.PlainText
                         Layout.fillWidth: true
-                        text: "the public forum. sign as a persona, an alias, or no one at all."
+                        text: home.store.inPrivateForum
+                              ? "a private forum. only people with its invite link can read it - and every one of them can share it on."
+                              : "the public forum. sign as a persona, an alias, or no one at all."
                         wrapMode: Text.WordWrap
                         font.family: Ui.sans
                         font.pixelSize: Ui.size.reading
@@ -60,6 +65,60 @@ Item {
                     enabled: home.store.canCompose
                     onClicked: home.newTopic()
                 }
+            }
+
+            // A private forum: its invite link again, and leaving it.
+            RowLayout {
+                id: forumBar
+                Layout.fillWidth: true
+                Layout.leftMargin: 64
+                Layout.rightMargin: 64
+                Layout.topMargin: -12
+                visible: home.store.inPrivateForum
+                spacing: 12
+                property bool copied: false
+                property bool confirmLeave: false
+                property string error: ""
+                Connections {
+                    target: home.store
+                    function onCurrentForumChanged() { forumBar.confirmLeave = false; forumBar.error = ""; }
+                }
+                FButton {
+                    compact: true
+                    kind: "ghost"
+                    icon: forumBar.copied ? "check" : "link"
+                    text: forumBar.copied ? "invite link copied" : "copy invite link"
+                    tooltip: "Whoever gets this link can read and post here"
+                    onClicked: home.store.privateForumInvite(home.store.currentForum, function (r) {
+                        clipboard.text = r.invite;
+                        clipboard.selectAll();
+                        clipboard.copy();
+                        clipboard.text = "";
+                        forumBar.copied = true;
+                        inviteCopied.restart();
+                    }, function (err) { forumBar.error = err; })
+                    Timer { id: inviteCopied; interval: 1500; onTriggered: forumBar.copied = false }
+                }
+                FButton {
+                    compact: true
+                    kind: "ghost"
+                    text: forumBar.confirmLeave ? "really leave? its posts go from this device" : "leave"
+                    onClicked: {
+                        if (!forumBar.confirmLeave) { forumBar.confirmLeave = true; return; }
+                        forumBar.confirmLeave = false;
+                        home.store.leavePrivateForum(home.store.currentForum, null,
+                                                     function (err) { forumBar.error = err; });
+                    }
+                }
+                FButton {
+                    compact: true
+                    kind: "ghost"
+                    visible: forumBar.confirmLeave
+                    text: "keep"
+                    onClicked: forumBar.confirmLeave = false
+                }
+                Notice { Layout.fillWidth: true; message: forumBar.error }
+                Item { Layout.fillWidth: true; visible: forumBar.error.length === 0 }
             }
 
             // A just-restored account: say why posting waits, and offer to go on.
@@ -177,6 +236,7 @@ Item {
                     items: home.store.allFeed
                     emptyText: home.store.searchText.length > 0 ? "nothing matches."
                                : home.store.domainFilter.length > 0 ? "nothing in #" + home.store.domainFilter + " yet. start the first topic with “new topic”."
+                               : home.store.inPrivateForum ? "no topics here yet - or they're still arriving from the other members. start one with “new topic”."
                                : "no topics yet. start one with “new topic”."
                     onOpenTopic: (id) => home.store.openTopic(id)
                 }

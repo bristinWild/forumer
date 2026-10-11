@@ -18,6 +18,8 @@ jobs:
         run: ./scripts/test-core.sh
       - name: Markdown sanitiser tests
         run: node scripts/test-markdown.mjs
+      - name: Link and invite parser tests
+        run: node scripts/test-links.mjs
 
   module:
     name: module (${{ matrix.os }})

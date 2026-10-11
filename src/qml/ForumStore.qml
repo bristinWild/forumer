@@ -47,6 +47,7 @@ Item {
     readonly property bool   restorePending:     hasBackend && backend.restorePending === true
     readonly property real   awaySinceMs:        hasBackend && backend.awaySinceMs ? Number(backend.awaySinceMs) : 0
     readonly property bool   devMode:            hasBackend && backend.devMode === true
+    readonly property string forumsJson:         hasBackend && backend.forumsJson ? backend.forumsJson : "[]"
     // Fetching older posts: see historyJson in forumer.rep.
     readonly property var history: {
         try { return JSON.parse(store.historyJson); } catch (e) { return {}; }
@@ -93,6 +94,88 @@ Item {
         try { return JSON.parse(store.accountsJson); } catch (e) { return []; }
     }
 
+    // ── Forums ────────────────────────────────────────────────────────────────
+    // "public", or one of the unlocked account's private forums (forums.h in
+    // forumer_core): [{ id, name, joinedMs }]. Home, the composer and the
+    // domain chips show the current one.
+    readonly property bool canUsePrivateForums: hasBackend && typeof backend.createPrivateForum === "function"
+    readonly property var forums: {
+        try { return JSON.parse(store.forumsJson); } catch (e) { return []; }
+    }
+    property string currentForum: "public"
+    readonly property bool inPrivateForum: currentForum !== "public"
+
+    function forumName(id) {
+        if (!id || id === "public") return "public";
+        for (var i = 0; i < store.forums.length; ++i)
+            if (store.forums[i].id === id) return store.forums[i].name;
+        return "a private forum";
+    }
+    function isJoined(id) {
+        if (id === "public") return true;
+        return store.forums.some(function (f) { return f.id === id; });
+    }
+    // `fresh`: just created or joined - the list naming it may arrive a
+    // moment after the reply that says so.
+    function openForum(id, fresh) {
+        store.currentForum = fresh === true || store.isJoined(id) ? id : "public";
+        store.domainFilter = "";
+        store.open("home");
+    }
+
+    // Lock, switch account or leave: posts of forums no longer listed go
+    // from the view (the backend can't open them any more either).
+    // A private forum's post can reach the view a moment before the list
+    // that names its forum: it waits here until the list changes, then it is
+    // shown or dropped.
+    property var parked: []
+    function park(kind, args) {
+        if (store.parked.length < 5000)
+            store.parked.push({ kind: kind, args: Array.prototype.slice.call(args) });
+    }
+    onForumsChanged: {
+        var waiting = store.parked;
+        store.parked = [];
+        waiting.forEach(function (p) {
+            if (!store.isJoined(p.args[8])) return;    // forum is the last argument of both
+            if (p.kind === "topic") store.addTopic.apply(null, p.args);
+            else store.addReply.apply(null, p.args);
+        });
+        var dropped = 0;
+        for (var a in store.topics)
+            if (!store.isJoined(store.topics[a].forum)) { delete store.topics[a]; ++dropped; }
+        for (var b in store.replies)
+            if (!store.isJoined(store.replies[b].forum)) { delete store.replies[b]; ++dropped; }
+        if (!store.isJoined(store.currentForum)) store.currentForum = "public";
+        if (dropped > 0) store.rev++;
+    }
+
+    // The invite link waiting to be joined (JoinForumSheet): { key, name }.
+    property var pendingInvite: null
+
+    function createPrivateForum(name, onOk, onErr) {
+        store.callJson(store.backend.createPrivateForum(name), function (r) {
+            store.openForum(r.id, true);
+            onOk(r);
+        }, onErr);
+    }
+    function joinPrivateForum(key, name, onOk, onErr) {
+        store.callJson(store.backend.joinPrivateForum(key, name), function (r) {
+            store.pendingInvite = null;
+            store.openForum(r.id, true);
+            onOk(r);
+        }, onErr);
+    }
+    function leavePrivateForum(id, onOk, onErr) {
+        store.call(store.backend.leavePrivateForum(id), function () {
+            store.openForum("public");
+            if (onOk) onOk();
+        }, onErr);
+    }
+    function privateForumInvite(id, onOk, onErr) {
+        store.callJson(store.backend.privateForumInvite(id), onOk, onErr);
+    }
+
     // ── Navigation & UI state ─────────────────────────────────────────────────
     // "home" | "thread" | "replies" | "missed" | "mine" | "chats" | "profile" | "settings" | "backup"
     property string screen: "home"
@@ -126,13 +209,20 @@ Item {
     function parseLink(text) { return Links.parse(text); }
     function linkFromParams(params) { return Links.fromParams(params); }
 
-    // Opens a parsed link: { kind: "topic", topic, day } | { kind: "domain", domain }.
+    // Opens a parsed link: { kind: "topic", topic, day } | { kind: "domain", domain }
+    // | { kind: "invite", key, name }.
     function openLink(link) {
         if (!link) return false;
         if (!store.unlocked) { store.pendingLink = link; return true; }
         store.pendingLink = null;
         store.searchText = "";
+        if (link.kind === "invite") {
+            // Never joined silently: JoinForumSheet asks first.
+            store.pendingInvite = { key: link.key, name: link.name };
+            return true;
+        }
         if (link.kind === "domain") {
+            store.currentForum = "public";
             store.domainFilter = link.domain;
             store.open("home");
             return true;
@@ -165,6 +255,8 @@ Item {
 
     function openTopic(id) {
         store.selectedTopicId = id;
+        var t = store.topics[id];
+        if (t && store.isJoined(t.forum)) store.currentForum = t.forum;
         store.replyTargetId = "";
         store.open("thread");
         // Replies to you in this thread: highlight them, and they are now read.
@@ -180,16 +272,19 @@ Item {
 
     // ── Posts ─────────────────────────────────────────────────────────────────
     property int rev: 0
-    property var topics: ({})     // id -> { id, title, body, author, authorKey, domains[], tsMs, delivery, placeholder, live, arrivedMs }
-    property var replies: ({})    // id -> { id, topicId, parentId, body, author, authorKey, tsMs, delivery, live, arrivedMs }
+    property var topics: ({})     // id -> { id, title, body, author, authorKey, domains[], tsMs, delivery, placeholder, live, arrivedMs, forum }
+    property var replies: ({})    // id -> { id, topicId, parentId, body, author, authorKey, tsMs, delivery, live, arrivedMs, forum }
     property var deliveries: ({}) // id -> state, for posts whose state arrives before the post
 
     function nsToMs(ts) { return Math.floor(Number(ts) / 1000000); }
 
-    function addTopic(id, title, body, author, domains, ts, live, authorKey) {
+    function addTopic(id, title, body, author, domains, ts, live, authorKey, forum) {
         var existing = store.topics[id];
         if (existing && !existing.placeholder) return;
+        forum = forum || "public";
+        if (!store.isJoined(forum)) { store.park("topic", arguments); return; }
         store.topics[id] = {
+            forum: forum,
             id: id, title: title, body: body, author: author || "", authorKey: authorKey || "",
             domains: (domains || "").split(",").filter(function (d) { return d.length > 0; }),
             tsMs: store.nsToMs(ts),
@@ -202,9 +297,12 @@ Item {
         store.rev++;
     }
 
-    function addReply(id, topicId, parentId, body, author, ts, live, authorKey) {
+    function addReply(id, topicId, parentId, body, author, ts, live, authorKey, forum) {
         if (store.replies[id]) return;
+        forum = forum || "public";
+        if (!store.isJoined(forum)) { store.park("reply", arguments); return; }
         store.replies[id] = {
+            forum: forum,
             id: id, topicId: topicId, parentId: parentId || topicId, body: body, author: author || "",
             authorKey: authorKey || "",
             tsMs: store.nsToMs(ts),
@@ -215,6 +313,7 @@ Item {
         // A reply can outrun its topic: stand in a placeholder until it arrives.
         if (!store.topics[topicId])
             store.topics[topicId] = {
+                forum: forum,
                 id: topicId, title: "", body: "", author: "", authorKey: "", domains: [], tsMs: store.nsToMs(ts),
                 delivery: "", placeholder: true, live: false, arrivedMs: Date.now()
             };
@@ -238,9 +337,9 @@ Item {
         for (var i = 0; i < list.length; ++i) {
             var e = list[i];
             if (e.kind === "topic")
-                store.addTopic(e.id, e.title, e.body, e.author, e.domains || "", e.ts, false, e.authorKey);
+                store.addTopic(e.id, e.title, e.body, e.author, e.domains || "", e.ts, false, e.authorKey, e.forum);
             else if (e.kind === "reply")
-                store.addReply(e.id, e.topicId, e.parentId || e.topicId, e.body, e.author, e.ts, false, e.authorKey);
+                store.addReply(e.id, e.topicId, e.parentId || e.topicId, e.body, e.author, e.ts, false, e.authorKey, e.forum);
         }
     }
     // A page at a time (review F18), each one a short trip, so a big log
@@ -306,11 +405,12 @@ Item {
     Connections {
         target: store.backend
         ignoreUnknownSignals: true
-        function onTopicReceived(id, title, body, author, domains, timestamp, authorKey) {
-            store.addTopic(id, title, body, author, domains, timestamp, true, authorKey);
+        // `forum` is missing from an older backend's signals: "public".
+        function onTopicReceived(id, title, body, author, domains, timestamp, authorKey, forum) {
+            store.addTopic(id, title, body, author, domains, timestamp, true, authorKey, forum);
         }
-        function onReplyReceived(id, topicId, parentId, body, author, timestamp, authorKey) {
-            store.addReply(id, topicId, parentId, body, author, timestamp, true, authorKey);
+        function onReplyReceived(id, topicId, parentId, body, author, timestamp, authorKey, forum) {
+            store.addReply(id, topicId, parentId, body, author, timestamp, true, authorKey, forum);
         }
         function onMessageStateChanged(id, state, detail) {
             store.log("messageStateChanged -> " + id + " " + state + (detail.length > 0 ? " (" + detail + ")" : ""));
@@ -371,6 +471,7 @@ Item {
         var out = [];
         for (var id in store.topics) {
             var t = store.topics[id];
+            if (t.forum !== store.currentForum) continue;
             if (store.domainFilter.length > 0 && t.domains.indexOf(store.domainFilter) < 0) continue;
             if (followedOnly && !t.domains.some(function (d) { return store.followed.indexOf(d) >= 0; })) continue;
             if (!store.matches(t, query)) continue;
@@ -380,15 +481,16 @@ Item {
         return out.map(store.topicItem);
     }
 
-    readonly property var allFeed: { store.rev; store.tick; store.searchText; store.domainFilter; return store.feed(false); }
-    readonly property var followedFeed: { store.rev; store.tick; store.searchText; store.domainFilter; store.followed; return store.feed(true); }
+    readonly property var allFeed: { store.rev; store.tick; store.searchText; store.domainFilter; store.currentForum; return store.feed(false); }
+    readonly property var followedFeed: { store.rev; store.tick; store.searchText; store.domainFilter; store.currentForum; store.followed; return store.feed(true); }
 
     // Domains in use, most used first (the chip row), followed ones first.
     readonly property var knownDomains: {
-        store.rev;
+        store.rev; store.currentForum;
         var counts = {};
         for (var id in store.topics)
-            store.topics[id].domains.forEach(function (d) { counts[d] = (counts[d] || 0) + 1; });
+            if (store.topics[id].forum === store.currentForum)
+                store.topics[id].domains.forEach(function (d) { counts[d] = (counts[d] || 0) + 1; });
         var names = Object.keys(counts);
         names.sort(function (a, b) { return counts[b] - counts[a] || a.localeCompare(b); });
         return names;
@@ -471,6 +573,11 @@ Item {
         return seen;
     }
 
+    // " · in <forum>" for a private forum's post in lists that mix forums.
+    function forumNote(p) {
+        return p && p.forum && p.forum !== "public" ? " · in " + store.forumName(p.forum) : "";
+    }
+
     function replyAuthor(id) { return store.replies[id] ? store.replies[id].author : ""; }
 
     // Posts written on this device, newest first: [{ id, kind, title, body, delivery, time, topicId }]
@@ -482,7 +589,8 @@ Item {
             var topic = isTopic ? p : store.topics[p.topicId];
             out.push({
                 id: p.id, kind: isTopic ? "topic" : "reply",
-                title: isTopic ? p.title : "reply in “" + (topic && !topic.placeholder ? topic.title : "a topic") + "”",
+                title: (isTopic ? p.title : "reply in “" + (topic && !topic.placeholder ? topic.title : "a topic") + "”")
+                       + store.forumNote(p),
                 body: isTopic ? "" : Md.plain(p.body),
                 delivery: p.delivery,
                 time: store.ago(p.tsMs),
@@ -516,7 +624,8 @@ Item {
                 id: p.id,
                 title: isTopic ? p.title : "reply in “" + (topic && !topic.placeholder ? topic.title : "a topic") + "”",
                 meta: p.author + " · posted " + store.ago(p.tsMs) + " ago · arrived " + store.clock(p.arrivedMs)
-                      + (isTopic && p.domains.length > 0 ? " · " + store.domainsText(p.domains) : ""),
+                      + (isTopic && p.domains.length > 0 ? " · " + store.domainsText(p.domains) : "")
+                      + store.forumNote(p),
                 topicId: isTopic ? p.id : p.topicId,
                 arrivedMs: p.arrivedMs
             });
@@ -556,6 +665,7 @@ Item {
             out.push({
                 id: it.id, topicId: it.topicId, author: r.author, body: Md.plain(r.body),
                 title: t && !t.placeholder ? t.title : "a topic",
+                forumNote: store.forumNote(r),
                 time: store.ago(r.tsMs), direct: it.direct, inMyTopic: it.inMyTopic === true, read: it.read
             });
         });
@@ -695,8 +805,12 @@ Item {
             store.call(store.backend.postAfterRestore());
     }
 
+    // In the current forum. Replies need no forum: they follow their thread.
     function createTopic(title, body, domains, disclosure, onOk, onErr) {
-        store.call(store.backend.createTopic(title, body, domains, disclosure), onOk, onErr);
+        if (store.inPrivateForum)
+            store.call(store.backend.createTopicIn(store.currentForum, title, body, domains, disclosure), onOk, onErr);
+        else
+            store.call(store.backend.createTopic(title, body, domains, disclosure), onOk, onErr);
     }
 
     function sendReply(body, disclosure, onOk, onErr) {

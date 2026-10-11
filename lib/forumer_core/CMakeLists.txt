@@ -59,6 +59,7 @@ add_library(forumer_core STATIC
     src/thread.cpp
     src/flood.cpp
     src/sealed.cpp
+    src/forums.cpp
 )
 
 target_include_directories(forumer_core PUBLIC

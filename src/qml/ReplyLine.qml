@@ -73,7 +73,7 @@ Item {
         Text {
             textFormat: Text.PlainText
             Layout.fillWidth: true
-            text: "in “" + (line.item.title || "") + "” · " + (line.item.time || "")
+            text: "in “" + (line.item.title || "") + "”" + (line.item.forumNote || "") + " · " + (line.item.time || "")
             elide: Text.ElideRight
             font.family: Ui.mono
             font.pixelSize: Ui.size.caption

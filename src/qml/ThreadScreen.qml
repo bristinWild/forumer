@@ -80,7 +80,9 @@ Item {
                         spacing: 8
                         Text {
                             textFormat: Text.PlainText
-                            text: "home"
+                            // The forum the thread is in: "home" for public.
+                            readonly property string forum: thread.topic && thread.topic.forum ? thread.topic.forum : "public"
+                            text: forum === "public" ? "home" : "private · " + thread.store.forumName(forum)
                             font.family: Ui.mono
                             font.pixelSize: Ui.size.small
                             color: crumbMouse.containsMouse ? Ui.text : Ui.text2
@@ -89,7 +91,7 @@ Item {
                                 anchors.fill: parent
                                 hoverEnabled: true
                                 cursorShape: Qt.PointingHandCursor
-                                onClicked: thread.store.open("home")
+                                onClicked: thread.store.openForum(parent.forum)
                             }
                         }
                         Text {
@@ -257,7 +259,9 @@ Item {
                             icon: copied ? "check" : "link"
                             kind: "ghost"
                             implicitHeight: 36
-                            tooltip: "A basecamp:// link to this thread. It names the post, not you."
+                            tooltip: thread.topic && thread.topic.forum && thread.topic.forum !== "public"
+                                     ? "A basecamp:// link to this thread. It opens only for members of " + thread.store.forumName(thread.topic.forum) + "; it is not an invite."
+                                     : "A basecamp:// link to this thread. It names the post, not you."
                             property bool copied: false
                             onClicked: {
                                 clipboard.text = thread.store.topicLink(thread.store.selectedTopicId);

@@ -37,6 +37,7 @@ CREATE INDEX IF NOT EXISTS idx_posts_root ON posts(root);
 CREATE INDEX IF NOT EXISTS idx_posts_author ON posts(author, ts);
 
 CREATE INDEX IF NOT EXISTS idx_posts_parent ON posts(parent);
+CREATE INDEX IF NOT EXISTS idx_posts_forum_ts ON posts(forum, ts);
 )SQL";
 
 // What a device wrote, and which replies an account has read, never touch
@@ -228,7 +229,8 @@ PostStore::~PostStore() { sqlite3_close(db_); }
 
 //  Posts 
 
-PostStore::Insert PostStore::insert(const post::Post& p, int64_t receivedMs) {
+PostStore::Insert PostStore::insert(const post::Post& p, int64_t receivedMs,
+                                    const std::string* storedEnvelope) {
     std::lock_guard lock(mutex_);
     Stmt s(db_,
            "INSERT OR IGNORE INTO posts(id, kind, forum, root, parent, author, ts, received, envelope) "
@@ -241,7 +243,7 @@ PostStore::Insert PostStore::insert(const post::Post& p, int64_t receivedMs) {
         .blob(6, p.publicKey)
         .i64(7, p.content.timestampMs)
         .i64(8, receivedMs)
-        .text(9, p.toJson());
+        .text(9, storedEnvelope ? *storedEnvelope : p.toJson());
     if (s.step() != SQLITE_DONE)
         return Insert::Failed;
     return sqlite3_changes(db_) > 0 ? Insert::Added : Insert::Duplicate;
@@ -279,7 +281,7 @@ std::vector<post::Post> PostStore::all() const {
 PostStore::Page PostStore::page(int64_t afterCursor, size_t limit) const {
     std::lock_guard lock(mutex_);
     Page out;
-    Stmt s(db_, "SELECT rowid, envelope FROM posts WHERE rowid > ?1 ORDER BY rowid ASC LIMIT ?2;");
+    Stmt s(db_, "SELECT rowid, envelope, forum FROM posts WHERE rowid > ?1 ORDER BY rowid ASC LIMIT ?2;");
     s.i64(1, afterCursor).i64(2, static_cast<int64_t>(limit) + 1);
     size_t rows = 0;
     while (s.step() == SQLITE_ROW) {
@@ -288,7 +290,10 @@ PostStore::Page PostStore::page(int64_t afterCursor, size_t limit) const {
             break;
         }
         out.next = s.colI64(0);
-        if (auto p = post::Post::fromJson(s.colText(1)))
+        const std::string forum = s.colText(2);
+        if (forum != "public")
+            out.sealed.push_back({forum, s.colText(1)});
+        else if (auto p = post::Post::fromJson(s.colText(1)))
             out.posts.push_back(std::move(*p));
     }
     if (rows == 0) out.next = afterCursor;
@@ -313,36 +318,60 @@ size_t PostStore::pruneTo(size_t maxPosts) {
     return removed;
 }
 
-std::vector<PostSummary> PostStore::recent(int64_t sinceMs) const {
+std::optional<PostStore::Stored> PostStore::stored(const std::string& id) const {
+    std::lock_guard lock(mutex_);
+    Stmt s(db_, "SELECT forum, envelope FROM posts WHERE id = ?1;");
+    s.text(1, id);
+    if (s.step() != SQLITE_ROW) return std::nullopt;
+    return Stored{s.colText(0), s.colText(1)};
+}
+
+size_t PostStore::removeForum(const std::string& forum) {
+    std::lock_guard lock(mutex_);
+    // The unlocked account's outbox and read marks for them go too (nothing
+    // left to send; exportOwn then saves the account without them).
+    for (const char* sql : {"DELETE FROM own_outbox WHERE post_id IN (SELECT id FROM posts WHERE forum = ?1);",
+                            "DELETE FROM own_read WHERE post_id IN (SELECT id FROM posts WHERE forum = ?1);"}) {
+        Stmt own(db_, sql);
+        own.text(1, forum);
+        own.step();
+    }
+    Stmt s(db_, "DELETE FROM posts WHERE forum = ?1;");
+    s.text(1, forum);
+    return s.step() == SQLITE_DONE ? static_cast<size_t>(sqlite3_changes(db_)) : 0;
+}
+
+std::vector<PostSummary> PostStore::recent(int64_t sinceMs, const std::string& forum) const {
     std::lock_guard lock(mutex_);
     std::vector<PostSummary> out;
-    Stmt s(db_, "SELECT id, ts FROM posts WHERE ts >= ?1 ORDER BY ts DESC, id DESC;");
-    s.i64(1, sinceMs);
+    Stmt s(db_, "SELECT id, ts FROM posts WHERE ts >= ?1 AND forum = ?2 ORDER BY ts DESC, id DESC;");
+    s.i64(1, sinceMs).text(2, forum);
     while (s.step() == SQLITE_ROW)
         out.push_back({s.colText(0), s.colI64(1)});
     return out;
 }
 
-std::vector<PostSummary> PostStore::range(int64_t fromMs, int64_t toMs) const {
+std::vector<PostSummary> PostStore::range(int64_t fromMs, int64_t toMs, const std::string& forum) const {
     std::lock_guard lock(mutex_);
     std::vector<PostSummary> out;
-    Stmt s(db_, "SELECT id, ts FROM posts WHERE ts >= ?1 AND ts < ?2 ORDER BY ts DESC, id DESC;");
-    s.i64(1, fromMs).i64(2, toMs);
+    Stmt s(db_, "SELECT id, ts FROM posts WHERE ts >= ?1 AND ts < ?2 AND forum = ?3 ORDER BY ts DESC, id DESC;");
+    s.i64(1, fromMs).i64(2, toMs).text(3, forum);
     while (s.step() == SQLITE_ROW)
         out.push_back({s.colText(0), s.colI64(1)});
     return out;
 }
 
-size_t PostStore::countRange(int64_t fromMs, int64_t toMs) const {
+size_t PostStore::countRange(int64_t fromMs, int64_t toMs, const std::string& forum) const {
     std::lock_guard lock(mutex_);
-    Stmt s(db_, "SELECT COUNT(*) FROM posts WHERE ts >= ?1 AND ts < ?2;");
-    s.i64(1, fromMs).i64(2, toMs);
+    Stmt s(db_, "SELECT COUNT(*) FROM posts WHERE ts >= ?1 AND ts < ?2 AND forum = ?3;");
+    s.i64(1, fromMs).i64(2, toMs).text(3, forum);
     return s.step() == SQLITE_ROW ? static_cast<size_t>(s.colI64(0)) : 0;
 }
 
-std::optional<int64_t> PostStore::oldestTimestamp() const {
+std::optional<int64_t> PostStore::oldestTimestamp(const std::string& forum) const {
     std::lock_guard lock(mutex_);
-    Stmt s(db_, "SELECT MIN(ts) FROM posts;");
+    Stmt s(db_, "SELECT MIN(ts) FROM posts WHERE forum = ?1;");
+    s.text(1, forum);
     if (s.step() != SQLITE_ROW || sqlite3_column_type(s.raw(), 0) == SQLITE_NULL)
         return std::nullopt;
     return s.colI64(0);

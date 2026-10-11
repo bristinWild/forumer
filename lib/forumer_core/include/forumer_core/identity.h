@@ -75,6 +75,15 @@ struct Persona {
 /// Everything about an account except the master secret, serialised as JSON.
 /// Stored encrypted (see AccountStore): the alias and persona counters say
 /// more about an account than anyone holding the disk should learn.
+/// A private forum this account has joined (forums.h). Kept in the account's
+/// encrypted state: the key is the forum, so it never touches disk in clear.
+struct ForumMembership {
+    std::string id;     // forums::idFor(key)
+    std::string key;    // base64url (forums::keyToText)
+    std::string name;
+    int64_t joinedMs = 0;
+};
+
 struct AccountState {
     std::string id;                       // local id, derived from the master secret
     std::string label;                    // user's name for the account, e.g. "Main"
@@ -86,6 +95,7 @@ struct AccountState {
     std::vector<std::string> followed;    // followed domains, in the order followed
     bool restored = false;                // rebuilt from a phrase; personas still being recovered
     int64_t restoredAtMs = 0;             // when (while `restored`): replies older than this were seen elsewhere
+    std::vector<ForumMembership> forums;  // private forums joined, in the order joined
 
     /// Most domains one account can follow.
     static constexpr size_t kMaxFollowed = 64;
@@ -125,6 +135,12 @@ public:
     bool follow(const std::string& domain);
     void unfollow(const std::string& domain);
     bool isFollowing(const std::string& domain) const;
+
+    /// Join (or rename) a private forum; false when kMaxJoined are joined
+    /// already. leaveForum forgets its key.
+    bool joinForum(ForumMembership forum);
+    void leaveForum(const std::string& id);
+    const ForumMembership* forum(const std::string& id) const;
 
     /// Restore bookkeeping. While restored() is true the account was rebuilt
     /// from its phrase and not every persona it used may be known yet; the

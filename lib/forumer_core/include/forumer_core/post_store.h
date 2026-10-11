@@ -103,7 +103,22 @@ public:
     };
 
     /// Store a (verified) post. First copy wins; later copies are ignored.
-    Insert insert(const post::Post& post, int64_t receivedMs);
+    /// `storedEnvelope`, if given, is kept instead of the post's JSON - a
+    /// private forum's posts are sealed at rest (forums::sealStored).
+    Insert insert(const post::Post& post, int64_t receivedMs,
+                  const std::string* storedEnvelope = nullptr);
+
+    /// The forum and the envelope column of a stored post (sealed for
+    /// private forums), whatever forum it is in.
+    struct Stored {
+        std::string forum;
+        std::string envelope;
+    };
+    std::optional<Stored> stored(const std::string& id) const;
+
+    /// Drop every post of a forum (leaving a private forum), with the loaded
+    /// account's outbox entries and read marks for them. Returns how many posts.
+    size_t removeForum(const std::string& forum);
 
     bool contains(const std::string& id) const;
     std::optional<post::Post> get(const std::string& id) const;
@@ -117,6 +132,7 @@ public:
     /// (0 for the first page). `next` is the cursor for the following page.
     struct Page {
         std::vector<post::Post> posts;
+        std::vector<Stored> sealed;   // rows of private forums, still sealed
         int64_t next = 0;
         bool done = true;
     };
@@ -126,17 +142,20 @@ public:
     /// timestamp) beyond that and compact the file. Returns how many went.
     size_t pruneTo(size_t maxPosts);
 
+    // Sync queries are per forum ("public", or a private forum's id): each
+    // forum's digests list only its own posts.
+
     /// Posts whose author timestamp is >= sinceMs, newest first.
-    std::vector<PostSummary> recent(int64_t sinceMs) const;
+    std::vector<PostSummary> recent(int64_t sinceMs, const std::string& forum = "public") const;
 
     /// Posts dated in [fromMs, toMs), newest first (history windows).
-    std::vector<PostSummary> range(int64_t fromMs, int64_t toMs) const;
+    std::vector<PostSummary> range(int64_t fromMs, int64_t toMs, const std::string& forum = "public") const;
 
     /// How many posts are dated in [fromMs, toMs).
-    size_t countRange(int64_t fromMs, int64_t toMs) const;
+    size_t countRange(int64_t fromMs, int64_t toMs, const std::string& forum = "public") const;
 
     /// The author timestamp of the oldest post held, if any.
-    std::optional<int64_t> oldestTimestamp() const;
+    std::optional<int64_t> oldestTimestamp(const std::string& forum = "public") const;
 
     /// Small persistent settings of the log itself (e.g. how far back the
     /// history is complete). nullopt if unset.

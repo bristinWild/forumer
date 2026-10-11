@@ -45,6 +45,7 @@ Built for [λPrize LP-0026: Forum App](https://github.com/logos-co/lambda-prize/
 | **Disclosure per post** | Post as your persona (`fr:7Q4K-M2XD`), under an alias, or fully anonymously. |
 | **Topics and replies** | Topics tagged with up to 3 domains. Replies nest two levels deep. |
 | **Domains** | Follow the domains you care about; the home page shows *All* and *Followed* side by side. Starter domains (`#logosdevs`, `#lambdabuilders`, `#testnet-help`, `#privacy`, `#tech`) are offered even before anyone has posted in them, and a new topic started from a domain's page is posted there. |
+| **Private forums** | Create a forum only people with its invite link can read. Everything posted there is encrypted on the network with a key that only the link carries; relays and store nodes see ciphertext on an opaque topic. Personas, aliases, anonymous posting and flood limits work as in public. See [Private forums](#private-forums). |
 | **Search** | ⌘K / Ctrl+K searches every post on the device. |
 | **Shareable links** | *copy link* on a thread or a #domain gives a `basecamp://` link. Clicked in a browser or chat app, Basecamp 0.3.1+ opens it in Forumer; pasted into Forumer's search box it works on any version. The link names the post, never who shared it, and a reader who doesn't hold the thread yet asks peers for that whole week of posts, so nobody learns which thread was opened. See [Sharing links](#sharing-links). |
 | **Post status** | Every post you write shows *sending… → live*, or *failed* with retry. |
@@ -155,6 +156,7 @@ This produces a self-contained `.lgx` package for Basecamp's package manager.
 8. **My posts** lists everything this account wrote, whichever persona it used.
 9. **Backup & restore:** show your phrase, or restore an account on another instance.
 10. **Lock** (bottom of the sidebar) locks the account again.
+11. **Private forums:** in the sidebar under *forums*, **new private forum** asks for a name and gives you an invite link to send to the people you want in. They open the link (or paste it into search, or press **join** and paste it), confirm, and the forum appears in their sidebar. On the forum's page, **copy invite link** gives the link again and **leave** removes the forum and its posts from this device.
 
 ### Sharing links
 
@@ -178,7 +180,8 @@ What a link carries, and why it is safe to share:
 | Who shared it | Not in the link. A post id is a hash of the post itself. |
 | Who opened it | No server is involved: the link only tells your own Basecamp what to show. |
 | What the network learns | If you don't hold the thread yet, Forumer asks peers for every post from that day and the week after (the ordinary history range request), not for that one post. |
-| Untrusted input | Anyone can write a link. Basecamp checks the payload against the declared parameters, and Forumer checks it again (`src/qml/links.js`): only a 32-hex id, a day number and a domain name are accepted. |
+| Invite link | `{"invite": "<forum key>", "name": "<forum name>"}`. Unlike the others, an invite is a secret: it **is** the forum's key. |
+| Untrusted input | Anyone can write a link. Basecamp checks the payload against the declared parameters, and Forumer checks it again (`src/qml/links.js`): only a 32-hex id, a day number, a domain name, or a 43-character key with a name are accepted. An invite is never joined without asking. |
 
 ---
 
@@ -216,10 +219,10 @@ forumer/                       (0700; every file below is 0600)
 │   ├── accounts.json          accounts, their names, which one is selected
 │   └── <account id>/
 │       ├── vault.json         master key, encrypted with the password
-│       ├── state.enc          rotation policy, persona counter, alias, followed domains (encrypted)
+│       ├── state.enc          rotation policy, persona counter, alias, followed domains, private forums and their keys (encrypted)
 │       └── own.enc            which posts this account wrote, their send state, replies read (encrypted)
 └── posts/
-    └── posts.sqlite3          every verified post: public data only (at most 50,000; the oldest beyond that are pruned at start)
+    └── posts.sqlite3          every verified post (at most 50,000; the oldest beyond that are pruned at start); a private forum's posts are stored encrypted with its key
 ```
 
 `state.enc` and `own.enc` are encrypted (XChaCha20-Poly1305) under a key derived from the account's master key, bound to the account and to the file's purpose. While an account is locked, nothing on disk says which posts it wrote, links its personas, or reveals its alias; only its name (shown on the lock screen) is readable. The unlocked account's list of its own posts lives in memory only.
@@ -327,7 +330,25 @@ Each reply carries `root` (the topic) and `parent` (what it answers), so anyone 
 /forumer/3/public/proto          (LIP-23 format)
 ```
 
-Every public post goes on one shared topic. Domains are filtered on the device, so the network can't see which domains someone reads.
+Every public post goes on one shared topic. Domains are filtered on the device, so the network can't see which domains someone reads. Each private forum has a topic of its own ([below](#private-forums)).
+
+### Private forums
+
+A private forum is a 32-byte random key, made by whoever creates it and handed to others in an invite link. Everything else follows from the key (`lib/forumer_core/include/forumer_core/forums.h`):
+
+| | |
+|---|---|
+| Forum id | first 8 bytes of BLAKE2b(key), hex - names the forum on this device and in its posts |
+| Content topic | `/forumer/3/pf-<id>/proto` - its own topic, so nothing on the public one changes |
+| On the wire | every message on the topic (posts and digests) is sealed with XChaCha20-Poly1305 under a key derived from the forum key, the forum id bound in |
+| On disk | its posts are stored sealed under a second derived key: `posts.sqlite3` never holds a private forum's text, and while the account is locked nothing on the device can read it |
+| Membership | the key, kept in the account's encrypted `state.enc`; the view shows a forum's posts only while an account that is in it is unlocked |
+
+Inside the seal a post is an ordinary signed post whose `forum` field is the forum id, so personas, aliases, anonymous posting, proof-of-work and flood limits work unchanged. A post is accepted only on its own forum's topic: a member can't move a private post into the public forum, or between forums, by sending it elsewhere.
+
+**History.** Digests repair the last 48 hours inside each forum, exactly as in public. Older posts come from the network's store nodes, which keep the forum's sealed messages like any other (Forumer asks for up to a month, as for the public forum); after joining, Forumer asks them for each forum once the public archive is done. The week-by-week history walk is public-only, so a forum older than what the store nodes kept shows what its members still re-send within 48 hours.
+
+**What it does not do.** Anyone with the link can read and post, and can pass the link on; there is no admin and no way to remove a member. If a link leaks, make a new forum and share the new link. Members can recognise a persona you also use in public - post anonymously or rotate if that matters. The topic name and message timing are visible on the network, as for any Waku traffic. Memberships live in the account's state on this device: restoring an account from its recovery phrase on another device brings back its personas, not its forums - ask for the links again.
 
 ### Which network
 
@@ -435,6 +456,7 @@ Proof-of-work hashes the whole post on every try, so a long post costs more to m
 | Links you click | Opening a link in a post visits that site from your own connection. Images and HTML in posts are never loaded, so merely reading a post contacts no one. |
 | A compromised device while unlocked | Malware can read the unlocked key. |
 | Deleting posts | Nothing published peer to peer can be reliably deleted, so Forumer doesn't offer delete. |
+| A leaked invite link | Whoever has a private forum's link can read it - including everything the store nodes kept - and post. Links can't be revoked; replace the forum instead. |
 | Honest clocks | `ts` is set by the author; ordering is best-effort (future dates are capped). |
 
 ---
@@ -486,7 +508,8 @@ forumer/
 
 | Layer | What | How |
 |---|---|---|
-| Unit | crypto, vault, recovery phrase, personas and rotation, account store, envelope signing and verification, PoW, post log and outbox, sync rules (digests, answers, retry backoff), thread placement, flood limits | `./scripts/test-core.sh` |
+| Unit | crypto, vault, recovery phrase, personas and rotation, account store, envelope signing and verification, PoW, post log and outbox, sync rules (digests, answers, retry backoff), thread placement, flood limits, private forums (keys, sealing on the wire and at rest, memberships) | `./scripts/test-core.sh` |
+| View | Markdown sanitiser; link and invite parsing | `node scripts/test-markdown.mjs`, `node scripts/test-links.mjs` |
 | End to end | post → received; nested replies; offline → catch-up; outbox retry; hourly limits; restore | `./scripts/two-instances.sh` (needs the live `logos.dev` network) |
 | CI | GitHub Actions on every push: the `forumer_core` unit tests, then the full module build on Linux (Ubuntu 24.04) and macOS 14 | `.github/workflows/ci.yml` |
 
@@ -531,6 +554,7 @@ Backend logs are prefixed `[forumer backend]` on the host's stderr.
 - [x] Replies to you: unread badge, list, in-thread highlight, notice
 - [x] Markdown formatting with toolbar and preview; user text never rendered as HTML
 - [x] Shareable `basecamp://` links to threads and domains
+- [x] Private forums with invite links (sealed on the wire and at rest)
 - [ ] Media attachments through Logos Storage
 - [ ] Private messages between personas
 - [ ] Mute a persona / hide a post
@@ -542,7 +566,7 @@ Backend logs are prefixed `[forumer backend]` on the host's stderr.
 - [x] 0.3 module stack (builder 0.3.2, delivery v0.3.0, storage v3.0.0); network choice logos.dev / logos.test
 - [x] Storage file sharing between two nodes on storage v3 (both directions, 73–83 s per fetch)
 - [ ] Storage between two different home networks
-- Later: private forums with invite links; history snapshots and media through Logos Storage; RLN memberships for `logos.test` users
+- Later: history snapshots through Logos Storage; RLN memberships for `logos.test` users
 
 ---
 
