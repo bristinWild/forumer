@@ -500,6 +500,22 @@ Proof-of-work hashes the whole post on every try, so a long post costs more to m
 
 ---
 
+### Security review fixes (0.2.3)
+
+All 18 findings from the code review of 0.2.2 are fixed in 0.2.3:
+
+| Area | Fix |
+|---|---|
+| Anonymous posts | A fresh one-time key per anonymous post, never reused, including after a restore. |
+| Restore | Restoring an account can't clash with or overwrite another account's data, and the app says what was restored. |
+| Your own posts | The outbox and "my posts" list are encrypted on disk and kept per account, so the file no longer links posts to an account. Files are created owner-only. |
+| Flood control | Proof-of-work and hourly limits per persona and per account, a limit on what is accepted from the network, and a quota counter in the composer. |
+| Markdown | Post text goes through a sanitiser; HTML and remote images in posts are never loaded. |
+| Long threads | Threads page in, instead of loading everything at once. |
+| Responsiveness | Crypto and database work run on a worker thread, not the UI thread. |
+
+---
+
 ## 11. Repository layout
 
 ```
