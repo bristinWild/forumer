@@ -12,6 +12,12 @@ bool withinLimit(post::Kind kind, size_t alreadyInWindow) {
     return alreadyInWindow < static_cast<size_t>(maxPerWindow(kind));
 }
 
+int maxPerArrival(post::Kind kind) { return kArrivalFactor * maxPerWindow(kind); }
+
+int maxPerDay(post::Kind kind) {
+    return kind == post::Kind::Post ? kMaxTopicsPerDay : kMaxRepliesPerDay;
+}
+
 int64_t waitMs(post::Kind kind, const std::vector<int64_t>& timestampsInWindow, int64_t nowMs) {
     const size_t limit = static_cast<size_t>(maxPerWindow(kind));
     if (timestampsInWindow.size() < limit) return 0;

@@ -10,6 +10,17 @@ class Forumer
     // "persona" | "alias" | "anonymous", or "" for the account default.
     SLOT(QString createTopic(QString title, QString body, QString domains, QString disclosure))
 
+    // The same in forum `forum`: "public", or the id of a private forum the
+    // unlocked account is in. Replies need no forum: they stay in the forum
+    // of the post they answer.
+    SLOT(QString createTopicIn(QString forum, QString title, QString body, QString domains, QString disclosure))
+
+    // The same with images: `attachments` names the composer ("topic",
+    // "reply") whose attached images go with the post - all of them must be
+    // "ready" (see mediaJson). "" = no images.
+    SLOT(QString postTopic(QString forum, QString title, QString body, QString domains, QString disclosure, QString attachments))
+    SLOT(QString postReply(QString postId, QString body, QString disclosure, QString attachments))
+
     // Reply to a topic (by its id). `disclosure` as above.
     SLOT(QString replyToTopic(QString topicId, QString body, QString disclosure))
 
@@ -23,7 +34,11 @@ class Forumer
     // first and oldest first within each kind:
     //   [{"kind":"topic","id":…,"title":…,"body":…,"author":…,"domains":…,"ts":…}, …]
     // Replies carry "topicId" and "parentId" (= topicId for level-1 replies).
-    // `author` is the display form (fingerprint, alias, or "Anonymous").
+    // Entries carry "media" as in topicReceived.
+    // Every entry carries "forum" ("public" or a private forum's id); posts of
+    // private forums appear only while their account is unlocked.
+    // `author` is the display form (fingerprint, alias, or "Anonymous");
+    // `authorKey` the signing persona's public key (hex).
     // Posts this device wrote also carry "state": "pending" | "sent" | "failed".
     //
     // A SLOT rather than a startup SIGNAL on purpose. The backend finishes its
@@ -31,6 +46,11 @@ class Forumer
     // forwards a signal only to replicas attached at the moment it is emitted
     // — there is no replay for a late joiner.
     SLOT(QString loadBacklog())
+
+    // The same, a page at a time (review F18), so a big log never crosses as
+    // one huge string: {"posts": [ … as above … ], "cursor": "…", "done": bool}.
+    // Start with cursor "", pass back the returned one until done.
+    SLOT(QString loadBacklogPage(QString cursor))
 
     // ── Sync ──────────────────────────────────────────────────────────────────
     // Posts travel on one content topic per forum; gaps are repaired by
@@ -53,6 +73,59 @@ class Forumer
     // range request the history walk sends, so nobody learns which thread
     // was opened. The posts arrive through topicReceived / replyReceived.
     SLOT(QString fetchAround(qint64 day))
+
+    // ── Private forums ────────────────────────────────────────────────────────
+    // A private forum is a key (forumer_core/forums.h): whoever holds its
+    // invite link can read and post; everything on its topic is sealed with
+    // it. Memberships belong to the unlocked account (kept in its vault).
+
+    // New forum named `name`. Returns JSON {"error": "", "id": …, "invite": link}.
+    SLOT(QString createPrivateForum(QString name))
+
+    // Join from an invite: `key` and `name` as carried in the link. Returns
+    // JSON {"error": "", "id": …, "name": …}. Joining one already joined
+    // just renames it.
+    SLOT(QString joinPrivateForum(QString key, QString name))
+
+    // Leave: the membership and the forum's posts on this device go. "" on success.
+    SLOT(QString leavePrivateForum(QString id))
+
+    // The invite link of a joined forum, to share again: {"error": "", "invite": link}.
+    SLOT(QString privateForumInvite(QString id))
+
+    // ── Images (forumer_core/media.h) ─────────────────────────────────────────
+    // Pictures are re-encoded (metadata stripped), sealed and uploaded to
+    // Logos Storage while the post is being written; the post carries their
+    // CIDs. Nothing is fetched until the reader asks (loadMedia).
+
+    // Attach the image at `path` (a path or file:// URL) to composer `group`
+    // ("topic" | "reply"), sealed for `forum`. "" on success; it then shows in
+    // mediaJson and uploads in the background (starting the storage node).
+    SLOT(QString attachImage(QString group, QString forum, QString path))
+    SLOT(QString removeAttachment(QString group, QString id))
+    SLOT(QString retryAttachment(QString group, QString id))
+    SLOT(QString clearAttachments(QString group))
+
+    // Open the system's file picker (a separate program, so it can't take
+    // the view down) and attach what is chosen, as attachImage does. "" if it
+    // opened; mediaJson "picking" names the composer while it is open.
+    SLOT(QString pickImages(QString group, QString forum))
+
+    // Fetch image `index` of post `postId`. "" if started (or already here);
+    // the outcome arrives as mediaLoaded.
+    SLOT(QString loadMedia(QString postId, int index))
+
+    // Whether images this device fetched are announced and served to others.
+    SLOT(QString chooseMediaRehost(bool on))
+
+    // A thread showing image `index` of `postId` is on screen: shows what is
+    // here already (mediaLoaded "done", or "preview" with the preview's data:
+    // URL - no network), asks the forum for the preview if it's missing, and
+    // fetches the full image when mediaAutoFull is on.
+    SLOT(QString showMedia(QString postId, int index))
+
+    // Fetch full images automatically when their thread opens (default on).
+    SLOT(QString chooseMediaAutoFull(bool on))
 
     // ── Identity ──────────────────────────────────────────────────────────────
     // Accounts are master secrets kept in password-protected vaults on this
@@ -84,8 +157,14 @@ class Forumer
     SLOT(QString renameAccount(QString label))
 
     // Remove the unlocked account from this device (password re-entered as
-    // confirmation). Irreversible without the recovery phrase.
+    // confirmation). Irreversible without the recovery phrase. Its outbox
+    // goes with it: unsent posts are not sent.
     SLOT(QString deleteAccount(QString password))
+
+    // A restored account holds posting until its history has arrived (see
+    // restorePending). This is "post anyway": the user accepts that a persona
+    // they rotated away from may be used again. "" on success.
+    SLOT(QString postAfterRestore())
 
     // ── Persona controls ──────────────────────────────────────────────────────
     SLOT(QString rotatePersona())                       // "Rotate now"
@@ -136,8 +215,21 @@ class Forumer
     // The content topic this forum runs on (for display).
     PROP(QString topic="" READONLY)
 
-    // Posts of ours not yet confirmed by the network (pending or failed).
+    // The unlocked account's posts not yet confirmed by the network (pending
+    // or failed). 0 while locked.
     PROP(int unsentCount=0 READONLY)
+
+    // Delivery state of every post the unlocked account wrote:
+    //   {"<post id>": "pending" | "sent" | "failed", …}
+    // "{}" while locked. Replaces whatever the view marked as its own: this
+    // is the only list of "my posts", and it belongs to one account.
+    PROP(QString ownStatesJson="{}" READONLY)
+
+    // The unlocked account was rebuilt from its recovery phrase on this
+    // device and its history is still arriving: posting now could reuse a
+    // persona it rotated away from. Clears itself once history has synced
+    // from at least one peer, or with postAfterRestore().
+    PROP(bool restorePending=false READONLY)
 
     // One line about sync for the status bar, e.g. "synced 14:02 · 3 recovered".
     PROP(QString syncInfo="" READONLY)
@@ -185,13 +277,38 @@ class Forumer
     // "[]" while locked.
     PROP(QString inboxJson="[]" READONLY)
 
+    // The unlocked account's private forums: [{"id":…, "name":…, "joinedMs":…}, …].
+    // "[]" while locked; the view drops posts of forums not listed here.
+    PROP(QString forumsJson="[]" READONLY)
+
+    // Images being attached, and the storage node they upload through:
+    //   {"storage": "off"|"starting"|"running"|"failed", "detail": "…",
+    //    "attachments": [{"id", "group", "forum", "name", "state": "queued"|
+    //      "uploading"|"ready"|"failed", "error", "progress", "thumb" (data:
+    //      URL), "mime", "size", "width", "height"}, …],
+    //    "picker": a system file picker exists, "picking": composer whose
+    //    picker is open (or ""), "notice"/"noticeGroup": why a picked file
+    //    couldn't be attached}
+    PROP(QString mediaJson="{}" READONLY)
+
+    // Fetched images are announced and served to others (default on).
+    PROP(bool mediaRehost=true READONLY)
+    PROP(bool mediaAutoFull=true READONLY)
+
     // Fetching older posts (forumer_core/sync.h, "History"):
     //   {"floorMs": complete back to here, "targetMs": oldest post peers know
     //    of (0: unknown), "active": bool, "fromMs"/"toMs": window being
     //    fetched, "received": older posts that arrived this session}
     PROP(QString historyJson="{}" READONLY)
 
-    // The storage probe, for Settings:
+    // When this device was last online and syncing before this session (ms;
+    // 0 = never: a new device). "Missed" lists only posts written since then.
+    PROP(qint64 awaySinceMs=0 READONLY)
+
+    // Developer tools (the storage probe) are on: FORUMER_DEV=1 at launch.
+    PROP(bool devMode=false READONLY)
+
+    // The storage probe, for Settings (developer mode only):
     //   {"state": "off"|"starting"|"running"|"failed", "detail": "…",
     //    "attached": bool, "peerId": "…", "reachability": "Reachable"|…,
     //    "peers": n, "sharing": bool, "lastCid": "…", "shareCode": "…",
@@ -202,15 +319,28 @@ class Forumer
     // ── Events ────────────────────────────────────────────────────────────────
     // A verified topic arrived (or was just created locally). `author` is the
     // display form; `domains` comma-separated; `timestamp` ns since epoch
-    // (the author's clock).
-    SIGNAL(topicReceived(QString id, QString title, QString body, QString author, QString domains, qint64 timestamp))
+    // (the author's clock); `authorKey` the signing persona's public key
+    // (hex) - compare authors by this, never by the display text. `forum`:
+    // "public" or a private forum's id.
+    // `media`: its images, [{"mime", "size", "ok"}] ("ok": one this version shows).
+    SIGNAL(topicReceived(QString id, QString title, QString body, QString author, QString domains, qint64 timestamp, QString authorKey, QString forum, QString media))
 
     // A verified reply in topic `topicId`, answering `parentId` (the topic
     // itself for a level-1 reply, a level-1 reply for a level-2 one).
-    SIGNAL(replyReceived(QString id, QString topicId, QString parentId, QString body, QString author, qint64 timestamp))
+    SIGNAL(replyReceived(QString id, QString topicId, QString parentId, QString body, QString author, qint64 timestamp, QString authorKey, QString forum, QString media))
 
-    // Delivery state of a post *this* install made: "pending", "propagated",
-    // "sent" or "failed" (reason in `detail`). Failed posts stay in the outbox
-    // and are retried automatically, so "failed" can later become "sent".
+    // An image asked for with loadMedia / showMedia: "preview" (`detail`: its
+    // data: URL, while the full one is on its way), "starting" (storage node on
+    // its way), "fetching" (`detail`: percent, or ""), "done" (`detail`: a
+    // data: URL of the checked image) or "failed" (`detail`: why).
+    SIGNAL(mediaLoaded(QString postId, int index, QString state, QString detail))
+
+    // The preview of image `index` of `postId` arrived (call showMedia again).
+    SIGNAL(previewReady(QString postId, int index))
+
+    // Delivery state of a post the unlocked account made: "pending",
+    // "propagated", "sent" or "failed" (reason in `detail`). Failed posts stay
+    // in the outbox and are retried automatically (while the account is
+    // unlocked), so "failed" can later become "sent".
     SIGNAL(messageStateChanged(QString id, QString state, QString detail))
 }

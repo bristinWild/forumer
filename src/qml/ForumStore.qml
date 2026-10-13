@@ -41,6 +41,16 @@ Item {
     readonly property string quotaJson:          hasBackend && backend.quotaJson ? backend.quotaJson : "{}"
     readonly property string inboxJson:          hasBackend && backend.inboxJson ? backend.inboxJson : "[]"
     readonly property string historyJson:        hasBackend && backend.historyJson ? backend.historyJson : "{}"
+    // The unlocked account's own posts and their delivery state; "{}" while
+    // locked. The one source of "my posts" (see applyOwnStates).
+    readonly property string ownStatesJson:      hasBackend && backend.ownStatesJson ? backend.ownStatesJson : "{}"
+    readonly property bool   restorePending:     hasBackend && backend.restorePending === true
+    readonly property real   awaySinceMs:        hasBackend && backend.awaySinceMs ? Number(backend.awaySinceMs) : 0
+    readonly property bool   devMode:            hasBackend && backend.devMode === true
+    readonly property string forumsJson:         hasBackend && backend.forumsJson ? backend.forumsJson : "[]"
+    readonly property string mediaJson:          hasBackend && backend.mediaJson ? backend.mediaJson : "{}"
+    readonly property bool   mediaRehost:        hasBackend && backend.mediaRehost !== false
+    readonly property bool   mediaAutoFull:      hasBackend && backend.mediaAutoFull !== false
     // Fetching older posts: see historyJson in forumer.rep.
     readonly property var history: {
         try { return JSON.parse(store.historyJson); } catch (e) { return {}; }
@@ -53,20 +63,25 @@ Item {
 
     // What's left of this account's hourly limits:
     //   { topics: {left, max, waitMin}, replies: {left, max, waitMin} }
-    // Empty objects until the backend reports (QuotaLine hides itself then).
+    // Until the backend reports, the full limits (forumer_core/flood.h) - so
+    // the quota line is there from the first look, not a moment later (F15).
     readonly property var quota: {
+        const full = { topics: { left: 10, max: 10, waitMin: 0 }, replies: { left: 60, max: 60, waitMin: 0 } };
         try {
             const q = JSON.parse(quotaJson);
-            return { topics: q.topics || ({}), replies: q.replies || ({}) };
+            return { topics: q.topics || full.topics, replies: q.replies || full.replies };
         } catch (e) {
-            return { topics: ({}), replies: ({}) };
+            return full;
         }
     }
     readonly property bool topicsLeft:  quota.topics.left  === undefined || quota.topics.left  > 0
     readonly property bool repliesLeft: quota.replies.left === undefined || quota.replies.left > 0
 
     readonly property bool unlocked: identityState === "unlocked"
-    readonly property bool canPost: nodeReady && unlocked
+    // canCompose: the composers open (the restore notice lives in them);
+    // canPost: posting itself, which also waits for a just-restored account.
+    readonly property bool canCompose: nodeReady && unlocked
+    readonly property bool canPost: canCompose && !restorePending
     readonly property bool connected: status === "Connected" || status === "PartiallyConnected"
 
     // Replying to a reply needs the backend's replyToPost; an older backend
@@ -80,6 +95,168 @@ Item {
 
     readonly property var accounts: {
         try { return JSON.parse(store.accountsJson); } catch (e) { return []; }
+    }
+
+    // ── Forums ────────────────────────────────────────────────────────────────
+    // "public", or one of the unlocked account's private forums (forums.h in
+    // forumer_core): [{ id, name, joinedMs }]. Home, the composer and the
+    // domain chips show the current one.
+    readonly property bool canUsePrivateForums: hasBackend && typeof backend.createPrivateForum === "function"
+    readonly property var forums: {
+        try { return JSON.parse(store.forumsJson); } catch (e) { return []; }
+    }
+    property string currentForum: "public"
+    readonly property bool inPrivateForum: currentForum !== "public"
+
+    function forumName(id) {
+        if (!id || id === "public") return "public";
+        for (var i = 0; i < store.forums.length; ++i)
+            if (store.forums[i].id === id) return store.forums[i].name;
+        return "a private forum";
+    }
+    function isJoined(id) {
+        if (id === "public") return true;
+        return store.forums.some(function (f) { return f.id === id; });
+    }
+    // `fresh`: just created or joined - the list naming it may arrive a
+    // moment after the reply that says so.
+    function openForum(id, fresh) {
+        store.currentForum = fresh === true || store.isJoined(id) ? id : "public";
+        store.domainFilter = "";
+        store.open("home");
+    }
+
+    // Lock, switch account or leave: posts of forums no longer listed go
+    // from the view (the backend can't open them any more either).
+    // A private forum's post can reach the view a moment before the list
+    // that names its forum: it waits here until the list changes, then it is
+    // shown or dropped.
+    property var parked: []
+    function park(kind, args) {
+        if (store.parked.length < 5000)
+            store.parked.push({ kind: kind, args: Array.prototype.slice.call(args) });
+    }
+    onForumsChanged: {
+        var waiting = store.parked;
+        store.parked = [];
+        waiting.forEach(function (p) {
+            if (!store.isJoined(p.args[8])) return;    // forum: the 9th argument of both
+            if (p.kind === "topic") store.addTopic.apply(null, p.args);
+            else store.addReply.apply(null, p.args);
+        });
+        var dropped = 0;
+        for (var a in store.topics)
+            if (!store.isJoined(store.topics[a].forum)) { delete store.topics[a]; ++dropped; }
+        for (var b in store.replies)
+            if (!store.isJoined(store.replies[b].forum)) { delete store.replies[b]; ++dropped; }
+        if (!store.isJoined(store.currentForum)) store.currentForum = "public";
+        if (dropped > 0) store.rev++;
+    }
+
+    // The invite link waiting to be joined (JoinForumSheet): { key, name }.
+    property var pendingInvite: null
+
+    function createPrivateForum(name, onOk, onErr) {
+        store.callJson(store.backend.createPrivateForum(name), function (r) {
+            store.openForum(r.id, true);
+            onOk(r);
+        }, onErr);
+    }
+    function joinPrivateForum(key, name, onOk, onErr) {
+        store.callJson(store.backend.joinPrivateForum(key, name), function (r) {
+            store.pendingInvite = null;
+            store.openForum(r.id, true);
+            onOk(r);
+        }, onErr);
+    }
+    function leavePrivateForum(id, onOk, onErr) {
+        store.call(store.backend.leavePrivateForum(id), function () {
+            store.openForum("public");
+            if (onOk) onOk();
+        }, onErr);
+    }
+    function privateForumInvite(id, onOk, onErr) {
+        store.callJson(store.backend.privateForumInvite(id), onOk, onErr);
+    }
+
+    // ── Images (forumer_core/media.h) ─────────────────────────────────────────
+    readonly property bool canAttachImages: hasBackend && typeof backend.attachImage === "function"
+    // { storage: "off"|"starting"|"running"|"failed", detail, attachments: [...] }
+    readonly property var media: {
+        try { return JSON.parse(store.mediaJson); } catch (e) { return {}; }
+    }
+    readonly property string storageState: store.media.storage || "off"
+    // Attachments of one composer ("topic" | "reply").
+    function attachments(group) {
+        return (store.media.attachments || []).filter(function (a) { return a.group === group; });
+    }
+    // Whether a composer's images let it post: none, or all uploaded.
+    function attachmentsReady(group) {
+        return store.attachments(group).every(function (a) { return a.state === "ready"; });
+    }
+    function attachmentNote(group) {
+        var list = store.attachments(group);
+        if (list.length === 0) return "";
+        var waiting = list.filter(function (a) { return a.state !== "ready"; }).length;
+        if (list.some(function (a) { return a.state === "failed"; }))
+            return "an image couldn't be uploaded - retry or remove it";
+        if (waiting === 0) return list.length === 1 ? "image ready" : list.length + " images ready";
+        if (store.storageState === "starting" || store.storageState === "off")
+            return "starting the storage node (about 2 minutes the first time) - images upload once it runs";
+        if (store.storageState === "failed")
+            return "the storage node didn't start: " + (store.media.detail || "") + " - press retry on an image";
+        return "uploading " + waiting + (waiting === 1 ? " image" : " images") + " - you can post once done";
+    }
+    function attachImage(group, forum, path, onErr) {
+        store.call(store.backend.attachImage(group, forum, String(path)), null, onErr);
+    }
+    function removeAttachment(group, id) { store.call(store.backend.removeAttachment(group, id)); }
+    function retryAttachment(group, id) { store.call(store.backend.retryAttachment(group, id)); }
+    function clearAttachments(group) {
+        if (store.canAttachImages) store.call(store.backend.clearAttachments(group));
+    }
+    function chooseMediaRehost(on) { store.call(store.backend.chooseMediaRehost(on)); }
+    function chooseMediaAutoFull(on) { store.call(store.backend.chooseMediaAutoFull(on)); }
+
+    // Images in posts: "<postId>:<index>" -> { state: "idle"|"preview"|"starting"|"fetching"|"done"|"failed",
+    // detail, startedMs, previewUrl }. showMedia (a thread on screen) shows
+    // what this device has - the full image or its preview - and fetches the
+    // rest; loadMedia (a click) fetches the full image.
+    property var mediaStates: ({})
+    property int mediaRev: 0
+    function mediaState(postId, index) {
+        store.mediaRev;
+        return store.mediaStates[postId + ":" + index] || { state: "idle", detail: "" };
+    }
+    function loadMedia(postId, index) {
+        var key = postId + ":" + index;
+        var prev = store.mediaStates[key] || {};
+        store.mediaStates[key] = { state: "starting", detail: "", startedMs: Date.now(), previewUrl: prev.previewUrl };
+        store.mediaRev++;
+        store.call(store.backend.loadMedia(postId, index), null, function (err) {
+            store.mediaStates[key] = { state: "failed", detail: String(err), previewUrl: prev.previewUrl };
+            store.mediaRev++;
+        });
+    }
+    function showMedia(postId, index) {
+        var key = postId + ":" + index;
+        store.log("media " + postId.substring(0, 8) + ":" + index + " on screen" + (store.mediaStates[key] ? " (already " + store.mediaStates[key].state + ")" : ""));
+        if (store.mediaStates[key] || !store.hasBackend || typeof store.backend.showMedia !== "function") return;
+        store.mediaStates[key] = { state: "idle", detail: "" };
+        store.mediaRev++;
+        store.call(store.backend.showMedia(postId, index), null, function (e) { store.log("showMedia: " + e); });
+    }
+    function parseMedia(json) {
+        try { var list = JSON.parse(json || "[]"); return Array.isArray(list) ? list : []; }
+        catch (e) { return []; }
+    }
+    function mediaNote(list) {
+        return list && list.length > 0 ? (list.length === 1 ? "1 image" : list.length + " images") : "";
+    }
+    function sizeText(bytes) {
+        var n = Number(bytes) || 0;
+        if (n >= 1024 * 1024) return (n / 1024 / 1024).toFixed(1) + " MB";
+        return Math.max(1, Math.round(n / 1024)) + " KB";
     }
 
     // ── Navigation & UI state ─────────────────────────────────────────────────
@@ -115,13 +292,20 @@ Item {
     function parseLink(text) { return Links.parse(text); }
     function linkFromParams(params) { return Links.fromParams(params); }
 
-    // Opens a parsed link: { kind: "topic", topic, day } | { kind: "domain", domain }.
+    // Opens a parsed link: { kind: "topic", topic, day } | { kind: "domain", domain }
+    // | { kind: "invite", key, name }.
     function openLink(link) {
         if (!link) return false;
         if (!store.unlocked) { store.pendingLink = link; return true; }
         store.pendingLink = null;
         store.searchText = "";
+        if (link.kind === "invite") {
+            // Never joined silently: JoinForumSheet asks first.
+            store.pendingInvite = { key: link.key, name: link.name };
+            return true;
+        }
         if (link.kind === "domain") {
+            store.currentForum = "public";
             store.domainFilter = link.domain;
             store.open("home");
             return true;
@@ -154,6 +338,8 @@ Item {
 
     function openTopic(id) {
         store.selectedTopicId = id;
+        var t = store.topics[id];
+        if (t && store.isJoined(t.forum)) store.currentForum = t.forum;
         store.replyTargetId = "";
         store.open("thread");
         // Replies to you in this thread: highlight them, and they are now read.
@@ -169,17 +355,21 @@ Item {
 
     // ── Posts ─────────────────────────────────────────────────────────────────
     property int rev: 0
-    property var topics: ({})     // id -> { id, title, body, author, domains[], tsMs, delivery, placeholder, live, arrivedMs }
-    property var replies: ({})    // id -> { id, topicId, parentId, body, author, tsMs, delivery, live, arrivedMs }
+    property var topics: ({})     // id -> { id, title, body, author, authorKey, domains[], tsMs, delivery, placeholder, live, arrivedMs, forum }
+    property var replies: ({})    // id -> { id, topicId, parentId, body, author, authorKey, tsMs, delivery, live, arrivedMs, forum }
     property var deliveries: ({}) // id -> state, for posts whose state arrives before the post
 
     function nsToMs(ts) { return Math.floor(Number(ts) / 1000000); }
 
-    function addTopic(id, title, body, author, domains, ts, live) {
+    function addTopic(id, title, body, author, domains, ts, live, authorKey, forum, media) {
         var existing = store.topics[id];
         if (existing && !existing.placeholder) return;
+        forum = forum || "public";
+        if (!store.isJoined(forum)) { store.park("topic", arguments); return; }
         store.topics[id] = {
-            id: id, title: title, body: body, author: author || "",
+            forum: forum,
+            media: store.parseMedia(media),
+            id: id, title: title, body: body, author: author || "", authorKey: authorKey || "",
             domains: (domains || "").split(",").filter(function (d) { return d.length > 0; }),
             tsMs: store.nsToMs(ts),
             delivery: store.deliveries[id] || "",
@@ -191,10 +381,15 @@ Item {
         store.rev++;
     }
 
-    function addReply(id, topicId, parentId, body, author, ts, live) {
+    function addReply(id, topicId, parentId, body, author, ts, live, authorKey, forum, media) {
         if (store.replies[id]) return;
+        forum = forum || "public";
+        if (!store.isJoined(forum)) { store.park("reply", arguments); return; }
         store.replies[id] = {
+            forum: forum,
+            media: store.parseMedia(media),
             id: id, topicId: topicId, parentId: parentId || topicId, body: body, author: author || "",
+            authorKey: authorKey || "",
             tsMs: store.nsToMs(ts),
             delivery: store.deliveries[id] || "",
             live: live === true,
@@ -203,7 +398,8 @@ Item {
         // A reply can outrun its topic: stand in a placeholder until it arrives.
         if (!store.topics[topicId])
             store.topics[topicId] = {
-                id: topicId, title: "", body: "", author: "", domains: [], tsMs: store.nsToMs(ts),
+                forum: forum, media: [],
+                id: topicId, title: "", body: "", author: "", authorKey: "", domains: [], tsMs: store.nsToMs(ts),
                 delivery: "", placeholder: true, live: false, arrivedMs: Date.now()
             };
         store.rev++;
@@ -222,23 +418,46 @@ Item {
     // de-duplicated by id.
     property bool backlogLoaded: false
     property bool viewReady: false          // set by Main once the replica is connected
+    function addBacklogEntries(list) {
+        for (var i = 0; i < list.length; ++i) {
+            var e = list[i];
+            if (e.kind === "topic")
+                store.addTopic(e.id, e.title, e.body, e.author, e.domains || "", e.ts, false, e.authorKey, e.forum, e.media);
+            else if (e.kind === "reply")
+                store.addReply(e.id, e.topicId, e.parentId || e.topicId, e.body, e.author, e.ts, false, e.authorKey, e.forum, e.media);
+        }
+    }
+    // A page at a time (review F18), each one a short trip, so a big log
+    // never crosses as one huge string and the view stays usable meanwhile.
     function loadBacklog() {
         if (store.backlogLoaded || !store.hasBackend || !store.viewReady || !store.nodeReady) return;
         store.backlogLoaded = true;
+        var total = 0;
+        var paged = typeof store.backend.loadBacklogPage === "function";
+        function next(cursor) {
+            logos.watch(store.backend.loadBacklogPage(cursor), function (json) {
+                var page = {};
+                try { page = JSON.parse(json); } catch (e) {
+                    store.log("could not parse a backlog page: " + e);
+                    return;
+                }
+                store.addBacklogEntries(page.posts || []);
+                total += (page.posts || []).length;
+                if (!page.done && page.cursor !== cursor) { next(page.cursor); return; }
+                store.applyOwnStates();
+                store.log("backlog restored: " + total + " post(s)");
+            }, function (err) {
+                store.log("backlog load failed: " + err);
+                store.backlogLoaded = false;
+            });
+        }
+        if (paged) { next(""); return; }
+        // An older backend without pages.
         logos.watch(store.backend.loadBacklog(), function (json) {
             var list = [];
-            try { list = JSON.parse(json); } catch (e) {
-                store.log("could not parse backlog: " + e);
-                return;
-            }
-            for (var i = 0; i < list.length; ++i) {
-                var e = list[i];
-                if (e.state) store.deliveries[e.id] = e.state;
-                if (e.kind === "topic")
-                    store.addTopic(e.id, e.title, e.body, e.author, e.domains || "", e.ts, false);
-                else if (e.kind === "reply")
-                    store.addReply(e.id, e.topicId, e.parentId || e.topicId, e.body, e.author, e.ts, false);
-            }
+            try { list = JSON.parse(json); } catch (e) { store.log("could not parse backlog: " + e); return; }
+            store.addBacklogEntries(list);
+            store.applyOwnStates();
             store.log("backlog restored: " + list.length + " post(s)");
         }, function (err) {
             store.log("backlog load failed: " + err);
@@ -249,14 +468,59 @@ Item {
     onViewReadyChanged: store.loadBacklog()
     onNodeReadyChanged: store.loadBacklog()
 
+    // Which posts are "mine" belongs to the unlocked account: on lock, unlock
+    // or switch, replace every delivery mark with that account's list, so one
+    // account never sees another's posts in "My posts" or the outbox.
+    function applyOwnStates() {
+        var map = {};
+        try { map = JSON.parse(store.ownStatesJson); } catch (e) { map = {}; }
+        var deliveries = {};
+        for (var id in map) {
+            // A live "propagated" waypoint outranks the stored "pending".
+            var live = store.deliveries[id];
+            deliveries[id] = (map[id] === "pending" && live === "propagated") ? live : map[id];
+        }
+        store.deliveries = deliveries;
+        for (var a in store.topics) store.topics[a].delivery = deliveries[a] || "";
+        for (var b in store.replies) store.replies[b].delivery = deliveries[b] || "";
+        store.rev++;
+    }
+    onOwnStatesJsonChanged: store.applyOwnStates()
+
     Connections {
         target: store.backend
         ignoreUnknownSignals: true
-        function onTopicReceived(id, title, body, author, domains, timestamp) {
-            store.addTopic(id, title, body, author, domains, timestamp, true);
+        // `forum` is missing from an older backend's signals: "public".
+        function onTopicReceived(id, title, body, author, domains, timestamp, authorKey, forum, media) {
+            store.addTopic(id, title, body, author, domains, timestamp, true, authorKey, forum, media);
         }
-        function onReplyReceived(id, topicId, parentId, body, author, timestamp) {
-            store.addReply(id, topicId, parentId, body, author, timestamp, true);
+        function onReplyReceived(id, topicId, parentId, body, author, timestamp, authorKey, forum, media) {
+            store.addReply(id, topicId, parentId, body, author, timestamp, true, authorKey, forum, media);
+        }
+        function onMediaLoaded(postId, index, state, detail) {
+            var key = postId + ":" + index;
+            var prev = store.mediaStates[key] || {};
+            store.log("media " + key.substring(0, 8) + ":" + index + " -> " + state
+                      + (state === "preview" || state === "done" ? " (" + String(detail).length + " chars)" : " " + detail)
+                      + " · was " + (prev.state || "-") + (prev.previewUrl ? " +preview" : ""));
+            if (state === "preview") {
+                // Shown while the full image is on its way (or not asked for).
+                var keep = prev.state === "starting" || prev.state === "fetching" || prev.state === "done";
+                store.mediaStates[key] = { state: keep ? prev.state : "preview", detail: keep ? prev.detail : "",
+                                           startedMs: prev.startedMs, previewUrl: detail };
+            } else {
+                var busy = state === "starting" || state === "fetching";
+                store.mediaStates[key] = { state: state, detail: detail,
+                                           startedMs: busy ? (prev.startedMs || Date.now()) : prev.startedMs,
+                                           previewUrl: prev.previewUrl };
+            }
+            store.mediaRev++;
+        }
+        function onPreviewReady(postId, index) {
+            var key = postId + ":" + index;
+            var st = store.mediaStates[key];
+            if (!st || st.previewUrl || st.state === "done") return;
+            store.call(store.backend.showMedia(postId, index), null, function (e) { store.log("showMedia: " + e); });
         }
         function onMessageStateChanged(id, state, detail) {
             store.log("messageStateChanged -> " + id + " " + state + (detail.length > 0 ? " (" + detail + ")" : ""));
@@ -294,6 +558,7 @@ Item {
         var n = store.replyCount(t.id);
         var parts = [t.author, n === 0 ? "no replies yet" : n === 1 ? "1 reply" : n + " replies",
                      store.ago(t.tsMs)];
+        if (t.media && t.media.length > 0) parts.push(store.mediaNote(t.media));
         if (t.domains.length > 0) parts.push(store.domainsText(t.domains));
         return {
             id: t.id,
@@ -317,6 +582,7 @@ Item {
         var out = [];
         for (var id in store.topics) {
             var t = store.topics[id];
+            if (t.forum !== store.currentForum) continue;
             if (store.domainFilter.length > 0 && t.domains.indexOf(store.domainFilter) < 0) continue;
             if (followedOnly && !t.domains.some(function (d) { return store.followed.indexOf(d) >= 0; })) continue;
             if (!store.matches(t, query)) continue;
@@ -326,15 +592,16 @@ Item {
         return out.map(store.topicItem);
     }
 
-    readonly property var allFeed: { store.rev; store.tick; store.searchText; store.domainFilter; return store.feed(false); }
-    readonly property var followedFeed: { store.rev; store.tick; store.searchText; store.domainFilter; store.followed; return store.feed(true); }
+    readonly property var allFeed: { store.rev; store.tick; store.searchText; store.domainFilter; store.currentForum; return store.feed(false); }
+    readonly property var followedFeed: { store.rev; store.tick; store.searchText; store.domainFilter; store.currentForum; store.followed; return store.feed(true); }
 
     // Domains in use, most used first (the chip row), followed ones first.
     readonly property var knownDomains: {
-        store.rev;
+        store.rev; store.currentForum;
         var counts = {};
         for (var id in store.topics)
-            store.topics[id].domains.forEach(function (d) { counts[d] = (counts[d] || 0) + 1; });
+            if (store.topics[id].forum === store.currentForum)
+                store.topics[id].domains.forEach(function (d) { counts[d] = (counts[d] || 0) + 1; });
         var names = Object.keys(counts);
         names.sort(function (a, b) { return counts[b] - counts[a] || a.localeCompare(b); });
         return names;
@@ -384,10 +651,11 @@ Item {
         var out = [];
         function item(r, depth, subthread) {
             return {
-                id: r.id, author: r.author, body: r.body, time: store.ago(r.tsMs),
+                id: r.id, author: r.author, body: r.body, time: store.ago(r.tsMs), media: r.media || [],
                 depth: depth, delivery: r.delivery, subthread: subthread,
                 fresh: store.freshIds[r.id] === true,
-                isOp: t !== undefined && !t.placeholder && r.author === t.author && r.author !== "Anonymous"
+                // Same signing key as the topic: display text can be imitated (F5).
+                isOp: t !== undefined && !t.placeholder && t.authorKey !== "" && r.authorKey === t.authorKey
             };
         }
         level1.forEach(function (r) {
@@ -416,6 +684,11 @@ Item {
         return seen;
     }
 
+    // " · in <forum>" for a private forum's post in lists that mix forums.
+    function forumNote(p) {
+        return p && p.forum && p.forum !== "public" ? " · in " + store.forumName(p.forum) : "";
+    }
+
     function replyAuthor(id) { return store.replies[id] ? store.replies[id].author : ""; }
 
     // Posts written on this device, newest first: [{ id, kind, title, body, delivery, time, topicId }]
@@ -427,7 +700,8 @@ Item {
             var topic = isTopic ? p : store.topics[p.topicId];
             out.push({
                 id: p.id, kind: isTopic ? "topic" : "reply",
-                title: isTopic ? p.title : "reply in “" + (topic && !topic.placeholder ? topic.title : "a topic") + "”",
+                title: (isTopic ? p.title : "reply in “" + (topic && !topic.placeholder ? topic.title : "a topic") + "”")
+                       + store.forumNote(p),
                 body: isTopic ? "" : Md.plain(p.body),
                 delivery: p.delivery,
                 time: store.ago(p.tsMs),
@@ -449,7 +723,10 @@ Item {
     readonly property var missed: {
         store.rev; store.tick;
         var cutoff = store.sessionStartMs - 60000;
-        var oldest = store.sessionStartMs - 7 * 24 * 3600 * 1000;
+        // Written while this device was away: since it last synced, at most
+        // a week back. A new device (never synced) missed nothing (F15).
+        if (store.awaySinceMs <= 0) return [];
+        var oldest = Math.max(store.sessionStartMs - 7 * 24 * 3600 * 1000, store.awaySinceMs - 60000);
         var out = [];
         function consider(p, isTopic) {
             if (!p.live || p.tsMs >= cutoff || p.tsMs < oldest || p.placeholder) return;
@@ -458,7 +735,8 @@ Item {
                 id: p.id,
                 title: isTopic ? p.title : "reply in “" + (topic && !topic.placeholder ? topic.title : "a topic") + "”",
                 meta: p.author + " · posted " + store.ago(p.tsMs) + " ago · arrived " + store.clock(p.arrivedMs)
-                      + (isTopic && p.domains.length > 0 ? " · " + store.domainsText(p.domains) : ""),
+                      + (isTopic && p.domains.length > 0 ? " · " + store.domainsText(p.domains) : "")
+                      + store.forumNote(p),
                 topicId: isTopic ? p.id : p.topicId,
                 arrivedMs: p.arrivedMs
             });
@@ -498,6 +776,7 @@ Item {
             out.push({
                 id: it.id, topicId: it.topicId, author: r.author, body: Md.plain(r.body),
                 title: t && !t.placeholder ? t.title : "a topic",
+                forumNote: store.forumNote(r),
                 time: store.ago(r.tsMs), direct: it.direct, inMyTopic: it.inMyTopic === true, read: it.read
             });
         });
@@ -585,12 +864,74 @@ Item {
         }, function (e) { onErr(String(e)); });
     }
 
+    // ── Limits (forumer_core/post.h), counted the same way: bytes of UTF-8 ──
+    readonly property int maxTitleBytes: 200
+    readonly property int maxBodyBytes: 10000
+    function utf8Bytes(s) {
+        var n = 0;
+        s = String(s || "");
+        for (var i = 0; i < s.length; ++i) {
+            var c = s.charCodeAt(i);
+            if (c < 0x80) n += 1;
+            else if (c < 0x800) n += 2;
+            else if (c >= 0xd800 && c <= 0xdbff && i + 1 < s.length) { n += 4; ++i; }  // surrogate pair
+            else n += 3;
+        }
+        return n;
+    }
+    // "123 / 200", or how far over.
+    function sizeNote(s, max) {
+        var n = store.utf8Bytes(s);
+        return n > max ? (n - max) + " over the limit" : n + " / " + max;
+    }
+
+    // What the backend will make of typed domains (post::normalizeDomains):
+    // { kept: ["privacy", "caf"], changed: ["café → caf"] } - so the composer
+    // can say what a domain becomes, or that it can't be one, before posting.
+    function domainPreview(text) {
+        var kept = [], changed = [];
+        String(text || "").split(",").forEach(function (raw) {
+            var tag = raw.trim();
+            if (tag.length === 0) return;
+            var clean = "", dash = false;
+            for (var i = 0; i < tag.length; ++i) {
+                var ch = tag[i];
+                if (/\s|-|_/.test(ch)) dash = clean.length > 0;
+                else if (/[A-Za-z0-9]/.test(ch)) {
+                    if (dash) clean += "-";
+                    dash = false;
+                    clean += ch.toLowerCase();
+                }
+            }
+            if (clean.length < 2 || clean.length > 32) { changed.push(tag + " can't be a domain"); return; }
+            if (clean !== tag.toLowerCase().replace(/^#/, "").replace(/[\s_]+/g, "-"))
+                changed.push(tag + " → " + clean);
+            if (kept.indexOf(clean) < 0 && kept.length < 3) kept.push(clean);
+        });
+        return { kept: kept, changed: changed };
+    }
+
+    function postAfterRestore() {
+        if (typeof store.backend.postAfterRestore === "function")
+            store.call(store.backend.postAfterRestore());
+    }
+
+    // In the current forum. Replies need no forum: they follow their thread.
     function createTopic(title, body, domains, disclosure, onOk, onErr) {
-        store.call(store.backend.createTopic(title, body, domains, disclosure), onOk, onErr);
+        if (store.canAttachImages && store.attachments("topic").length > 0)
+            store.call(store.backend.postTopic(store.currentForum, title, body, domains, disclosure, "topic"), onOk, onErr);
+        else if (store.inPrivateForum)
+            store.call(store.backend.createTopicIn(store.currentForum, title, body, domains, disclosure), onOk, onErr);
+        else
+            store.call(store.backend.createTopic(title, body, domains, disclosure), onOk, onErr);
     }
 
     function sendReply(body, disclosure, onOk, onErr) {
-        if (store.canNestReplies)
+        if (store.canAttachImages && store.attachments("reply").length > 0)
+            store.call(store.backend.postReply(store.replyTargetId.length > 0 ? store.replyTargetId
+                                                                               : store.selectedTopicId,
+                                               body, disclosure, "reply"), onOk, onErr);
+        else if (store.canNestReplies)
             store.call(store.backend.replyToPost(store.replyTargetId.length > 0 ? store.replyTargetId
                                                                                   : store.selectedTopicId,
                                                  body, disclosure), onOk, onErr);
@@ -611,7 +952,7 @@ Item {
             return store.alias.length > 0 ? "shows as " + store.alias + " · " + store.myPersona
                                           : "set an alias first, in profile";
         if (d === "anonymous")
-            return "one-time key, never reused · 20-bit proof of work (about a second)";
+            return "one-time key, never reused · 20-bit proof of work (a second or so; longer for long posts)";
         var rot = store.rotationPolicy === "auto" ? "a fresh persona for this post (auto rotation)"
                 : "signs as " + store.myPersona + " · rotation: " + store.rotationPolicy;
         return rot;

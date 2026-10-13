@@ -32,8 +32,9 @@ namespace forumer::post {
 
 inline constexpr int kFormatVersion = 1;
 
-// Size limits (characters of UTF-8, counted as bytes). Kept modest: media
-// travels by reference (CID), never inside a post.
+// Size limits, in bytes of UTF-8 (a Latin letter is 1, accented and
+// non-Latin ones 2-4, an emoji 4). The composers count them the same way.
+// Kept modest: media travels by reference (CID), never inside a post.
 inline constexpr size_t kMaxTitle = 200;
 inline constexpr size_t kMaxBody = 10000;
 inline constexpr size_t kMaxDomains = 3;
@@ -107,6 +108,13 @@ std::vector<std::string> parseDomains(std::string_view commaSeparated);
 
 /// Check a draft is well-formed before signing (shape and size limits).
 Error validateDraft(const Draft& draft);
+
+/// Why an alias can't be used, or nullptr if it can. An alias is shown next
+/// to its persona's fingerprint ("night owl · fr:7Q4K-M2XD"), so it may not
+/// imitate one: no "fr:XXXX-XXXX" shape, not "Anonymous", no "·" separator,
+/// no control, invisible or bidirectional-override characters, no leading or
+/// trailing spaces, valid UTF-8, at most kMaxAlias bytes.
+const char* aliasProblem(std::string_view alias);
 
 /// Sign a draft as `persona`. Mines proof-of-work of `powBits` first (cost
 /// roughly doubles per bit). Returns nullopt with `error` set if the draft is

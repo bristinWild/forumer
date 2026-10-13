@@ -105,6 +105,7 @@ Page {
             if (a === "done") return (h.archiveGot || 0) + " post(s) from " + (h.archiveNode || "a store node");
             if (a === "empty") return "store nodes hold nothing new for this forum";
             if (a === "unreachable") return "no store node answered" + (h.archiveError ? " (" + h.archiveError + ")" : "");
+            if (a === "skipped") return "store nodes not asked (FORUMER_NO_STORE)";
             return "not asked yet";
         }
         title: "history"

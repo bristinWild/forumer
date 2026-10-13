@@ -1,11 +1,11 @@
 {
   "name": "forumer",
   "display_name": "Forumer",
-  "version": "0.2.2",
+  "version": "0.2.3",
   "type": "ui_qml",
   "interface": "universal",
   "category": "social",
-  "description": "A private forum with no server: topics, threads and domains over Logos Delivery (Waku), history from peers and the network's store nodes, and posts signed as a persona, under an alias, or anonymously.",
+  "description": "A private forum with no server: topics, threads and domains over Logos Delivery (Waku), private forums joined by invite link, images through Logos Storage, history from peers and the network's store nodes, and posts signed as a persona, under an alias, or anonymously.",
   "main": "forumer_plugin",
   "icon": "assets/icon.png",
   "view": "qml/Main.qml",
@@ -36,6 +36,16 @@
         },
         {
           "name": "domain",
+          "type": "string",
+          "required": false
+        },
+        {
+          "name": "invite",
+          "type": "string",
+          "required": false
+        },
+        {
+          "name": "name",
           "type": "string",
           "required": false
         }

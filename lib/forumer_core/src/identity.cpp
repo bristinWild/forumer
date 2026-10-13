@@ -1,6 +1,7 @@
 #include "forumer_core/identity.h"
 
 #include <algorithm>
+#include <chrono>
 
 #include <nlohmann/json.hpp>
 
@@ -15,6 +16,8 @@ namespace {
 // crypto_kdf contexts are exactly 8 characters and name the key's purpose.
 constexpr std::string_view kPersonaContext = "frmrpers";
 constexpr std::string_view kAccountIdContext = "frmracct";
+constexpr std::string_view kAnonymousContext = "frmranon";
+constexpr std::string_view kStorageContext = "frmrstor";
 
 constexpr int kStateVersion = 1;
 
@@ -87,6 +90,16 @@ std::string AccountState::toJson() const {
         {"next", nextIndex},
         {"followed", followed},
     };
+    if (!forums.empty()) {
+        json list = json::array();
+        for (const auto& f : forums)
+            list.push_back({{"id", f.id}, {"key", f.key}, {"name", f.name}, {"joined", f.joinedMs}});
+        doc["forums"] = list;
+    }
+    if (restored) {
+        doc["restored"] = true;
+        doc["restoredAt"] = restoredAtMs;
+    }
     return doc.dump();
 }
 
@@ -113,6 +126,20 @@ std::optional<AccountState> AccountState::fromJson(std::string_view text) {
                     s.followed.push_back(name);
             }
         }
+
+        if (auto f = doc.find("forums"); f != doc.end() && f->is_array()) {
+            for (const auto& item : *f) {
+                if (!item.is_object() || s.forums.size() == 32) continue;
+                ForumMembership m;
+                m.id = item.value("id", std::string());
+                m.key = item.value("key", std::string());
+                m.name = item.value("name", std::string());
+                m.joinedMs = item.value("joined", int64_t(0));
+                if (!m.id.empty() && !m.key.empty()) s.forums.push_back(std::move(m));
+            }
+        }
+        s.restored = doc.value("restored", false);
+        s.restoredAtMs = s.restored ? doc.value("restoredAt", int64_t(0)) : 0;
 
         auto policy = rotationPolicyFrom(doc.value("policy", std::string("manual")));
         auto disclosure = disclosureFrom(doc.value("disclosure", std::string("persona")));
@@ -146,6 +173,31 @@ void Account::unfollow(const std::string& domain) {
 bool Account::isFollowing(const std::string& domain) const {
     const auto& f = state_.followed;
     return std::find(f.begin(), f.end(), domain) != f.end();
+}
+
+//  Private forums 
+
+bool Account::joinForum(ForumMembership forum) {
+    for (auto& f : state_.forums)
+        if (f.id == forum.id) {
+            f.name = forum.name;
+            return true;
+        }
+    if (state_.forums.size() >= 32) return false;
+    state_.forums.push_back(std::move(forum));
+    return true;
+}
+
+void Account::leaveForum(const std::string& id) {
+    auto& f = state_.forums;
+    f.erase(std::remove_if(f.begin(), f.end(), [&](const ForumMembership& m) { return m.id == id; }),
+            f.end());
+}
+
+const ForumMembership* Account::forum(const std::string& id) const {
+    for (const auto& f : state_.forums)
+        if (f.id == id) return &f;
+    return nullptr;
 }
 
 //  Free functions 
@@ -185,6 +237,16 @@ uint64_t recoverNextIndex(const SecretBytes& master,
     return next;
 }
 
+std::vector<Bytes> personaKeys(const SecretBytes& master, uint64_t from, uint64_t to) {
+    std::vector<Bytes> out;
+    for (uint64_t i = from; i < to; ++i) {
+        auto keys = derivePersonaKeys(master, i);
+        if (!keys) break;
+        out.push_back(std::move(keys->publicKey));
+    }
+    return out;
+}
+
 //  Account 
 
 Account::Account(SecretBytes master, AccountState state)
@@ -218,7 +280,56 @@ std::optional<Account> Account::restore(SecretBytes master, std::string label,
         state.currentIndex = next - 1;
         state.nextIndex = next;
     }
+    // This device may not hold the account's whole history yet, so newer
+    // personas may still turn up: see notePersonaUsed() and restorePending().
+    state.restored = true;
+    state.restoredAtMs = std::chrono::duration_cast<std::chrono::milliseconds>(
+                             std::chrono::system_clock::now().time_since_epoch())
+                             .count();
     return Account(std::move(master), std::move(state));
+}
+
+bool Account::notePersonaUsed(uint64_t index, bool resumeAs) {
+    bool changed = false;
+    if (index + 1 > state_.nextIndex) {
+        state_.nextIndex = index + 1;
+        changed = true;
+    }
+    // Resume as the newest persona this account is known to have used - the
+    // one the user had rotated to - not an older one it rotated away from.
+    if (resumeAs && index > state_.currentIndex) {
+        state_.currentIndex = index;
+        changed = true;
+    }
+    return changed;
+}
+
+bool Account::skipKnown(const std::function<bool(const Bytes&)>& isKnown) {
+    bool changed = false;
+    for (int guard = 0; guard < 10'000; ++guard) {
+        auto keys = derivePersonaKeys(master_, state_.nextIndex);
+        if (!keys || !isKnown(keys->publicKey)) break;
+        ++state_.nextIndex;
+        changed = true;
+    }
+    return changed;
+}
+
+SecretBytes storageKeyFor(const SecretBytes& master) {
+    auto key = crypto::deriveSubkey(master, 0, kStorageContext);
+    return key ? std::move(*key) : SecretBytes();
+}
+
+SecretBytes Account::storageKey() const { return storageKeyFor(master_); }
+
+Persona Account::oneTime() const {
+    // A random 64-bit id under its own context: never reused, never recovered.
+    uint64_t id = 0;
+    const Bytes r = crypto::randomBytes(sizeof id);
+    for (uint8_t b : r) id = (id << 8) | b;
+    auto seed = crypto::deriveSubkey(master_, id, kAnonymousContext, crypto::kSeedBytes);
+    auto keys = seed ? crypto::signingKeyPairFromSeed(*seed) : std::nullopt;
+    return Persona{id, keys ? std::move(*keys) : crypto::SigningKeyPair{}};
 }
 
 Persona Account::persona(uint64_t index) const {
@@ -239,7 +350,7 @@ Persona Account::rotate() {
 
 Persona Account::personaForPost(Disclosure disclosure) {
     // Anonymous posts never reuse an identity and never move the current one.
-    if (disclosure == Disclosure::Anonymous) return allocateFresh();
+    if (disclosure == Disclosure::Anonymous) return oneTime();
 
     switch (state_.policy) {
         case RotationPolicy::Keep:

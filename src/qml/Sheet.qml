@@ -42,7 +42,10 @@ Rectangle {
         id: panel
         anchors.horizontalCenter: parent.horizontalCenter
         width: Math.min(parent.width - 2 * Ui.space.l, sheet.panelWidth)
-        height: Math.min(parent.height - 2 * Ui.space.l, column.implicitHeight + 56)
+        // Header and buttons stay put; only the content between them scrolls,
+        // so a long message can never push "post" out of reach (review F15).
+        height: Math.min(parent.height - 2 * Ui.space.l,
+                         header.implicitHeight + body.implicitHeight + footer.implicitHeight + 2 * 28 + 2 * 20 + 1)
         y: Math.max(Ui.space.l, Math.min(96, (parent.height - height) / 2))
         radius: Ui.radius.sheet
         color: Ui.surface
@@ -52,50 +55,63 @@ Rectangle {
 
         MouseArea { anchors.fill: parent }   // clicks on the panel stay on it
 
-        Flickable {
+        ColumnLayout {
             anchors.fill: parent
             anchors.margins: 28
-            contentHeight: column.implicitHeight
-            boundsBehavior: Flickable.StopAtBounds
-            clip: true
+            spacing: 20
 
-            ColumnLayout {
-                id: column
-                width: parent.width
-                spacing: 20
-
-                RowLayout {
+            RowLayout {
+                id: header
+                Layout.fillWidth: true
+                Text {
+                    textFormat: Text.PlainText
                     Layout.fillWidth: true
-                    Text {
-                        textFormat: Text.PlainText
-                        Layout.fillWidth: true
-                        text: sheet.title
-                        font.family: Ui.sans
-                        font.pixelSize: Ui.size.sheet
-                        font.weight: Ui.weight.semibold
-                        color: Ui.text
-                    }
-                    FButton {
-                        kind: "ghost"
-                        icon: "x"
-                        tooltip: "Close"
-                        onClicked: { sheet.close(); sheet.dismissed(); }
-                    }
+                    text: sheet.title
+                    font.family: Ui.sans
+                    font.pixelSize: Ui.size.sheet
+                    font.weight: Ui.weight.semibold
+                    color: Ui.text
                 }
+                FButton {
+                    kind: "ghost"
+                    icon: "x"
+                    tooltip: "Close"
+                    onClicked: { sheet.close(); sheet.dismissed(); }
+                }
+            }
+
+            Flickable {
+                id: scroller
+                Layout.fillWidth: true
+                Layout.fillHeight: true
+                contentHeight: body.implicitHeight
+                boundsBehavior: Flickable.StopAtBounds
+                clip: true
 
                 ColumnLayout {
                     id: body
-                    Layout.fillWidth: true
+                    width: scroller.width
                     spacing: 20
                 }
+            }
 
-                RowLayout {
-                    Layout.fillWidth: true
-                    Item { Layout.fillWidth: true }
-                    Row {
-                        id: actionRow
-                        spacing: 8
-                    }
+            // A rule above the buttons when the content scrolls under them.
+            Rectangle {
+                Layout.fillWidth: true
+                Layout.topMargin: -10
+                Layout.bottomMargin: -10
+                implicitHeight: 1
+                color: Ui.border
+                opacity: scroller.contentHeight > scroller.height + 1 ? 1 : 0
+            }
+
+            RowLayout {
+                id: footer
+                Layout.fillWidth: true
+                Item { Layout.fillWidth: true }
+                Row {
+                    id: actionRow
+                    spacing: 8
                 }
             }
         }

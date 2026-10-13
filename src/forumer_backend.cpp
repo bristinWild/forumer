@@ -2,29 +2,38 @@
 
 #include <algorithm>
 #include <filesystem>
+#include <fstream>
+#include <mutex>
 #include <iostream>
 #include <memory>
+#include <optional>
 #include <set>
 #include <string>
+#include <thread>
+#include <type_traits>
 #include <utility>
 #include <vector>
 
 #include <QByteArray>
 #include <QDateTime>
 #include <QDir>
+#include <QEventLoop>
 #include <QFile>
 #include <QIODevice>
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QLatin1String>
+#include <QFileInfo>
 #include <QHostAddress>
 #include <QNetworkInterface>
 #include <QPointer>
+#include <QProcess>
 #include <QRandomGenerator>
 #include <QStandardPaths>
 #include <QTextStream>
 #include <QTimer>
+#include <QUrl>
 #include <QUuid>
 #include <QVariantList>
 
@@ -37,8 +46,12 @@
 // Forumer's own engine (lib/forumer_core).
 #include "forumer_core/crypto.h"
 #include "forumer_core/flood.h"
+#include "forumer_core/forums.h"
+#include "forumer_core/media.h"
 #include "forumer_core/mnemonic.h"
 #include "forumer_core/thread.h"
+
+#include "image_prep.h"
 
 // Injected by CMake from metadata.json#version.
 #ifndef FORUMER_VERSION
@@ -52,8 +65,31 @@ using fc::identity::RotationPolicy;
 namespace {
 // One consistently-tagged line per lifecycle hook / delivery event so the
 // backend's activity is easy to spot (and grep) in the host's stderr stream.
+// With FORUMER_LOG_FILE set (scripts/two-instances.sh sets it), the same
+// lines also go to that file with a time: the host doesn't always pass the
+// backend's stderr on. Off by default - the lines name posts and images.
 void logEvent(const std::string &what) {
   std::cerr << "[forumer backend] " << what << std::endl;
+  static std::mutex lock;
+  static std::ofstream file;
+  static bool opened = false;
+  std::lock_guard guard(lock);
+  if (!opened) {
+    opened = true;
+    QByteArray path = qgetenv("FORUMER_LOG_FILE");
+    // The host may not pass our environment on to this process; it does pass
+    // LOGOS_USER_DIR. A file named "debug-log" in this instance's data folder
+    // turns the log on as well (scripts/two-instances.sh creates it).
+    const QByteArray userDir = qgetenv("LOGOS_USER_DIR");
+    if (path.isEmpty() && !userDir.isEmpty() &&
+        QFile::exists(QString::fromLocal8Bit(userDir) + QStringLiteral("/module_data/forumer/debug-log")))
+      path = userDir + "/module_data/forumer/backend.log";
+    if (!path.isEmpty())
+      file.open(path.toStdString(), std::ios::app);
+  }
+  if (file.is_open())
+    file << QDateTime::currentDateTime().toString(QStringLiteral("hh:mm:ss.zzz")).toStdString() << " "
+         << what << std::endl;
 }
 
 qint64 nowMs() { return QDateTime::currentMSecsSinceEpoch(); }
@@ -134,6 +170,20 @@ constexpr int kMaxFollowUps = 15;
 // How often "covered until" (we were online and syncing up to here) is saved.
 constexpr qint64 kCoveredSaveGapMs = 10 * 60'000;
 constexpr int kSeenPruneThreshold = 4'096;
+// Own digests remembered (to tell them from a peer's): one per round for the
+// public forum plus one per private forum, a couple of rounds' worth.
+constexpr int kOwnDigestMemory = 128;
+
+// Owner-only permissions (0700 directories, 0600 files) for everything this
+// app keeps on disk. Best effort: filesystems without POSIX modes keep theirs.
+void ownerOnly(const QString &path, bool directory) {
+  std::error_code ec;
+  std::filesystem::permissions(path.toStdString(),
+                               directory ? std::filesystem::perms::owner_all
+                                         : std::filesystem::perms::owner_read |
+                                               std::filesystem::perms::owner_write,
+                               std::filesystem::perm_options::replace, ec);
+}
 
 // Small text-file helpers (the per-install channel peer id).
 QString readTextFile(const QString &path) {
@@ -147,6 +197,7 @@ bool writeTextFile(const QString &path, const QString &contents) {
   QFile f(path);
   if (!f.open(QIODevice::WriteOnly | QIODevice::Text))
     return false;
+  ownerOnly(path, false);
   QTextStream out(&f);
   out << contents;
   return true;
@@ -173,6 +224,37 @@ QString joinDomains(const std::vector<std::string> &domains) {
 qint64 toNs(int64_t ms) { return static_cast<qint64>(ms) * 1000000LL; }
 
 int jitter(int maxMs) { return static_cast<int>(QRandomGenerator::global()->bounded(maxMs + 1)); }
+
+// Run `fn` on a worker thread and wait for it here while this thread's event
+// loop keeps running (review F16): Argon2id (~256 MiB, about a second) and
+// proof-of-work (seconds for a long anonymous post) used to stall the backend,
+// network events included. Callers hold m_busy, so no other identity or
+// posting slot runs in the meantime; everything else (sync, timers) does.
+template <typename F>
+std::invoke_result_t<F> runOffThread(F fn) {
+  std::optional<std::invoke_result_t<F>> out;
+  QEventLoop loop;
+  std::thread worker([&]() {
+    out.emplace(fn());
+    QMetaObject::invokeMethod(&loop, [&loop]() { loop.quit(); }, Qt::QueuedConnection);
+  });
+  loop.exec(QEventLoop::ExcludeUserInputEvents);
+  worker.join();
+  return std::move(*out);
+}
+
+// Overwrite a password or phrase we were handed, once it has been used.
+void wipe(QString &secret) { secret.fill(QChar(0)); }
+void wipe(std::string &secret) { fc::mnemonic::wipe(secret); }
+
+// Sets a flag for the scope of one slot that runs work off the thread.
+struct BusyScope {
+  bool &flag;
+  explicit BusyScope(bool &f) : flag(f) { flag = true; }
+  ~BusyScope() { flag = false; }
+};
+
+const char kBusy[] = "Busy with the previous request — try again in a moment";
 } // namespace
 
 const char ForumerBackend::kForum[] = "public";
@@ -193,6 +275,9 @@ ForumerBackend::~ForumerBackend() {
 
 void ForumerBackend::onContextReady() {
   logEvent("onContextReady — context wired, scheduling node bootstrap");
+
+  setDevMode(qEnvironmentVariableIsSet("FORUMER_DEV"));
+  loadMediaSettings();
 
   // Accounts are purely local, so they're available before the network is.
   m_accounts = std::make_unique<fc::AccountStore>(
@@ -332,6 +417,7 @@ void ForumerBackend::bootstrap() {
 bool ForumerBackend::openStore() {
   const QString dir = dataDir();
   QDir().mkpath(dir);
+  ownerOnly(dir, true);
 
   // A stable per-install id for reliable channels (SDS sender id). Never
   // shown and never linked to an account or persona.
@@ -357,8 +443,20 @@ bool ForumerBackend::openStore() {
   m_transport = std::make_unique<DeliveryModuleTransport>(modules(), peerId.toStdString(),
                                                           /*useChannels=*/false);
 
+  // Bounded log (F18): the oldest posts beyond kMaxStoredPosts go, and the
+  // automatic history walk doesn't fetch them back.
+  if (const size_t pruned = m_posts->pruneTo(kMaxStoredPosts)) {
+    if (auto oldest = m_posts->oldestTimestamp())
+      m_posts->setMeta("history_limit", std::to_string(*oldest));
+    logEvent("pruned " + std::to_string(pruned) + " oldest post(s) beyond " +
+             std::to_string(kMaxStoredPosts));
+  }
   logEvent("post log open at " + file.string() + " (" + std::to_string(m_posts->count()) +
            " posts), topic " + m_topic);
+  ownerOnly(peerIdFile, false);
+  // An account unlocked before the log opened gets its own posts now.
+  if (m_account)
+    attachAccount();
   loadHistoryState();
   setNodeReady(true);
   publishSyncState();
@@ -414,6 +512,7 @@ void ForumerBackend::joinForum() {
   }
   scheduleDigest(kFirstDigestMs);
   maybeStartHistory();
+  joinForumTopics();   // the unlocked account's private forums
   if (!m_storeStarted)
     QTimer::singleShot(kStoreStartDelayMs, this, [this]() { startStoreHistory(); });
 }
@@ -485,6 +584,7 @@ QString ForumerBackend::chooseNetwork(QString preset) {
   QFile file(dataDir() + QStringLiteral("/network"));
   if (!file.open(QIODevice::WriteOnly | QIODevice::Truncate))
     return QStringLiteral("Could not save the choice");
+  ownerOnly(file.fileName(), false);
   file.write(preset.toUtf8());
   file.close();
   setNetworkNext(networkPreset());
@@ -526,9 +626,11 @@ void ForumerBackend::publishIdentityState() {
       followed.append(qs(d));
     setFollowedDomains(QString::fromUtf8(QJsonDocument(followed).toJson(QJsonDocument::Compact)));
     setMyPersona(qs(m_account->currentPersona().fingerprint()));
+    setRestorePending(m_account->restorePending());
   } else {
     setMyPersona(QString());
     setFollowedDomains(QStringLiteral("[]"));
+    setRestorePending(false);
   }
 
   publishQuota();
@@ -545,16 +647,218 @@ void ForumerBackend::saveAccount() {
     logEvent("failed to save account state for " + m_account->state().id);
 }
 
+// ── The unlocked account's own posts ──────────────────────────────────────────
+
+void ForumerBackend::attachAccount() {
+  if (!m_account)
+    return;
+  loadForums();
+  m_ownKeys.clear();
+  m_ownKeysTo = 0;
+  extendOwnKeys();
+  if (m_posts && m_accounts) {
+    const std::string id = m_account->state().id;
+    m_posts->forgetOwn();
+    auto text = m_accounts->loadPrivate(*m_account, "own");
+    std::optional<fc::OwnData> own = text ? fc::OwnData::fromJson(*text, id) : std::nullopt;
+    if (!own) {
+      logEvent("own-posts file of " + id + " can't be read; starting an empty one");
+      own = fc::OwnData{id, {}, {}};
+    }
+    m_posts->importOwn(*own);
+    // A log from 0.2.2 kept this account's outbox and read marks in clear:
+    // move them into its encrypted file, then out of the log.
+    const fc::OwnData legacy = m_posts->takeLegacy(id);
+    if (!legacy.outbox.empty() || !legacy.read.empty()) {
+      m_posts->importOwn(legacy);
+      logEvent("moved " + std::to_string(legacy.outbox.size()) + " own post(s) of " + id +
+               " out of the clear log");
+    }
+    saveOwn();
+    m_posts->dropLegacyTablesIfEmpty();
+  }
+  publishOwnStates();
+  publishSyncState();
+  publishInbox();
+  // Images: start the storage node now, in the background, so a picture
+  // doesn't wait ~2 minutes for it on the first click.
+  QTimer::singleShot(3'000, this, [this]() {
+    if (m_account && m_storageState != QLatin1String("running") && m_storageState != QLatin1String("starting"))
+      startStorageNode();
+  });
+  // Its private forums' posts already on this device go to the view.
+  if (m_posts && !m_forums.empty())
+    emitForumPosts(std::string());
+}
+
+void ForumerBackend::detachAccount() {
+  if (m_ownSaveScheduled)
+    saveOwn();  // flush before the key goes
+  if (m_posts)
+    m_posts->forgetOwn();
+  m_ownKeys.clear();
+  m_ownKeysTo = 0;
+  // Private forums close with the account: their keys go, the view drops
+  // their posts (forumsJson empties), what's stored stays sealed.
+  m_forums.clear();
+  m_forumByTopic.clear();
+  publishForums();
+  forgetAccountMedia();
+  publishOwnStates();
+  publishSyncState();
+}
+
+bool ForumerBackend::saveOwn() {
+  m_ownSaveScheduled = false;
+  if (!m_account || !m_posts || !m_accounts)
+    return false;
+  const auto own = m_posts->exportOwn(m_account->state().id);
+  if (!m_accounts->savePrivate(*m_account, "own", own.toJson())) {
+    logEvent("failed to save own posts of " + m_account->state().id);
+    return false;
+  }
+  return true;
+}
+
+void ForumerBackend::scheduleOwnSave() {
+  if (m_ownSaveScheduled)
+    return;
+  m_ownSaveScheduled = true;
+  QTimer::singleShot(1'000, this, [this]() {
+    if (m_ownSaveScheduled)
+      saveOwn();
+  });
+}
+
+void ForumerBackend::publishOwnStates() {
+  QJsonObject states;
+  if (m_posts && m_account)
+    for (const auto &e : m_posts->outbox())
+      states.insert(qs(e.postId), QLatin1String(fc::toString(e.state)));
+  const QString json = QString::fromUtf8(QJsonDocument(states).toJson(QJsonDocument::Compact));
+  if (json != ownStatesJson())
+    setOwnStatesJson(json);
+}
+
+void ForumerBackend::extendOwnKeys() {
+  if (!m_account)
+    return;
+  const uint64_t to = m_account->state().nextIndex + fc::identity::kRecoveryGap;
+  if (to <= m_ownKeysTo)
+    return;
+  const auto keys = fc::identity::personaKeys(m_account->masterSecret(), m_ownKeysTo, to);
+  for (size_t i = 0; i < keys.size(); ++i)
+    m_ownKeys.emplace(keys[i], m_ownKeysTo + i);
+  m_ownKeysTo = to;
+}
+
+void ForumerBackend::noteOwnPost(const fc::post::Post &post, uint64_t index) {
+  // Never hand out this persona (or an older one) again, and after a restore
+  // resume as the newest one found.
+  if (m_account->notePersonaUsed(index, m_account->restorePending())) {
+    saveAccount();
+    extendOwnKeys();
+    publishIdentityState();
+  }
+  // Rebuild "My posts": the post was already delivered, by us or the device
+  // that wrote it.
+  const qint64 now = nowMs();
+  if (!m_posts->outboxEntry(post.id) && m_posts->enqueue(post.id, m_account->state().id, now)) {
+    m_posts->markState(post.id, fc::SendState::Sent);
+    scheduleOwnSave();
+    publishOwnStates();
+  }
+}
+
+void ForumerBackend::noteNetworkContact() {
+  m_lastPeerMs = nowMs();
+  // The first new post, or the first digest from another peer, this session.
+  // (A peer's digest counts too: after a restart mid-restore the log may
+  // already hold everything, and then no post is ever "new".)
+  if (m_firstArrivalMs != 0) {
+    publishSyncState();
+    return;
+  }
+  m_firstArrivalMs = nowMs();
+  QTimer::singleShot(61'000, this, [this]() { maybeFinishRestore(); });
+  publishSyncState();
+}
+
+void ForumerBackend::maybeFinishRestore() {
+  if (!m_account || !m_account->restorePending())
+    return;
+  // Evidence that this device has caught up: posts have arrived from the
+  // network (our own messages echo back, so a digest alone proves nothing)
+  // and the live window has had a minute to fill, the store nodes have been
+  // asked, and the history walk has reached the oldest post any peer knows
+  // of. With nothing arriving at all, the user decides (postAfterRestore).
+  const qint64 now = nowMs();
+  const bool peerSeen = m_firstArrivalMs > 0 && now - m_firstArrivalMs >= 60'000;
+  const bool storeDone = !m_storeState.isEmpty() && m_storeState != QLatin1String("asking");
+  const bool historyDone = !m_historyActive && !m_historyScheduled &&
+                           (m_historyTarget == 0 || m_historyTarget >= m_historyFloor);
+  if (!peerSeen || !storeDone || !historyDone || m_followUps > 0) {
+    if (now - m_lastRestoreWaitLogMs >= 60'000) {
+      m_lastRestoreWaitLogMs = now;
+      logEvent(std::string("restore: still waiting -") +
+               (m_firstArrivalMs == 0 ? " no peer or new post yet" : "") +
+               (m_firstArrivalMs != 0 && !peerSeen ? " first contact under a minute ago" : "") +
+               (!storeDone ? " store nodes not done" : "") +
+               (!historyDone ? " history walk not done" : "") +
+               (m_followUps > 0 ? " catch-up burst running" : ""));
+    }
+    return;
+  }
+  markRestoredRepliesRead();
+  m_account->finishRestore();
+  saveAccount();
+  logEvent("restore: history has synced; posting resumes as " +
+           m_account->currentPersona().fingerprint());
+  publishIdentityState();
+}
+
+void ForumerBackend::markRestoredRepliesRead() {
+  // Read marks never leave the device they were made on, so a restored
+  // account would see every old reply to it as new. Those dated before the
+  // restore were read (or skipped) on the device it came from.
+  if (!m_account || !m_posts || m_account->restoredAtMs() <= 0)
+    return;
+  m_posts->markReadBefore(m_account->state().id, m_account->restoredAtMs(), nowMs());
+  scheduleOwnSave();
+}
+
+QString ForumerBackend::postAfterRestore() {
+  if (!m_account)
+    return QStringLiteral("Unlock first");
+  if (m_account->restorePending()) {
+    markRestoredRepliesRead();
+    m_account->finishRestore();
+    saveAccount();
+    logEvent("restore: posting resumed by the user before history finished");
+    publishIdentityState();
+  }
+  return QString();
+}
+
 QString ForumerBackend::createIdentity(QString label, QString password) {
   if (!m_accounts)
     return jsonResult(QStringLiteral("Not ready yet"));
+  if (m_busy)
+    return jsonResult(QString::fromUtf8(kBusy));
+  BusyScope busy(m_busy);
   std::string phrase;
-  auto result = m_accounts->create(label.trimmed().toStdString(), password.toStdString(), phrase);
+  std::string pw = password.toStdString();
+  wipe(password);
+  const std::string name = label.trimmed().toStdString();
+  auto result = runOffThread([&]() { return m_accounts->create(name, pw, phrase); });
+  wipe(pw);
   if (!result.ok())
     return jsonResult(qs(result.error));
 
+  detachAccount();
   m_account = std::move(result.account);
   logEvent("created account " + m_account->state().id);
+  attachAccount();
   publishIdentityState();
 
   const QString out = jsonResult(QString(), qs(phrase));
@@ -565,13 +869,22 @@ QString ForumerBackend::createIdentity(QString label, QString password) {
 QString ForumerBackend::unlockIdentity(QString accountId, QString password) {
   if (!m_accounts)
     return QStringLiteral("Not ready yet");
-  auto result = m_accounts->unlock(accountId.toStdString(), password.toStdString());
+  if (m_busy)
+    return QString::fromUtf8(kBusy);
+  BusyScope busy(m_busy);
+  std::string pw = password.toStdString();
+  wipe(password);
+  const std::string id = accountId.toStdString();
+  auto result = runOffThread([&]() { return m_accounts->unlock(id, pw); });
+  wipe(pw);
   if (!result.ok())
     return qs(result.error);
 
   m_accounts->select(accountId.toStdString());
+  detachAccount();
   m_account = std::move(result.account);
   logEvent("unlocked account " + m_account->state().id);
+  attachAccount();
   publishIdentityState();
   return QString();
 }
@@ -579,34 +892,59 @@ QString ForumerBackend::unlockIdentity(QString accountId, QString password) {
 QString ForumerBackend::restoreIdentity(QString phrase, QString label, QString password) {
   if (!m_accounts)
     return QStringLiteral("Not ready yet");
+  if (m_busy)
+    return QString::fromUtf8(kBusy);
+  BusyScope busy(m_busy);
 
   // Recover the persona counter from authors already in the local post log.
   // (More are found after catch-up; restore again later to pick those up.)
   const std::set<fc::Bytes> known = m_posts ? m_posts->authors() : std::set<fc::Bytes>();
   std::string phraseStd = phrase.toStdString();
-  auto result = m_accounts->restore(phraseStd, label.trimmed().toStdString(),
-                                    password.toStdString(),
-                                    [&known](const fc::Bytes &pk) { return known.count(pk) > 0; });
-  fc::mnemonic::wipe(phraseStd);
+  std::string pw = password.toStdString();
+  wipe(phrase);
+  wipe(password);
+  const std::string name = label.trimmed().toStdString();
+  auto result = runOffThread([&]() {
+    return m_accounts->restore(phraseStd, name, pw,
+                               [&known](const fc::Bytes &pk) { return known.count(pk) > 0; });
+  });
+  wipe(phraseStd);
+  wipe(pw);
   if (!result.ok())
     return qs(result.error);
 
+  detachAccount();
   m_account = std::move(result.account);
   logEvent("restored account " + m_account->state().id + " (next persona " +
-           std::to_string(m_account->state().nextIndex) + ")");
+           std::to_string(m_account->state().nextIndex) +
+           (m_account->restorePending() ? ", recovering from history)" : ")"));
+  attachAccount();
+  // Posts by its personas already in the log rebuild "My posts" now.
+  if (m_posts)
+    for (const auto &p : m_posts->all()) {
+      const auto own = m_ownKeys.find(p.publicKey);
+      if (own != m_ownKeys.end())
+        noteOwnPost(p, own->second);
+    }
   publishIdentityState();
   return QString();
 }
 
 QString ForumerBackend::lockIdentity() {
+  if (m_busy)
+    return QString::fromUtf8(kBusy);
+  detachAccount();
   m_account.reset();
   publishIdentityState();
   return QString();
 }
 
 QString ForumerBackend::selectAccount(QString accountId) {
+  if (m_busy)
+    return QString::fromUtf8(kBusy);
   if (!m_accounts || !m_accounts->select(accountId.toStdString()))
     return QStringLiteral("No such account");
+  detachAccount();
   m_account.reset(); // switching means unlocking the other account
   publishIdentityState();
   return QString();
@@ -615,11 +953,20 @@ QString ForumerBackend::selectAccount(QString accountId) {
 QString ForumerBackend::revealPhrase(QString password) {
   if (!m_account)
     return jsonResult(QStringLiteral("Unlock first"));
+  if (m_busy)
+    return jsonResult(QString::fromUtf8(kBusy));
+  BusyScope busy(m_busy);
   // Re-check the password even though we're unlocked: the phrase is the whole
   // identity, so someone at an unattended screen shouldn't get it for free.
-  auto check = m_accounts->unlock(m_account->state().id, password.toStdString());
+  std::string pw = password.toStdString();
+  wipe(password);
+  const std::string id = m_account->state().id;
+  auto check = runOffThread([&]() { return m_accounts->unlock(id, pw); });
+  wipe(pw);
   if (!check.ok())
     return jsonResult(qs(check.error));
+  if (!m_account || m_account->state().id != id)
+    return jsonResult(QStringLiteral("The account was locked"));
   std::string phrase = fc::mnemonic::encode(m_account->masterSecret());
   const QString out = jsonResult(QString(), qs(phrase));
   fc::mnemonic::wipe(phrase);
@@ -629,8 +976,19 @@ QString ForumerBackend::revealPhrase(QString password) {
 QString ForumerBackend::changePassword(QString oldPassword, QString newPassword) {
   if (!m_account)
     return QStringLiteral("Unlock first");
-  return qs(m_accounts->changePassword(m_account->state().id, oldPassword.toStdString(),
-                                       newPassword.toStdString()));
+  if (m_busy)
+    return QString::fromUtf8(kBusy);
+  BusyScope busy(m_busy);
+  std::string oldPw = oldPassword.toStdString();
+  std::string newPw = newPassword.toStdString();
+  wipe(oldPassword);
+  wipe(newPassword);
+  const std::string id = m_account->state().id;
+  const std::string error =
+      runOffThread([&]() { return m_accounts->changePassword(id, oldPw, newPw); });
+  wipe(oldPw);
+  wipe(newPw);
+  return qs(error);
 }
 
 QString ForumerBackend::renameAccount(QString label) {
@@ -648,13 +1006,35 @@ QString ForumerBackend::renameAccount(QString label) {
 QString ForumerBackend::deleteAccount(QString password) {
   if (!m_account)
     return QStringLiteral("Unlock first");
+  if (m_busy)
+    return QString::fromUtf8(kBusy);
+  BusyScope busy(m_busy);
   const std::string id = m_account->state().id;
-  auto check = m_accounts->unlock(id, password.toStdString());
+  std::string pw = password.toStdString();
+  wipe(password);
+  auto check = runOffThread([&]() { return m_accounts->unlock(id, pw); });
+  wipe(pw);
   if (!check.ok())
     return qs(check.error);
+  if (!m_account || m_account->state().id != id)
+    return QStringLiteral("The account was locked");
   if (!m_accounts->remove(id))
     return QStringLiteral("Couldn't remove the account's files");
+  // Its outbox goes with it (the encrypted file is gone; drop the copy in
+  // memory and any rows a 0.2.2 log still kept in clear).
+  m_ownSaveScheduled = false;
+  if (m_posts) {
+    m_posts->forgetOwn();
+    m_posts->takeLegacy(id);
+    m_posts->dropLegacyTablesIfEmpty();
+  }
+  m_ownKeys.clear();
+  m_ownKeysTo = 0;
   m_account.reset();
+  loadForums();   // none now
+  forgetAccountMedia();
+  publishOwnStates();
+  publishSyncState();
   logEvent("removed account " + id + " from this device");
   publishIdentityState();
   return QString();
@@ -663,7 +1043,10 @@ QString ForumerBackend::deleteAccount(QString password) {
 QString ForumerBackend::rotatePersona() {
   if (!m_account)
     return QStringLiteral("Unlock first");
+  if (m_posts)
+    m_account->skipKnown([this](const fc::Bytes &pk) { return m_posts->hasAuthor(pk); });
   m_account->rotate();
+  extendOwnKeys();
   saveAccount();
   publishIdentityState();
   return QString();
@@ -697,8 +1080,13 @@ QString ForumerBackend::chooseAlias(QString alias) {
   if (!m_account)
     return QStringLiteral("Unlock first");
   alias = alias.trimmed();
-  if (alias.toUtf8().size() > static_cast<int>(fc::post::kMaxAlias))
-    return QStringLiteral("Alias is too long (max %1 characters)").arg(fc::post::kMaxAlias);
+  if (!alias.isEmpty()) {
+    if (const char *problem = fc::post::aliasProblem(alias.toStdString())) {
+      QString message = QString::fromUtf8(problem);
+      message[0] = message[0].toUpper();
+      return message;
+    }
+  }
   m_account->setAlias(alias.toStdString());
   saveAccount();
   publishIdentityState();
@@ -747,6 +1135,7 @@ QString ForumerBackend::markRepliesRead(QString ids) {
       list.push_back(id.trimmed().toStdString());
     ok = m_posts->markRead(account, list, nowMs());
   }
+  saveOwn();
   publishInbox();
   return ok ? QString() : QStringLiteral("Could not save that replies were read");
 }
@@ -763,6 +1152,10 @@ void ForumerBackend::scheduleInbox() {
 
 void ForumerBackend::publishInbox() {
   constexpr size_t kInboxLimit = 200;
+  // While a restore is pending, replies keep arriving from history: mark
+  // the old ones read before they're shown as new.
+  if (m_account && m_account->restorePending())
+    markRestoredRepliesRead();
   QJsonArray inbox;
   if (m_account && m_posts) {
     for (const auto &item : m_posts->inbox(m_account->state().id, kInboxLimit))
@@ -808,6 +1201,7 @@ void ForumerBackend::wireStorage() {
   if (m_storageWired)
     return;
   m_storageWired = true;
+  wireMediaProgress();
 
   modules().storage_module.on("storageStart", [this](const QVariantList &data) {
     const QJsonObject p = payloadOf(data);
@@ -817,7 +1211,12 @@ void ForumerBackend::wireStorage() {
     m_storageState = ok ? QStringLiteral("running") : QStringLiteral("failed");
     m_storageDetail = ok ? QString() : p.value("message").toString();
     if (ok)
-      QTimer::singleShot(0, this, [this]() { refreshStorageInfo(); });  // not from inside the event
+      QTimer::singleShot(0, this, [this]() {   // not from inside the event
+        refreshStorageInfo();
+        mediaStorageReady();
+      });
+    else
+      QTimer::singleShot(0, this, [this]() { mediaStorageFailed(); });
     publishStorage();
   });
 
@@ -838,6 +1237,13 @@ void ForumerBackend::wireStorage() {
   modules().storage_module.on("storageUploadDone", [this](const QVariantList &data) {
     const QJsonObject p = payloadOf(data);
     const QString session = p.value("sessionId").toString();
+    // An image of ours? (One at a time; a done that beats uploadUrl()'s
+    // return carries a session we don't know yet.)
+    if (!m_mediaUploadId.isEmpty() &&
+        (session == m_mediaUploadSession || (m_mediaUploadSession.isEmpty() && !m_storageSharing))) {
+      QTimer::singleShot(0, this, [this, p]() { mediaUploadDone(p); });
+      return;
+    }
     // A tiny file can finish before uploadUrl() has even returned its session
     // id: while we're sharing and don't know the id yet, the first done is ours.
     if (!m_storageSharing ||
@@ -871,6 +1277,10 @@ void ForumerBackend::wireStorage() {
   modules().storage_module.on("storageDownloadManifestDone", [this](const QVariantList &data) {
     const QJsonObject p = payloadOf(data);
     const QString cid = p.value("cid").toString();
+    if (m_mediaFetches.count(cid.toStdString())) {
+      QTimer::singleShot(0, this, [this, p]() { mediaManifestDone(p); });
+      return;
+    }
     if (cid != m_storageFetch.value("cid").toString() ||
         m_storageFetch.value("state").toString() != QLatin1String("manifest"))
       return;
@@ -891,6 +1301,13 @@ void ForumerBackend::wireStorage() {
   modules().storage_module.on("storageDownloadDone", [this](const QVariantList &data) {
     const QJsonObject p = payloadOf(data);
     const QString cid = p.value("sessionId").toString();  // a download's session id is its CID
+    if (m_mediaFetches.count(cid.toStdString())) {
+      QTimer::singleShot(0, this, [this, p]() { mediaDownloadDone(p); });
+      return;
+    }
+    if (!m_mediaFetches.empty() && cid != m_storageFetch.value("cid").toString())
+      logEvent("media: a download we don't know ended: " +
+               QString::fromUtf8(QJsonDocument(p).toJson(QJsonDocument::Compact)).toStdString());
     if (cid != m_storageFetch.value("cid").toString() ||
         m_storageFetch.value("state").toString() != QLatin1String("fetching"))
       return;
@@ -914,8 +1331,60 @@ void ForumerBackend::wireStorage() {
   });
 }
 
+void ForumerBackend::wireMediaProgress() {
+  modules().storage_module.on("storageUploadProgress", [this](const QVariantList &data) {
+    const QJsonObject p = payloadOf(data);
+    if (m_mediaUploadId.isEmpty() || p.value("sessionId").toString() != m_mediaUploadSession)
+      return;
+    const double total = p.value("total").toDouble();
+    if (total > 0)
+      for (auto &a : m_attachments)
+        if (a.id == m_mediaUploadId)
+          a.progress = static_cast<int>(100.0 * p.value("bytes").toDouble() / total);
+    QTimer::singleShot(0, this, [this]() { publishMedia(); });
+  });
+  modules().storage_module.on("storageDownloadProgress", [this](const QVariantList &data) {
+    const QJsonObject p = payloadOf(data);
+    const std::string cid = p.value("sessionId").toString().toStdString();
+    auto it = m_mediaFetches.find(cid);
+    const double total = p.value("total").toDouble();
+    if (it == m_mediaFetches.end()) {
+      if (!m_mediaFetches.empty() && m_storageFetch.value("cid").toString().toStdString() != cid)
+        logEvent("media: progress for a download we don't know: " + cid);
+      return;
+    }
+    it->second.lastProgressMs = nowMs();
+    if (total <= 0)
+      return;
+    const int pct = static_cast<int>(100.0 * p.value("bytes").toDouble() / total);
+    if (pct == it->second.progress)
+      return;
+    if (pct / 25 != it->second.progress / 25 || it->second.progress < 0)
+      logEvent("media: " + cid + " downloading " + std::to_string(pct) + "% of " +
+               std::to_string(static_cast<qint64>(total)) + " bytes");
+    it->second.progress = pct;
+    const auto waiters = it->second.waiters;
+    QTimer::singleShot(0, this, [this, waiters, pct]() {
+      for (const auto &w : waiters)
+        emit mediaLoaded(w.first, w.second, QStringLiteral("fetching"), QString::number(pct));
+    });
+  });
+}
+
 QString ForumerBackend::storageStart() {
+  // A developer tool (F17): it shares this machine's addresses with whoever
+  // gets the share code.
+  if (!devMode())
+    return QStringLiteral("The storage probe is a developer tool: start Forumer with FORUMER_DEV=1");
+  return startStorageNode();
+}
+
+// The storage node, for the probe and for images. Started on first use, not
+// at launch: a running node joins the storage network's DHT.
+QString ForumerBackend::startStorageNode() {
   wireStorage();
+  if (m_storageState == QLatin1String("starting"))
+    return QString();
   if (m_storageState == QLatin1String("running")) {
     refreshStorageInfo();
     return QString();
@@ -946,6 +1415,7 @@ QString ForumerBackend::storageStart() {
     m_storageState = QStringLiteral("failed");
     m_storageDetail = QStringLiteral("Could not create a storage node");
     publishStorage();
+    QTimer::singleShot(0, this, [this]() { mediaStorageFailed(); });
     return m_storageDetail;
   }
   logEvent(std::string("storage: ") + (created ? "created node" : "attached to the running node"));
@@ -954,6 +1424,7 @@ QString ForumerBackend::storageStart() {
     m_storageState = QStringLiteral("running");
     m_storageDetail.clear();
     refreshStorageInfo();
+    QTimer::singleShot(0, this, [this]() { mediaStorageReady(); });
     return QString();
   }
 
@@ -967,6 +1438,7 @@ QString ForumerBackend::storageStart() {
       m_storageState = QStringLiteral("failed");
       m_storageDetail = QStringLiteral("The storage node refused to start");
       publishStorage();
+      QTimer::singleShot(0, this, [this]() { mediaStorageFailed(); });
       return m_storageDetail;
     }
   }
@@ -1012,6 +1484,8 @@ void ForumerBackend::refreshStorageInfo() {
 }
 
 QString ForumerBackend::storageShareTest() {
+  if (!devMode())
+    return QStringLiteral("The storage probe is a developer tool: start Forumer with FORUMER_DEV=1");
   if (m_storageState != QLatin1String("running"))
     return QStringLiteral("Start storage first");
   if (m_storageSharing)
@@ -1060,6 +1534,8 @@ QString ForumerBackend::storageShareTest() {
 }
 
 QString ForumerBackend::storageFetch(QString code) {
+  if (!devMode())
+    return QStringLiteral("The storage probe is a developer tool: start Forumer with FORUMER_DEV=1");
   // A share code is cid@peerId@addr,addr; a bare CID also works (the
   // network is then asked who holds it).
   const QStringList parts = code.trimmed().split(QLatin1Char('@'));
@@ -1183,26 +1659,1058 @@ void ForumerBackend::publishStorage() {
       {"fetch", m_storageFetch},
   };
   setStorageJson(QString::fromUtf8(QJsonDocument(state).toJson(QJsonDocument::Compact)));
+  publishMedia();   // the composers show the node's state next to attachments
+}
+
+// ── Media: images in posts, through Logos Storage ────────────────────────────
+//
+// Attaching: the picture is re-encoded (image_prep.cpp), sealed
+// (forumer_core/media.h), written to a temporary file and uploaded - one at a
+// time, in the background, as soon as the storage node runs. A post is signed
+// only once all its images have a CID. Reading: nothing is fetched until the
+// reader clicks; the blob is fetched by CID, opened, checked against what the
+// author signed, and handed to the view as a data: URL (never written to disk
+// in clear). Whether fetched images are announced and served to others
+// ("re-host") is the reader's choice (mediaRehost).
+
+namespace {
+
+constexpr qint64 kMediaUploadTimeoutMs = 180'000;
+constexpr qint64 kMediaStepTimeoutMs = 180'000;   // manifest lookup, then the download
+constexpr qint64 kMediaCacheMaxBytes = 96LL * 1024 * 1024;
+
+QString dataUrl(const QString &mime, const QByteArray &bytes) {
+  return QStringLiteral("data:") + mime + QStringLiteral(";base64,") + QString::fromLatin1(bytes.toBase64());
+}
+
+bool attachmentGroupOk(const QString &g) {
+  if (g.isEmpty() || g.size() > 16)
+    return false;
+  for (const QChar c : g)
+    if (!(c >= QLatin1Char('a') && c <= QLatin1Char('z')))
+      return false;
+  return true;
+}
+
+} // namespace
+
+QString ForumerBackend::mediaDir() const { return dataDir() + QStringLiteral("/media"); }
+
+QString ForumerBackend::mediaSummary(const fc::post::Post &post) const {
+  QJsonArray list;
+  for (const auto &m : post.content.media)
+    list.append(QJsonObject{{"mime", qs(m.mime)},
+                            {"size", static_cast<qint64>(m.size)},
+                            {"ok", fc::media::usable(m)}});
+  return QString::fromUtf8(QJsonDocument(list).toJson(QJsonDocument::Compact));
+}
+
+void ForumerBackend::loadMediaSettings() {
+  setMediaRehost(readTextFile(dataDir() + QStringLiteral("/media-rehost")) != QLatin1String("0"));
+  setMediaAutoFull(readTextFile(dataDir() + QStringLiteral("/media-autofull")) != QLatin1String("0"));
+  // Left over from a session that ended mid-upload or mid-fetch.
+  QDir(mediaDir() + QStringLiteral("/tmp")).removeRecursively();
+  publishMedia();
+}
+
+QString ForumerBackend::chooseMediaRehost(bool on) {
+  QDir().mkpath(dataDir());
+  if (!writeTextFile(dataDir() + QStringLiteral("/media-rehost"), on ? QStringLiteral("1") : QStringLiteral("0")))
+    return QStringLiteral("Could not save the choice");
+  setMediaRehost(on);
+  logEvent(std::string("media: re-hosting ") + (on ? "on" : "off"));
+  return QString();
+}
+
+void ForumerBackend::publishMedia() {
+  QJsonArray list;
+  for (const auto &a : m_attachments)
+    list.append(QJsonObject{
+        {"id", a.id},
+        {"group", a.group},
+        {"forum", a.forum},
+        {"name", a.name},
+        {"state", a.state},
+        {"error", a.error},
+        {"progress", a.progress},
+        {"thumb", a.thumb},
+        {"mime", qs(a.ref.mime)},
+        {"size", static_cast<qint64>(a.ref.size)},
+        {"width", a.width},
+        {"height", a.height},
+    });
+  const QJsonObject root{
+      {"storage", m_storageState.isEmpty() ? QStringLiteral("off") : m_storageState},
+      {"detail", m_storageDetail},
+      {"attachments", list},
+      {"picker", pickerAvailable()},
+      {"picking", m_picker ? m_pickerGroup : QString()},
+      {"notice", m_mediaNotice},
+      {"noticeGroup", m_mediaNoticeGroup},
+  };
+  const QString json = QString::fromUtf8(QJsonDocument(root).toJson(QJsonDocument::Compact));
+  if (json != mediaJson())
+    setMediaJson(json);
+}
+
+QString ForumerBackend::attachImage(QString group, QString forum, QString path) {
+  if (m_mediaNoticeGroup == group)
+    m_mediaNotice.clear();
+  if (!m_account)
+    return QStringLiteral("Unlock first");
+  if (m_busy)
+    return QString::fromUtf8(kBusy);
+  if (!attachmentGroupOk(group))
+    return QStringLiteral("Unknown composer");
+  const std::string where = forum.isEmpty() ? std::string(kForum) : forum.toStdString();
+  if (where != kForum && !privateForum(where))
+    return QStringLiteral("You're not in that private forum");
+  size_t inGroup = 0;
+  for (const auto &a : m_attachments)
+    if (a.group == group)
+      ++inGroup;
+  if (inGroup >= fc::media::kMaxPerPost)
+    return QStringLiteral("At most %1 images per post").arg(fc::media::kMaxPerPost);
+
+  // The view hands over a file:// URL (file picker, drag and drop) or a path.
+  QString local = path.trimmed();
+  if (local.startsWith(QLatin1String("file:")))
+    local = QUrl(local).toLocalFile();
+  if (local.isEmpty())
+    return QStringLiteral("No file");
+
+  const std::string accountId = m_account->state().id;
+  BusyScope busy(m_busy);
+  PreparedImage prep = runOffThread([&]() { return prepareImage(local); });
+  if (!prep.error.isEmpty())
+    return prep.error;
+  if (!m_account || m_account->state().id != accountId)
+    return QStringLiteral("The account was locked");
+  const fc::forums::Forum *f = where == kForum ? nullptr : privateForum(where);
+  if (where != kForum && !f)
+    return QStringLiteral("You're not in that private forum");
+
+  const fc::Bytes image(prep.bytes.begin(), prep.bytes.end());
+  auto sealed = fc::media::seal(image, prep.mime.toStdString(), f ? &f->key : nullptr);
+  if (!sealed)
+    return QStringLiteral("Couldn't prepare the image");
+  for (const auto &a : m_attachments)
+    if (a.group == group && a.ref.sha256 == sealed->sha256)
+      return QStringLiteral("That image is already attached");
+
+  Attachment a;
+  a.id = QUuid::createUuid().toString(QUuid::Id128).left(12);
+  a.group = group;
+  a.forum = qs(where);
+  a.name = QFileInfo(local).fileName().left(80);
+  a.state = QStringLiteral("queued");
+  a.ref.mime = prep.mime.toStdString();
+  a.ref.size = sealed->size;
+  a.ref.sha256 = sealed->sha256;
+  a.width = prep.width;
+  a.height = prep.height;
+  a.thumb = prep.thumbJpeg.isEmpty() ? QString() : dataUrl(QStringLiteral("image/jpeg"), prep.thumbJpeg);
+  a.preview = prep.previewJpeg;
+  // A folder per upload, the file always named the same: the name goes into
+  // the storage manifest, so it must say nothing about the picture.
+  const QString dir = mediaDir() + QStringLiteral("/tmp/up-") + a.id;
+  QDir().mkpath(dir);
+  ownerOnly(mediaDir(), true);
+  a.blobPath = dir + QStringLiteral("/forumer-media.bin");
+  QFile out(a.blobPath);
+  if (!out.open(QIODevice::WriteOnly | QIODevice::Truncate) ||
+      out.write(reinterpret_cast<const char *>(sealed->blob.data()), static_cast<qint64>(sealed->blob.size())) !=
+          static_cast<qint64>(sealed->blob.size()))
+    return QStringLiteral("Couldn't write the image for upload");
+  out.close();
+
+  // Our own picture shows at once, without a round trip through Storage.
+  cachePut(qs(sealed->sha256) + QLatin1Char('|') + a.forum, dataUrl(prep.mime, prep.bytes));
+  logEvent("media: attached " + std::to_string(sealed->size) + " bytes (" + prep.mime.toStdString() + ")");
+  m_attachments.push_back(std::move(a));
+  publishMedia();
+  if (m_storageState == QLatin1String("running"))
+    pumpUploads();
+  else
+    startStorageNode();
+  return QString();
+}
+
+QString ForumerBackend::removeAttachment(QString group, QString id) {
+  for (const auto &a : m_attachments)
+    if (a.group == group && a.id == id) {
+      dropAttachment(id);
+      publishMedia();
+      pumpUploads();
+      return QString();
+    }
+  return QStringLiteral("Not attached");
+}
+
+QString ForumerBackend::clearAttachments(QString group) {
+  std::vector<QString> ids;
+  for (const auto &a : m_attachments)
+    if (a.group == group)
+      ids.push_back(a.id);
+  for (const auto &id : ids)
+    dropAttachment(id);
+  publishMedia();
+  pumpUploads();
+  return QString();
+}
+
+QString ForumerBackend::retryAttachment(QString group, QString id) {
+  for (auto &a : m_attachments)
+    if (a.group == group && a.id == id &&
+        (a.state == QLatin1String("failed") || a.state == QLatin1String("queued"))) {
+      a.state = QStringLiteral("queued");
+      a.error.clear();
+      a.progress = 0;
+      publishMedia();
+      if (m_storageState == QLatin1String("running"))
+        pumpUploads();
+      else
+        startStorageNode();
+      return QString();
+    }
+  return QStringLiteral("Nothing to retry");
+}
+
+void ForumerBackend::dropAttachment(const QString &id) {
+  for (auto it = m_attachments.begin(); it != m_attachments.end(); ++it) {
+    if (it->id != id)
+      continue;
+    if (m_mediaUploadId == id) {
+      if (!m_mediaUploadSession.isEmpty())
+        modules().storage_module.uploadCancel(m_mediaUploadSession);
+      m_mediaUploadId.clear();
+      m_mediaUploadSession.clear();
+    }
+    QDir(QFileInfo(it->blobPath).absolutePath()).removeRecursively();
+    m_attachments.erase(it);
+    return;
+  }
+}
+
+void ForumerBackend::forgetAccountMedia() {
+  std::vector<QString> ids;
+  for (const auto &a : m_attachments)
+    ids.push_back(a.id);
+  for (const auto &id : ids)
+    dropAttachment(id);
+  // Private forums' pictures leave memory with their keys.
+  for (auto it = m_mediaCache.begin(); it != m_mediaCache.end();) {
+    if (!it.key().endsWith(QLatin1String("|public"))) {
+      m_mediaCacheBytes -= it.value().size();
+      m_mediaCacheOrder.removeAll(it.key());
+      it = m_mediaCache.erase(it);
+    } else {
+      ++it;
+    }
+  }
+  publishMedia();
+}
+
+void ForumerBackend::cachePut(const QString &key, const QString &url) {
+  if (m_mediaCache.contains(key))
+    return;
+  m_mediaCache.insert(key, url);
+  m_mediaCacheOrder.append(key);
+  m_mediaCacheBytes += url.size();
+  while (m_mediaCacheBytes > kMediaCacheMaxBytes && m_mediaCacheOrder.size() > 1) {
+    const QString old = m_mediaCacheOrder.takeFirst();
+    m_mediaCacheBytes -= m_mediaCache.value(old).size();
+    m_mediaCache.remove(old);
+  }
+}
+
+void ForumerBackend::pumpUploads() {
+  if (!m_mediaUploadId.isEmpty() || m_storageState != QLatin1String("running"))
+    return;
+  for (auto &a : m_attachments) {
+    if (a.state != QLatin1String("queued"))
+      continue;
+    const QString id = a.id;
+    m_mediaUploadId = id;
+    m_mediaUploadSession.clear();
+    a.state = QStringLiteral("uploading");
+    a.progress = 0;
+    // advertise: announce it, so readers can find it.
+    LogosResult r = modules().storage_module.uploadUrl(a.blobPath, kStorageChunk, true);
+    if (!r.success) {
+      m_mediaUploadId.clear();
+      a.state = QStringLiteral("failed");
+      a.error = QStringLiteral("Storage refused the upload: %1").arg(r.getError());
+      logEvent("media: upload refused: " + r.getError().toStdString());
+      continue;
+    }
+    if (m_mediaUploadId == id && m_mediaUploadSession.isEmpty())
+      m_mediaUploadSession = r.value.toString();
+    logEvent("media: uploading " + id.toStdString());
+    QTimer::singleShot(kMediaUploadTimeoutMs, this, [this, id]() {
+      if (m_mediaUploadId != id)
+        return;
+      if (!m_mediaUploadSession.isEmpty())
+        modules().storage_module.uploadCancel(m_mediaUploadSession);
+      m_mediaUploadId.clear();
+      m_mediaUploadSession.clear();
+      for (auto &x : m_attachments)
+        if (x.id == id) {
+          x.state = QStringLiteral("failed");
+          x.error = QStringLiteral("The upload didn't finish within 3 minutes");
+        }
+      logEvent("media: upload timed out");
+      publishMedia();
+      pumpUploads();
+    });
+    break;
+  }
+  publishMedia();
+}
+
+void ForumerBackend::mediaUploadDone(const QJsonObject &p) {
+  const QString id = m_mediaUploadId;
+  m_mediaUploadId.clear();
+  m_mediaUploadSession.clear();
+  for (auto &a : m_attachments) {
+    if (a.id != id)
+      continue;
+    const QString cid = p.value("cid").toString();
+    if (p.value("success").toBool() && fc::media::cidShape(cid.toStdString())) {
+      a.ref.cid = cid.toStdString();
+      a.state = QStringLiteral("ready");
+      a.progress = 100;
+      a.error.clear();
+      QDir(QFileInfo(a.blobPath).absolutePath()).removeRecursively();
+      logEvent("media: uploaded " + id.toStdString() + " as " + a.ref.cid);
+      m_ownMediaCids.insert(a.ref.cid);   // we answer "who holds it?" for these
+    } else {
+      a.state = QStringLiteral("failed");
+      a.error = p.value("error").toString();
+      if (a.error.isEmpty())
+        a.error = QStringLiteral("Storage returned no id for it");
+      logEvent("media: upload failed: " + a.error.toStdString());
+    }
+  }
+  publishMedia();
+  pumpUploads();
+}
+
+void ForumerBackend::mediaStorageReady() {
+  logEvent("media: storage node running");
+  publishMedia();
+  pumpUploads();
+  std::vector<std::string> waiting;
+  for (const auto &[cid, f] : m_mediaFetches)
+    if (f.state == QLatin1String("storage"))
+      waiting.push_back(cid);
+  for (const auto &cid : waiting)
+    startMediaFetch(cid);
+}
+
+void ForumerBackend::mediaStorageFailed() {
+  publishMedia();
+  std::vector<std::string> waiting;
+  for (const auto &[cid, f] : m_mediaFetches)
+    if (f.state == QLatin1String("storage"))
+      waiting.push_back(cid);
+  for (const auto &cid : waiting)
+    failMediaFetch(cid, QStringLiteral("The storage node didn't start: %1").arg(m_storageDetail));
+}
+
+QString ForumerBackend::loadMedia(QString postId, int index) {
+  if (!m_posts)
+    return QStringLiteral("Not ready yet");
+  auto post = loadPost(postId.toStdString());
+  if (!post)
+    return QStringLiteral("That post isn't on this device");
+  if (index < 0 || static_cast<size_t>(index) >= post->content.media.size())
+    return QStringLiteral("No such image");
+  const fc::post::MediaRef ref = post->content.media[static_cast<size_t>(index)];
+  if (!fc::media::usable(ref))
+    return QStringLiteral("This attachment can't be shown (not a JPEG or PNG within 5 MB)");
+  const std::string forum = post->content.forum;
+
+  const QString key = qs(ref.sha256) + QLatin1Char('|') + qs(forum);
+  const auto hit = m_mediaCache.constFind(key);
+  if (hit != m_mediaCache.constEnd()) {
+    const QString url = hit.value();
+    QTimer::singleShot(0, this, [this, postId, index, url]() {
+      emit mediaLoaded(postId, index, QStringLiteral("done"), url);
+    });
+    return QString();
+  }
+
+  auto &f = m_mediaFetches[ref.cid];
+  const bool fresh = f.state.isEmpty();
+  const QPair<QString, int> who(postId, index);
+  if (!f.waiters.contains(who))
+    f.waiters.append(who);
+  if (fresh) {
+    f.ref = ref;
+    f.forum = forum;
+    f.startedMs = nowMs();
+    f.state = QStringLiteral("storage");
+    logEvent("media: loading " + ref.cid);
+    // Ask the forum who holds it, while our node starts or looks it up.
+    askForHolders(ref.cid, forum);
+    if (m_storageState == QLatin1String("running")) {
+      startMediaFetch(ref.cid);
+    } else {
+      const QString err = startStorageNode();
+      if (!err.isEmpty()) {
+        failMediaFetch(ref.cid, QStringLiteral("The storage node didn't start: %1").arg(err));
+        return QString();
+      }
+    }
+  }
+  const auto it = m_mediaFetches.find(ref.cid);
+  if (it != m_mediaFetches.end()) {
+    const QString shown = it->second.state == QLatin1String("storage") ? QStringLiteral("starting")
+                                                                        : QStringLiteral("fetching");
+    QTimer::singleShot(0, this, [this, postId, index, shown]() {
+      emit mediaLoaded(postId, index, shown, QString());
+    });
+  }
+  return QString();
+}
+
+void ForumerBackend::startMediaFetch(const std::string &cid) {
+  auto it = m_mediaFetches.find(cid);
+  if (it == m_mediaFetches.end())
+    return;
+  MediaFetch &f = it->second;
+  // Holders that answered while our node was starting.
+  const auto hints = f.hints;
+  if (!hints.empty())
+    QTimer::singleShot(0, this, [this, cid, hints]() {
+      for (const auto &h : hints)
+        dialHolder(cid, h);
+    });
+  QDir().mkpath(mediaDir() + QStringLiteral("/tmp"));
+  ownerOnly(mediaDir(), true);
+  f.path = mediaDir() + QStringLiteral("/tmp/in-") + qs(cid).right(24) + QStringLiteral(".bin");
+  QFile::remove(f.path);
+  // Already in our node (our own upload, or fetched before)? Then no lookup.
+  LogosResult held = modules().storage_module.exists(qs(cid));
+  if (held.success && held.value.toBool()) {
+    mediaDownload(cid, true);
+    return;
+  }
+  f.state = QStringLiteral("manifest");
+  notifyMediaFetching(cid, QStringLiteral("lookup"));
+  const int gen = ++f.generation;
+  LogosResult r = modules().storage_module.downloadManifest(qs(cid), false, mediaRehost());
+  if (!r.success) {
+    failMediaFetch(cid, QStringLiteral("Storage refused the lookup: %1").arg(r.getError()));
+    return;
+  }
+  QTimer::singleShot(kMediaStepTimeoutMs, this, [this, cid, gen]() {
+    auto t = m_mediaFetches.find(cid);
+    if (t != m_mediaFetches.end() && t->second.generation == gen && t->second.state == QLatin1String("manifest"))
+      failMediaFetch(cid, QStringLiteral("Nobody holding this image answered within 3 minutes - "
+                                         "its holders may be offline. Try again later."));
+  });
+}
+
+void ForumerBackend::mediaManifestDone(const QJsonObject &p) {
+  const std::string cid = p.value("cid").toString().toStdString();
+  auto it = m_mediaFetches.find(cid);
+  if (it == m_mediaFetches.end() || it->second.state != QLatin1String("manifest"))
+    return;
+  if (!p.value("success").toBool()) {
+    failMediaFetch(cid, QStringLiteral("Couldn't find anyone holding this image (%1)").arg(p.value("error").toString()));
+    return;
+  }
+  // Before downloading anything: is it the size the post says?
+  const double declared = p.value("manifest").toObject().value("datasetSize").toDouble();
+  const double expected = static_cast<double>(it->second.ref.size + fc::media::kBlobOverhead);
+  if (declared > 0 && declared != expected) {
+    failMediaFetch(cid, QStringLiteral("The stored file isn't the one the post names - not loaded"));
+    return;
+  }
+  mediaDownload(cid, false);
+}
+
+void ForumerBackend::mediaDownload(const std::string &cid, bool local) {
+  auto it = m_mediaFetches.find(cid);
+  if (it == m_mediaFetches.end())
+    return;
+  MediaFetch &f = it->second;
+  f.state = QStringLiteral("fetching");
+  f.local = local;
+  f.lastProgressMs = nowMs();
+  f.downloadStartedMs = nowMs();
+  notifyMediaFetching(cid, QStringLiteral("download"));
+  logEvent("media: " + cid + " download started (" + (local ? "local" : "network") + ")");
+  const int gen = ++f.generation;
+  LogosResult r = modules().storage_module.downloadToUrl(qs(cid), f.path, local, kStorageChunk, false,
+                                                         mediaRehost());
+  if (!r.success) {
+    if (local) {
+      startMediaFetchFromNetwork(cid);
+      return;
+    }
+    failMediaFetch(cid, QStringLiteral("Storage refused the download: %1").arg(r.getError()));
+    return;
+  }
+  watchDownload(cid, gen);
+}
+
+// A download fails when it stops moving, not after a fixed time: no progress
+// for a minute and it is cancelled and started again once, then given up.
+void ForumerBackend::watchDownload(const std::string &cid, int gen) {
+  QTimer::singleShot(15'000, this, [this, cid, gen]() {
+    auto t = m_mediaFetches.find(cid);
+    if (t == m_mediaFetches.end() || t->second.generation != gen || t->second.state != QLatin1String("fetching"))
+      return;
+    MediaFetch &f = t->second;
+    const qint64 now = nowMs();
+    const bool stalled = now - f.lastProgressMs > 60'000;
+    const bool tooLong = now - f.downloadStartedMs > 6 * 60'000;
+    if (!stalled && !tooLong) {
+      watchDownload(cid, gen);
+      return;
+    }
+    modules().storage_module.downloadCancel(qs(cid));
+    if (stalled && f.retries == 0 && !f.local) {
+      ++f.retries;
+      logEvent("media: " + cid + " download stalled at " + std::to_string(std::max(0, f.progress)) +
+               "% - starting it again");
+      // The cancelled download reports its own end ("failed") first; start
+      // again once it has, or after a few seconds if it never does.
+      f.state = QStringLiteral("restarting");
+      const int restartGen = ++f.generation;
+      QTimer::singleShot(5'000, this, [this, cid, restartGen]() {
+        auto x = m_mediaFetches.find(cid);
+        if (x != m_mediaFetches.end() && x->second.generation == restartGen &&
+            x->second.state == QLatin1String("restarting"))
+          restartDownload(cid);
+      });
+      return;
+    }
+    failMediaFetch(cid, tooLong ? QStringLiteral("The download took over 6 minutes - try again later")
+                                : QStringLiteral("The download stopped moving (%1%) - try again later")
+                                      .arg(std::max(0, f.progress)));
+  });
+}
+
+void ForumerBackend::startMediaFetchFromNetwork(const std::string &cid) {
+  auto it = m_mediaFetches.find(cid);
+  if (it == m_mediaFetches.end())
+    return;
+  MediaFetch &f = it->second;
+  f.state = QStringLiteral("manifest");
+  notifyMediaFetching(cid, QStringLiteral("lookup"));
+  const int gen = ++f.generation;
+  LogosResult r = modules().storage_module.downloadManifest(qs(cid), false, mediaRehost());
+  if (!r.success) {
+    failMediaFetch(cid, QStringLiteral("Storage refused the lookup: %1").arg(r.getError()));
+    return;
+  }
+  QTimer::singleShot(kMediaStepTimeoutMs, this, [this, cid, gen]() {
+    auto t = m_mediaFetches.find(cid);
+    if (t != m_mediaFetches.end() && t->second.generation == gen && t->second.state == QLatin1String("manifest"))
+      failMediaFetch(cid, QStringLiteral("Nobody holding this image answered within 3 minutes - "
+                                         "its holders may be offline. Try again later."));
+  });
+}
+
+void ForumerBackend::restartDownload(const std::string &cid) {
+  auto it = m_mediaFetches.find(cid);
+  if (it == m_mediaFetches.end())
+    return;
+  QFile::remove(it->second.path);
+  it->second.progress = -1;
+  QTimer::singleShot(500, this, [this, cid]() { mediaDownload(cid, false); });
+}
+
+void ForumerBackend::mediaDownloadDone(const QJsonObject &p) {
+  const std::string cid = p.value("sessionId").toString().toStdString();
+  {
+    auto r = m_mediaFetches.find(cid);
+    if (r != m_mediaFetches.end() && r->second.state == QLatin1String("restarting")) {
+      restartDownload(cid);   // the end of the download we cancelled
+      return;
+    }
+  }
+  auto it = m_mediaFetches.find(cid);
+  if (it == m_mediaFetches.end() || it->second.state != QLatin1String("fetching"))
+    return;
+  MediaFetch &f = it->second;
+  if (!p.value("success").toBool()) {
+    if (f.local) {   // thought we held it; ask the network after all
+      startMediaFetchFromNetwork(cid);
+      return;
+    }
+    failMediaFetch(cid, QStringLiteral("The download failed: %1").arg(p.value("error").toString()));
+    return;
+  }
+  QFile file(f.path);
+  const qint64 limit = static_cast<qint64>(f.ref.size + fc::media::kBlobOverhead);
+  if (!file.open(QIODevice::ReadOnly) || file.size() != limit) {
+    failMediaFetch(cid, QStringLiteral("The stored file isn't the one the post names - not shown"));
+    return;
+  }
+  const QByteArray raw = file.readAll();
+  file.close();
+  QFile::remove(f.path);
+
+  const fc::forums::Forum *forum = f.forum == kForum ? nullptr : privateForum(f.forum);
+  if (f.forum != kForum && !forum) {
+    failMediaFetch(cid, QStringLiteral("Locked: this image belongs to a private forum"));
+    return;
+  }
+  const fc::Bytes blob(raw.begin(), raw.end());
+  auto image = fc::media::open(blob, f.ref, forum ? &forum->key : nullptr);
+  if (!image) {
+    failMediaFetch(cid, QStringLiteral("The file doesn't match what the author signed - not shown"));
+    return;
+  }
+  const QString url = dataUrl(qs(f.ref.mime),
+                              QByteArray(reinterpret_cast<const char *>(image->data()), static_cast<qsizetype>(image->size())));
+  cachePut(qs(f.ref.sha256) + QLatin1Char('|') + qs(f.forum), url);
+  logEvent("media: loaded " + cid + " in " + std::to_string(nowMs() - f.startedMs) + " ms");
+  const auto waiters = f.waiters;
+  m_mediaFetches.erase(it);
+  for (const auto &w : waiters)
+    emit mediaLoaded(w.first, w.second, QStringLiteral("done"), url);
+}
+
+// The node is up and the fetch is under way: the cards stop saying "starting".
+void ForumerBackend::notifyMediaFetching(const std::string &cid, const QString &phase) {
+  auto it = m_mediaFetches.find(cid);
+  if (it == m_mediaFetches.end())
+    return;
+  it->second.phase = phase;
+  const auto waiters = it->second.waiters;
+  QTimer::singleShot(0, this, [this, waiters, phase]() {
+    for (const auto &w : waiters)
+      emit mediaLoaded(w.first, w.second, QStringLiteral("fetching"), phase);
+  });
+}
+
+// ── Holder hints (sync.h: mask / mhere) ───────────────────────────────────────
+//
+// The storage network finds an image's holders through its DHT, which takes
+// a minute or more from a home connection. Forumer peers can say it faster:
+// whoever is about to fetch asks on the forum's topic, a holder answers with
+// its storage node's id and addresses, and the asker dials it directly. A
+// holder answers only for images it uploaded (already announced on the DHT)
+// or, with "help keep them available" on, images it fetched.
+
+void ForumerBackend::askForHolders(const std::string &cid, const std::string &forum) {
+  const qint64 now = nowMs();
+  const auto last = m_hintAskedAt.find(cid);
+  if (last != m_hintAskedAt.end() && now - last->second < 60'000)
+    return;
+  m_hintAskedAt[cid] = now;
+  if (!m_joined || !m_transport)
+    return;
+  const auto r = publishTo(forum, fc::sync::encodeMediaAsk(cid));
+  logEvent("media: asked who holds " + cid + (r.ok ? "" : " (failed: " + r.error + ")"));
+}
+
+void ForumerBackend::handleMediaAsk(const std::string &cid, const std::string &forum) {
+  if (m_mediaFetches.count(cid) || m_previewAskedAt.count(cid))
+    return;   // our own question coming back, or fetching it ourselves
+  // Its preview, if we have it: sent again after a moment, unless someone
+  // else does first.
+  for (const auto &pv : m_posts ? m_posts->previewsOf(cid) : std::vector<fc::PostStore::Preview>{}) {
+    const std::string key = pv.postId + ":" + std::to_string(pv.index);
+    const qint64 asked = nowMs();
+    QTimer::singleShot(200 + jitter(2'000), this, [this, key, pv, forum, asked]() {
+      const auto seen = m_previewSeenAt.find(key);
+      if (seen != m_previewSeenAt.end() && seen->second >= asked)
+        return;
+      sendPreview(pv.postId, pv.index, forum);
+    });
+  }
+  if (m_storageState != QLatin1String("running") || m_storagePeerId.isEmpty() || m_storageAddrs.isEmpty()) {
+    logEvent("media: asked about " + cid + " - not answering: storage " + m_storageState.toStdString() +
+             ", peer id " + (m_storagePeerId.isEmpty() ? "unknown" : "known") + ", " +
+             std::to_string(m_storageAddrs.size()) + " address(es)");
+    return;
+  }
+  if (!m_ownMediaCids.count(cid) && !mediaRehost()) {
+    logEvent("media: asked about " + cid + " - not answering: re-hosting is off");
+    return;   // not offering what we only viewed
+  }
+  const qint64 now = nowMs();
+  const auto sent = m_hintSentAt.find(cid);
+  if (sent != m_hintSentAt.end() && now - sent->second < 30'000)
+    return;
+  LogosResult held = modules().storage_module.exists(qs(cid));
+  if (!held.success || !held.value.toBool()) {
+    logEvent("media: asked about " + cid + " - not held here (exists: " +
+             (held.success ? held.value.toString().toStdString() : "error " + held.getError().toStdString()) + ")");
+    return;
+  }
+  // A moment's random delay: if another holder answers first, stay quiet.
+  const int delay = 300 + jitter(2'500);
+  QTimer::singleShot(delay, this, [this, cid, forum, asked = now]() {
+    const auto seen = m_hintSeenAt.find(cid);
+    if (seen != m_hintSeenAt.end() && seen->second >= asked)
+      return;
+    fc::sync::MediaHint hint;
+    hint.cid = cid;
+    hint.peer = m_storagePeerId.toStdString();
+    for (const QString &a : m_storageAddrs) {
+      if (hint.addrs.size() >= fc::sync::kMaxHintAddrs)
+        break;
+      hint.addrs.push_back(a.toStdString());
+    }
+    m_hintSentAt[cid] = nowMs();
+    m_hintSeenAt[cid] = nowMs();
+    const auto r = publishTo(forum, fc::sync::encodeMediaHere(hint));
+    logEvent("media: told the forum we hold " + cid + (r.ok ? "" : " (failed: " + r.error + ")"));
+  });
+}
+
+void ForumerBackend::handleMediaHere(const fc::sync::MediaHint &hint) {
+  m_hintSeenAt[hint.cid] = nowMs();
+  auto it = m_mediaFetches.find(hint.cid);
+  if (it == m_mediaFetches.end() || hint.peer == m_storagePeerId.toStdString())
+    return;
+  MediaFetch &f = it->second;
+  for (const auto &h : f.hints)
+    if (h.peer == hint.peer)
+      return;
+  if (f.hints.size() >= 3)
+    return;   // enough holders to try
+  f.hints.push_back(hint);
+  logEvent("media: a holder of " + hint.cid + " answered");
+  if (m_storageState == QLatin1String("running"))
+    dialHolder(hint.cid, f.hints.back());
+}
+
+void ForumerBackend::dialHolder(const std::string &cid, const fc::sync::MediaHint &hint) {
+  QStringList addrs;
+  for (const auto &a : hint.addrs)
+    addrs << qs(a);
+  LogosResult r = modules().storage_module.connect(qs(hint.peer), addrs);
+  if (!r.success) {
+    logEvent("media: couldn't dial a holder: " + r.getError().toStdString());
+    return;
+  }
+  notifyMediaFetching(cid, QStringLiteral("holder"));
+  // Once connected (or after a few seconds), look the manifest up again:
+  // the holder is now one of our peers, so this lookup finds it.
+  QTimer::singleShot(6'000, this, [this, cid]() {
+    auto t = m_mediaFetches.find(cid);
+    if (t == m_mediaFetches.end() || t->second.state != QLatin1String("manifest"))
+      return;
+    const int gen = ++t->second.generation;
+    LogosResult again = modules().storage_module.downloadManifest(qs(cid), false, mediaRehost());
+    if (!again.success)
+      return;
+    logEvent("media: asking the holder of " + cid + " directly");
+    QTimer::singleShot(kMediaStepTimeoutMs, this, [this, cid, gen]() {
+      auto x = m_mediaFetches.find(cid);
+      if (x != m_mediaFetches.end() && x->second.generation == gen && x->second.state == QLatin1String("manifest"))
+        failMediaFetch(cid, QStringLiteral("The holder didn't send it within 3 minutes. Try again later."));
+    });
+  });
+}
+
+// "attach images": the system's own file picker, run as a separate program
+// (osascript on macOS, zenity or kdialog on Linux). A dialog opened from the
+// view would take Basecamp's offscreen view down with it.
+bool ForumerBackend::pickerAvailable() const {
+#ifdef Q_OS_MACOS
+  return true;
+#else
+  return !QStandardPaths::findExecutable(QStringLiteral("zenity")).isEmpty() ||
+         !QStandardPaths::findExecutable(QStringLiteral("kdialog")).isEmpty();
+#endif
+}
+
+QString ForumerBackend::pickImages(QString group, QString forum) {
+  if (!m_account)
+    return QStringLiteral("Unlock first");
+  if (!attachmentGroupOk(group))
+    return QStringLiteral("Unknown composer");
+  if (m_picker)
+    return QString();   // already open
+  QString program;
+  QStringList args;
+#ifdef Q_OS_MACOS
+  program = QStringLiteral("/usr/bin/osascript");
+  args << QStringLiteral("-e")
+       << QStringLiteral("set fs to choose file with prompt \"Attach images to your post\" of type "
+                         "{\"public.jpeg\", \"public.png\", \"org.webmproject.webp\"} with multiple selections allowed")
+       << QStringLiteral("-e") << QStringLiteral("set out to \"\"")
+       << QStringLiteral("-e") << QStringLiteral("repeat with f in fs")
+       << QStringLiteral("-e") << QStringLiteral("set out to out & POSIX path of f & linefeed")
+       << QStringLiteral("-e") << QStringLiteral("end repeat")
+       << QStringLiteral("-e") << QStringLiteral("return out");
+#else
+  if (!QStandardPaths::findExecutable(QStringLiteral("zenity")).isEmpty()) {
+    program = QStringLiteral("zenity");
+    args << QStringLiteral("--file-selection") << QStringLiteral("--multiple")
+         << QStringLiteral("--separator=\n") << QStringLiteral("--title=Attach images")
+         << QStringLiteral("--file-filter=Images | *.jpg *.jpeg *.png *.webp *.JPG *.JPEG *.PNG *.WEBP");
+  } else if (!QStandardPaths::findExecutable(QStringLiteral("kdialog")).isEmpty()) {
+    program = QStringLiteral("kdialog");
+    args << QStringLiteral("--getopenfilename") << QDir::homePath()
+         << QStringLiteral("*.jpg *.jpeg *.png *.webp") << QStringLiteral("--multiple")
+         << QStringLiteral("--separate-output");
+  } else {
+    return QStringLiteral("No file picker on this system: drop the images on the composer");
+  }
+#endif
+  m_picker = new QProcess(this);
+  m_pickerGroup = group;
+  m_pickerForum = forum;
+  connect(m_picker, &QProcess::finished, this, [this](int code, QProcess::ExitStatus) {
+    QProcess *proc = m_picker;
+    m_picker = nullptr;
+    const QString out = QString::fromUtf8(proc->readAllStandardOutput());
+    proc->deleteLater();
+    publishMedia();
+    if (code != 0)
+      return;   // cancelled
+    const QString group = m_pickerGroup;
+    const QString forum = m_pickerForum;
+    QStringList paths;
+    for (const QString &line : out.split(QLatin1Char('\n'), Qt::SkipEmptyParts))
+      if (!line.trimmed().isEmpty())
+        paths << line.trimmed();
+    // One at a time, after this handler (attachImage waits for the
+    // re-encoding with its own event loop).
+    QTimer::singleShot(0, this, [this, group, forum, paths]() {
+      for (const QString &path : paths) {
+        const QString err = attachImage(group, forum, path);
+        if (!err.isEmpty()) {
+          m_mediaNotice = QFileInfo(path).fileName() + QStringLiteral(": ") + err;
+          m_mediaNoticeGroup = group;
+          publishMedia();
+        }
+      }
+    });
+  });
+  m_mediaNotice.clear();
+  m_picker->start(program, args);
+  publishMedia();
+  return QString();
+}
+
+// ── Previews (media.h "Previews", sync.h "mprev") ────────────────────────────
+
+void ForumerBackend::sendPreview(const std::string &postId, uint32_t index, const std::string &forum) {
+  if (!m_posts || !m_joined || !m_transport)
+    return;
+  const std::string key = postId + ":" + std::to_string(index);
+  const qint64 now = nowMs();
+  const auto last = m_previewSentAt.find(key);
+  if (last != m_previewSentAt.end() && now - last->second < 120'000)
+    return;   // sent it a moment ago
+  auto pv = m_posts->preview(postId, index);
+  if (!pv)
+    return;
+  m_previewSentAt[key] = now;
+  m_previewSeenAt[key] = now;
+  const auto pieces = fc::sync::encodePreview(postId, index, pv->blob, pv->signature);
+  for (const auto &piece : pieces) {
+    const auto r = publishTo(forum, piece);
+    if (!r.ok) {
+      logEvent("media: preview of " + key + " not sent: " + r.error);
+      return;
+    }
+  }
+  logEvent("media: sent preview of " + key + " (" + std::to_string(pv->blob.size()) + " bytes, " +
+           std::to_string(pieces.size()) + " piece(s))");
+}
+
+void ForumerBackend::handlePreviewPart(fc::sync::PreviewPart part, const std::string &forum) {
+  if (!m_posts)
+    return;
+  const std::string key = part.postId + ":" + std::to_string(part.index);
+  m_previewSeenAt[key] = nowMs();
+  if (m_posts->preview(part.postId, part.index))
+    return;   // have it
+  // Collect the pieces (bounded: at most 32 previews in the making, 2 min each).
+  const qint64 now = nowMs();
+  for (auto it = m_previewParts.begin(); it != m_previewParts.end();)
+    it = now - it->second.firstMs > 120'000 ? m_previewParts.erase(it) : std::next(it);
+  auto it = m_previewParts.find(key);
+  if (it == m_previewParts.end()) {
+    if (m_previewParts.size() >= 32)
+      return;
+    PreviewAssembly a;
+    a.firstMs = now;
+    a.forum = forum;
+    a.signature = part.signature;
+    a.pieces.resize(part.parts);
+    it = m_previewParts.emplace(key, std::move(a)).first;
+  }
+  PreviewAssembly &a = it->second;
+  if (a.pieces.size() != part.parts || a.signature != part.signature || a.forum != forum)
+    return;   // pieces of another sending: ignore
+  a.pieces[part.part] = std::move(part.data);
+  fc::Bytes blob;
+  for (const auto &p : a.pieces) {
+    if (!p)
+      return;   // more to come
+    blob.insert(blob.end(), p->begin(), p->end());
+  }
+  const fc::Bytes sig = a.signature;
+  m_previewParts.erase(it);
+  acceptPreview(part.postId, part.index, blob, sig, forum);
+}
+
+void ForumerBackend::acceptPreview(const std::string &postId, uint32_t index, const fc::Bytes &blob,
+                                   const fc::Bytes &sig, const std::string &forum) {
+  auto post = loadPost(postId);
+  if (!post) {
+    // Arrived before its post (or the post is in a forum we can't open):
+    // keep it a while.
+    if (m_previewsWaiting.size() < 32)
+      m_previewsWaiting.push_back({postId, index, blob, sig, forum, nowMs()});
+    return;
+  }
+  if (post->content.forum != forum || index >= post->content.media.size())
+    return;
+  const auto &ref = post->content.media[index];
+  if (!fc::media::usable(ref) ||
+      !fc::crypto::verify(post->publicKey, fc::media::previewMessage(postId, index, blob), sig)) {
+    logEvent("media: dropped a preview for " + postId + " that its author didn't sign");
+    return;
+  }
+  const fc::forums::Forum *pf = forum == kForum ? nullptr : privateForum(forum);
+  if (!fc::media::openPreview(blob, ref, pf ? &pf->key : nullptr)) {
+    logEvent("media: dropped a preview for " + postId + " that doesn't open");
+    return;
+  }
+  if (!m_posts->putPreview({postId, index, ref.cid, blob, sig}))
+    return;
+  logEvent("media: preview of " + postId + ":" + std::to_string(index) + " arrived");
+  emit previewReady(qs(postId), static_cast<int>(index));
+}
+
+void ForumerBackend::previewsForPost(const std::string &postId) {
+  const qint64 now = nowMs();
+  std::vector<WaitingPreview> ready;
+  for (auto it = m_previewsWaiting.begin(); it != m_previewsWaiting.end();) {
+    if (it->postId == postId) {
+      ready.push_back(std::move(*it));
+      it = m_previewsWaiting.erase(it);
+    } else if (now - it->receivedMs > 600'000) {
+      it = m_previewsWaiting.erase(it);
+    } else {
+      ++it;
+    }
+  }
+  for (const auto &w : ready)
+    acceptPreview(w.postId, w.index, w.blob, w.signature, w.forum);
+}
+
+// A thread with this image is on screen: show what this device already has
+// (the full image from memory, or its preview - no network either way), and
+// get the rest: the preview from whoever holds it, the full image from
+// Storage when "load full images" is on.
+QString ForumerBackend::showMedia(QString postId, int index) {
+  if (!m_posts)
+    return QStringLiteral("Not ready yet");
+  auto post = loadPost(postId.toStdString());
+  if (!post || index < 0 || static_cast<size_t>(index) >= post->content.media.size())
+    return QStringLiteral("No such image");
+  const auto ref = post->content.media[static_cast<size_t>(index)];
+  if (!fc::media::usable(ref))
+    return QString();
+  const std::string forum = post->content.forum;
+  const QString key = qs(ref.sha256) + QLatin1Char('|') + qs(forum);
+  const auto hit = m_mediaCache.constFind(key);
+  if (hit != m_mediaCache.constEnd()) {
+    const QString url = hit.value();
+    QTimer::singleShot(0, this, [this, postId, index, url]() {
+      emit mediaLoaded(postId, index, QStringLiteral("done"), url);
+    });
+    return QString();
+  }
+  bool havePreview = false;
+  if (auto pv = m_posts->preview(post->id, static_cast<uint32_t>(index))) {
+    const fc::forums::Forum *pf = forum == kForum ? nullptr : privateForum(forum);
+    if (auto jpeg = fc::media::openPreview(pv->blob, ref, pf ? &pf->key : nullptr)) {
+      havePreview = true;
+      const QString url = dataUrl(QStringLiteral("image/jpeg"),
+                                  QByteArray(reinterpret_cast<const char *>(jpeg->data()),
+                                             static_cast<qsizetype>(jpeg->size())));
+      QTimer::singleShot(0, this, [this, postId, index, url]() {
+        emit mediaLoaded(postId, index, QStringLiteral("preview"), url);
+      });
+    }
+  }
+  if (!havePreview) {
+    // Ask the forum: holders send the preview (and say where the full one is).
+    m_previewAskedAt[ref.cid] = nowMs();
+    askForHolders(ref.cid, forum);
+    QTimer::singleShot(30'000, this, [this, cid = ref.cid]() { m_previewAskedAt.erase(cid); });
+  }
+  if (mediaAutoFull())
+    return loadMedia(postId, index);
+  return QString();
+}
+
+QString ForumerBackend::chooseMediaAutoFull(bool on) {
+  QDir().mkpath(dataDir());
+  if (!writeTextFile(dataDir() + QStringLiteral("/media-autofull"), on ? QStringLiteral("1") : QStringLiteral("0")))
+    return QStringLiteral("Could not save the choice");
+  setMediaAutoFull(on);
+  return QString();
+}
+
+void ForumerBackend::failMediaFetch(const std::string &cid, const QString &why) {
+  auto it = m_mediaFetches.find(cid);
+  if (it == m_mediaFetches.end())
+    return;
+  logEvent("media: " + cid + ": " + why.toStdString());
+  if (!it->second.path.isEmpty())
+    QFile::remove(it->second.path);
+  const auto waiters = it->second.waiters;
+  m_mediaFetches.erase(it);
+  for (const auto &w : waiters)
+    emit mediaLoaded(w.first, w.second, QStringLiteral("failed"), why);
 }
 
 // ── Posting ───────────────────────────────────────────────────────────────────
 
 QString ForumerBackend::createTopic(QString title, QString body, QString domains,
                                     QString disclosure) {
+  return createTopicIn(QString::fromUtf8(kForum), title, body, domains, disclosure);
+}
+
+QString ForumerBackend::createTopicIn(QString forum, QString title, QString body, QString domains,
+                                      QString disclosure) {
+  return postTopic(forum, title, body, domains, disclosure, QString());
+}
+
+QString ForumerBackend::postTopic(QString forum, QString title, QString body, QString domains,
+                                  QString disclosure, QString attachments) {
   title = title.trimmed();
   if (title.isEmpty())
     return QStringLiteral("A topic needs a title");
+  const std::string where = forum.isEmpty() ? std::string(kForum) : forum.toStdString();
+  if (where != kForum && !privateForum(where))
+    return QStringLiteral("You're not in that private forum");
 
   fc::post::Draft draft;
   draft.kind = fc::post::Kind::Post;
-  draft.forum = kForum;
+  draft.forum = where;
   draft.title = title.toStdString();
   draft.body = body.toStdString();
   draft.domains = fc::post::parseDomains(domains.toStdString());
-  if (draft.domains.empty())
+  if (draft.domains.empty()) {
+    // Typed something, but nothing that can be a domain (review F12: it
+    // used to land in #general without a word).
+    if (!domains.trimmed().remove(QLatin1Char(',')).trimmed().isEmpty())
+      return QStringLiteral("None of \"%1\" can be a domain: use a-z, 0-9 and -, 2 to 32 "
+                            "characters. Leave it empty to post in #general.")
+          .arg(domains.trimmed());
     draft.domains = {"general"};
+  }
   draft.timestampMs = nowMs();
-  return publish(std::move(draft), disclosure);
+  return publish(std::move(draft), disclosure, attachments);
 }
 
 QString ForumerBackend::replyToTopic(QString topicId, QString body, QString disclosure) {
@@ -1210,6 +2718,10 @@ QString ForumerBackend::replyToTopic(QString topicId, QString body, QString disc
 }
 
 QString ForumerBackend::replyToPost(QString postId, QString body, QString disclosure) {
+  return postReply(postId, body, disclosure, QString());
+}
+
+QString ForumerBackend::postReply(QString postId, QString body, QString disclosure, QString attachments) {
   if (postId.isEmpty())
     return QStringLiteral("Nothing to reply to");
   if (body.trimmed().isEmpty())
@@ -1219,26 +2731,31 @@ QString ForumerBackend::replyToPost(QString postId, QString body, QString disclo
 
   // Where the reply goes follows from what it answers (two levels at most,
   // see forumer_core/thread.h) — so we need that post.
-  auto answering = m_posts->get(postId.toStdString());
+  auto answering = loadPost(postId.toStdString());
   if (!answering)
     return QStringLiteral("That post isn't on this device yet");
   const fc::thread::Target target = fc::thread::replyTarget(*answering);
 
   fc::post::Draft draft;
   draft.kind = fc::post::Kind::Reply;
-  draft.forum = kForum;
+  draft.forum = answering->content.forum;   // a reply stays in its thread's forum
   draft.root = target.root;
   draft.parent = target.parent;
   draft.body = body.toStdString();
   draft.timestampMs = nowMs();
-  return publish(std::move(draft), disclosure);
+  return publish(std::move(draft), disclosure, attachments);
 }
 
-QString ForumerBackend::publish(fc::post::Draft draft, const QString &disclosureText) {
+QString ForumerBackend::publish(fc::post::Draft draft, const QString &disclosureText,
+                                const QString &attachments) {
   if (!isContextReady() || !m_posts)
     return QStringLiteral("Store not ready");
   if (!m_account)
     return QStringLiteral("Unlock your identity to post");
+  if (m_busy)
+    return QString::fromUtf8(kBusy);
+  if (draft.forum != kForum && !privateForum(draft.forum))
+    return QStringLiteral("You're not in that private forum");
 
   Disclosure disclosure = m_account->state().defaultDisclosure;
   if (!disclosureText.isEmpty()) {
@@ -1250,43 +2767,117 @@ QString ForumerBackend::publish(fc::post::Draft draft, const QString &disclosure
   const std::string alias = m_account->state().alias;
   if (disclosure == Disclosure::Alias && alias.empty())
     return QStringLiteral("Set an alias first, or post as persona / anonymous");
+  if (disclosure == Disclosure::Alias && fc::post::aliasProblem(alias))
+    return QStringLiteral("Your alias \"%1\" can't be used any more (%2). Choose another in "
+                          "profile & personas.")
+        .arg(qs(alias), QString::fromUtf8(fc::post::aliasProblem(alias)));
+  if (m_account->restorePending())
+    return QStringLiteral("This account was just restored and its history is still arriving. "
+                          "Posting now could reuse a persona you rotated away from - wait for "
+                          "it to sync, or choose \"post anyway\".");
+
+  // Images: only once every one is in Storage (the post names them by CID).
+  std::vector<QString> usedAttachments;
+  std::vector<QByteArray> usedPreviews;
+  if (!attachments.isEmpty()) {
+    for (const auto &a : m_attachments) {
+      if (a.group != attachments)
+        continue;
+      if (a.forum.toStdString() != draft.forum)
+        return QStringLiteral("These images were attached for another forum: remove them and attach them again");
+      if (a.state == QLatin1String("failed"))
+        return QStringLiteral("An image couldn't be uploaded: retry or remove it");
+      if (a.state != QLatin1String("ready"))
+        return QStringLiteral("Images are still uploading - post once they're ready");
+      draft.media.push_back(a.ref);
+      usedAttachments.push_back(a.id);
+      usedPreviews.push_back(a.preview);
+    }
+  }
 
   // Sender-side flood limit, per account (so rotating personas or posting
   // anonymously doesn't lift it). Peers enforce the same numbers per persona.
   {
     const qint64 now = nowMs();
+    const QString what = draft.kind == fc::post::Kind::Post ? QStringLiteral("topics") : QStringLiteral("replies");
     const size_t recent = m_posts->countOwn(m_account->state().id, draft.kind, now - fc::flood::kWindowMs);
     if (!fc::flood::withinLimit(draft.kind, recent))
       return QStringLiteral("That's %1 %2 in the last hour — the most one account can post. Try again a little later.")
           .arg(fc::flood::maxPerWindow(draft.kind))
-          .arg(draft.kind == fc::post::Kind::Post ? QStringLiteral("topics") : QStringLiteral("replies"));
+          .arg(what);
+    // Peers hold history imports to a daily limit per key (flood.h, 2b).
+    const size_t today = m_posts->countOwn(m_account->state().id, draft.kind, now - fc::flood::kDayMs);
+    if (today >= static_cast<size_t>(fc::flood::maxPerDay(draft.kind)))
+      return QStringLiteral("That's %1 %2 in the last 24 hours — the most one account can post in a day.")
+          .arg(fc::flood::maxPerDay(draft.kind))
+          .arg(what);
   }
 
   // Picking the persona may allocate a new one (Auto, Anonymous); save at once
   // so a crash can never hand the same persona out twice.
+  // Never sign with a persona something in the log already used (another
+  // device with the same phrase, or history that arrived after a restore).
+  m_account->skipKnown([this](const fc::Bytes &pk) { return m_posts->hasAuthor(pk); });
   const fc::identity::Persona persona = m_account->personaForPost(disclosure);
+  extendOwnKeys();
   saveAccount();
 
-  const int pow = disclosure == Disclosure::Anonymous ? kAnonymousPowBits : kPowBits;
+  // A key's first post is mined a little harder, so it can use the lane
+  // peers keep for costlier new keys (flood.h, 3); anonymous posts already
+  // carry more than that.
+  const bool freshKey = !m_posts->hasAuthor(persona.publicKey());
+  const int pow = disclosure == Disclosure::Anonymous ? kAnonymousPowBits
+                  : freshKey ? std::max(kPowBits, fc::flood::kPriorityPowBits)
+                             : kPowBits;
+  const std::string accountId = m_account->state().id;
+
+  // Mining takes from a fraction of a second to many seconds (it hashes the
+  // whole post each try): off the thread, so sync keeps running (F16).
+  BusyScope busy(m_busy);
   fc::post::Error err = fc::post::Error::None;
-  auto signedPost = fc::post::sign(std::move(draft), persona, disclosure, alias, pow, &err);
+  auto signedPost = runOffThread([&]() {
+    return fc::post::sign(std::move(draft), persona, disclosure, alias, pow, &err);
+  });
   if (!signedPost)
     return QStringLiteral("Couldn't sign the post: %1").arg(fc::post::describe(err));
+  if (!m_account || m_account->state().id != accountId)
+    return QStringLiteral("The account was locked while the post was being signed; it wasn't sent");
 
   // Durable before anything else: once these two writes land, the post
   // survives a crash and goes out on the next retry tick at the latest.
   const qint64 now = nowMs();
-  if (m_posts->insert(*signedPost, now) == fc::PostStore::Insert::Failed ||
-      !m_posts->enqueue(signedPost->id, m_account->state().id, now)) {
+  if (storePost(*signedPost, now) == fc::PostStore::Insert::Failed ||
+      !m_posts->enqueue(signedPost->id, m_account->state().id, now) || !saveOwn()) {
     logEvent("could not store our own post " + signedPost->id);
     return QStringLiteral("Couldn't save the post");
   }
   logEvent("stored " + signedPost->id + " as " + persona.fingerprint() + " (" +
            std::string(fc::identity::toString(disclosure)) + ")");
 
+  // Its images are part of it now: off the composer. Their previews are
+  // sealed and signed with the post's own key, kept, and sent right after it.
+  std::vector<uint32_t> previewsToSend;
+  if (!usedAttachments.empty()) {
+    const fc::forums::Forum *pf = privateForum(signedPost->content.forum);
+    for (size_t i = 0; i < usedPreviews.size() && i < signedPost->content.media.size(); ++i) {
+      const fc::Bytes jpeg(usedPreviews[i].begin(), usedPreviews[i].end());
+      auto blob = fc::media::sealPreview(jpeg, signedPost->content.media[i], pf ? &pf->key : nullptr);
+      if (!blob)
+        continue;
+      const fc::Bytes sig = persona.sign(fc::media::previewMessage(signedPost->id, i, *blob));
+      if (m_posts->putPreview({signedPost->id, static_cast<uint32_t>(i), signedPost->content.media[i].cid, *blob, sig}))
+        previewsToSend.push_back(static_cast<uint32_t>(i));
+    }
+    for (const auto &id : usedAttachments)
+      dropAttachment(id);
+    publishMedia();
+  }
+
   emitPost(*signedPost);
   emit messageStateChanged(qs(signedPost->id), QStringLiteral("pending"), QString());
   sendOwn(signedPost->id);
+  for (const uint32_t i : previewsToSend)
+    sendPreview(signedPost->id, i, signedPost->content.forum);
   publishIdentityState(); // the current persona may have changed (Auto)
   publishSyncState();
   return QString();
@@ -1294,79 +2885,388 @@ QString ForumerBackend::publish(fc::post::Draft draft, const QString &disclosure
 
 void ForumerBackend::emitPost(const fc::post::Post &post) {
   const auto &c = post.content;
+  // authorKey: the full persona key, for comparing authors (the "op" badge).
+  // The display text alone can be imitated; the key can't.
+  const QString key = qs(fc::toHex(post.publicKey));
   if (c.kind == fc::post::Kind::Post)
     emit topicReceived(qs(post.id), qs(c.title), qs(c.body), qs(post.authorDisplay()),
-                       joinDomains(c.domains), toNs(c.timestampMs));
+                       joinDomains(c.domains), toNs(c.timestampMs), key, qs(c.forum), mediaSummary(post));
   else
     emit replyReceived(qs(post.id), qs(c.root), qs(c.parent), qs(c.body), qs(post.authorDisplay()),
-                       toNs(c.timestampMs));
+                       toNs(c.timestampMs), key, qs(c.forum), mediaSummary(post));
+}
+
+QJsonObject ForumerBackend::backlogEntry(const fc::post::Post &p,
+                                         const QHash<QString, QString> &states) const {
+  const bool isTopic = p.content.kind == fc::post::Kind::Post;
+  QJsonObject entry{
+      {"kind", isTopic ? QStringLiteral("topic") : QStringLiteral("reply")},
+      {"id", qs(p.id)},
+      {"body", qs(p.content.body)},
+      {"author", qs(p.authorDisplay())},
+      {"authorKey", qs(fc::toHex(p.publicKey))},
+      {"ts", QString::number(toNs(p.content.timestampMs))},
+      {"forum", qs(p.content.forum)},
+      {"media", mediaSummary(p)},
+  };
+  if (isTopic) {
+    entry.insert(QStringLiteral("title"), qs(p.content.title));
+    entry.insert(QStringLiteral("domains"), joinDomains(p.content.domains));
+  } else {
+    entry.insert(QStringLiteral("topicId"), qs(p.content.root));
+    entry.insert(QStringLiteral("parentId"), qs(p.content.parent));
+  }
+  const auto state = states.constFind(qs(p.id));
+  if (state != states.constEnd())
+    entry.insert(QStringLiteral("state"), state.value());
+  return entry;
+}
+
+QHash<QString, QString> ForumerBackend::ownStates() const {
+  // Delivery state of the unlocked account's posts, so they come back marked
+  // after a restart (ownStatesJson keeps it current across lock / unlock).
+  QHash<QString, QString> states;
+  if (m_posts)
+    for (const auto &e : m_posts->outbox())
+      states.insert(qs(e.postId), QLatin1String(fc::toString(e.state)));
+  return states;
 }
 
 QString ForumerBackend::loadBacklog() {
   if (!m_posts)
     return QStringLiteral("[]");
-
-  // Delivery state of our own posts, so they come back marked after a restart.
-  QHash<QString, QString> states;
-  for (const auto &e : m_posts->outbox())
-    states.insert(qs(e.postId), QLatin1String(fc::toString(e.state)));
-
   // all() is topics first, oldest first — so the view never has to stand up a
   // placeholder for a topic a few entries further down.
+  const auto states = ownStates();
   QJsonArray backlog;
-  for (const auto &p : m_posts->all()) {
-    const bool isTopic = p.content.kind == fc::post::Kind::Post;
-    QJsonObject entry{
-        {"kind", isTopic ? QStringLiteral("topic") : QStringLiteral("reply")},
-        {"id", qs(p.id)},
-        {"body", qs(p.content.body)},
-        {"author", qs(p.authorDisplay())},
-        {"ts", QString::number(toNs(p.content.timestampMs))},
-    };
-    if (isTopic) {
-      entry.insert(QStringLiteral("title"), qs(p.content.title));
-      entry.insert(QStringLiteral("domains"), joinDomains(p.content.domains));
-    } else {
-      entry.insert(QStringLiteral("topicId"), qs(p.content.root));
-      entry.insert(QStringLiteral("parentId"), qs(p.content.parent));
-    }
-    const auto state = states.constFind(qs(p.id));
-    if (state != states.constEnd())
-      entry.insert(QStringLiteral("state"), state.value());
-    backlog.append(entry);
-  }
-
+  for (const auto &p : m_posts->all())
+    backlog.append(backlogEntry(p, states));
   logEvent("backlog: " + std::to_string(backlog.size()) + " post(s)");
   return QString::fromUtf8(QJsonDocument(backlog).toJson(QJsonDocument::Compact));
+}
+
+QString ForumerBackend::loadBacklogPage(QString cursor) {
+  // A page at a time (F18): a log of tens of thousands of posts would
+  // otherwise cross to the view as one string of tens of megabytes.
+  constexpr size_t kPageSize = 500;
+  QJsonObject out{{"posts", QJsonArray()}, {"cursor", cursor}, {"done", true}};
+  if (!m_posts)
+    return QString::fromUtf8(QJsonDocument(out).toJson(QJsonDocument::Compact));
+  bool ok = false;
+  const qint64 after = cursor.isEmpty() ? 0 : cursor.toLongLong(&ok);
+  if (!cursor.isEmpty() && !ok)
+    return QString::fromUtf8(QJsonDocument(out).toJson(QJsonDocument::Compact));
+  const auto page = m_posts->page(after, kPageSize);
+  const auto states = ownStates();
+  QJsonArray posts;
+  for (const auto &p : page.posts)
+    posts.append(backlogEntry(p, states));
+  // Private forums the unlocked account is in; the rest stay sealed.
+  for (const auto &row : page.sealed) {
+    const fc::forums::Forum *f = privateForum(row.forum);
+    if (!f)
+      continue;
+    auto json = fc::forums::openStored(*f, row.envelope);
+    if (auto p = json ? fc::post::Post::fromJson(*json) : std::nullopt)
+      posts.append(backlogEntry(*p, states));
+  }
+  out.insert(QStringLiteral("posts"), posts);
+  out.insert(QStringLiteral("cursor"), QString::number(page.next));
+  out.insert(QStringLiteral("done"), page.done);
+  return QString::fromUtf8(QJsonDocument(out).toJson(QJsonDocument::Compact));
 }
 
 // ── Inbound ───────────────────────────────────────────────────────────────────
 
 void ForumerBackend::handlePayload(const QString &topic, const QByteArray &payload) {
-  if (!m_posts || topic.toStdString() != m_topic)
-    return; // another app's traffic — delivery_module is shared
+  if (!m_posts)
+    return;
+  const std::vector<uint8_t> raw(payload.begin(), payload.end());
 
-  const std::vector<uint8_t> bytes(payload.begin(), payload.end());
-  fc::sync::DecodeResult decoded = fc::sync::decode(bytes);
+  // The public forum's topic, or one of the unlocked account's private
+  // forums (sealed: open it first). Anything else is another app's traffic
+  // - delivery_module is shared - or a forum this account isn't in.
+  std::string forum = kForum;
+  std::vector<uint8_t> opened;
+  const std::vector<uint8_t> *bytes = &raw;
+  if (topic.toStdString() != m_topic) {
+    const auto it = m_forumByTopic.find(topic.toStdString());
+    if (it == m_forumByTopic.end())
+      return;
+    const fc::forums::Forum *f = privateForum(it->second);
+    if (!f)
+      return;
+    auto inner = fc::forums::openWire(*f, raw);
+    if (!inner) {
+      logEvent("ignored a message on a private forum's topic that doesn't open");
+      return;
+    }
+    forum = f->id;
+    opened = std::move(*inner);
+    bytes = &opened;
+  }
+
+  fc::sync::DecodeResult decoded = fc::sync::decode(*bytes);
   if (!decoded.message) {
     logEvent(std::string("ignored a message: ") + fc::sync::describe(decoded.error));
     return;
   }
   switch (decoded.message->type) {
   case fc::sync::MessageType::Post:
-    handlePost(std::move(*decoded.message->post));
+    handlePost(std::move(*decoded.message->post), forum);
     break;
   case fc::sync::MessageType::Digest:
-    handleDigest(decoded.message->digest);
+    // Our own digests come back to us too; only another peer's digest says
+    // what someone else holds. (Hashed as sent, i.e. sealed for private.)
+    handleDigest(decoded.message->digest, !m_ownDigests.contains(payloadHash(raw)), forum);
     break;
   case fc::sync::MessageType::Range:
-    handleRange(decoded.message->digest);
+    if (forum == kForum)   // history walks are the public forum's only
+      handleRange(decoded.message->digest);
+    break;
+  case fc::sync::MessageType::MediaAsk:
+    handleMediaAsk(decoded.message->media.cid, forum);
+    break;
+  case fc::sync::MessageType::MediaHere:
+    handleMediaHere(decoded.message->media);
+    break;
+  case fc::sync::MessageType::Preview:
+    handlePreviewPart(std::move(decoded.message->preview), forum);
     break;
   }
 }
 
-std::string ForumerBackend::checkPost(const fc::post::Post &post) const {
-  if (post.content.forum != kForum)
+// ── Private forums ────────────────────────────────────────────────────────────
+
+const fc::forums::Forum *ForumerBackend::privateForum(const std::string &id) const {
+  const auto it = m_forums.find(id);
+  return it == m_forums.end() ? nullptr : &it->second;
+}
+
+std::string ForumerBackend::topicOf(const std::string &forum) const {
+  return forum == kForum ? m_topic : fc::sync::contentTopic(fc::forums::topicName(forum));
+}
+
+DeliveryModuleTransport::SendResult ForumerBackend::publishTo(const std::string &forum,
+                                                              const std::vector<uint8_t> &payload,
+                                                              QByteArray *sentHash) {
+  DeliveryModuleTransport::SendResult r;
+  if (!m_transport) {
+    r.error = "not connected";
+    return r;
+  }
+  std::vector<uint8_t> wire = payload;
+  if (forum != kForum) {
+    const fc::forums::Forum *f = privateForum(forum);
+    if (!f) {
+      r.error = "not a member of that forum";
+      return r;
+    }
+    wire = fc::forums::sealWire(*f, payload);
+  }
+  if (sentHash)
+    *sentHash = payloadHash(wire);
+  return m_transport->publish(topicOf(forum), wire);
+}
+
+std::optional<fc::post::Post> ForumerBackend::loadPost(const std::string &id) const {
+  if (!m_posts)
+    return std::nullopt;
+  auto row = m_posts->stored(id);
+  if (!row)
+    return std::nullopt;
+  if (row->forum == kForum)
+    return fc::post::Post::fromJson(row->envelope);
+  const fc::forums::Forum *f = privateForum(row->forum);
+  if (!f)
+    return std::nullopt;   // a forum the unlocked account isn't in
+  auto json = fc::forums::openStored(*f, row->envelope);
+  return json ? fc::post::Post::fromJson(*json) : std::nullopt;
+}
+
+fc::PostStore::Insert ForumerBackend::storePost(const fc::post::Post &post, int64_t receivedMs) {
+  if (post.content.forum == kForum)
+    return m_posts->insert(post, receivedMs);
+  const fc::forums::Forum *f = privateForum(post.content.forum);
+  if (!f)
+    return fc::PostStore::Insert::Failed;
+  // Sealed at rest: the log file never holds a private forum's text.
+  const std::string sealed = fc::forums::sealStored(*f, post.toJson());
+  return m_posts->insert(post, receivedMs, &sealed);
+}
+
+void ForumerBackend::loadForums() {
+  m_forums.clear();
+  m_forumByTopic.clear();
+  if (m_account)
+    for (const auto &m : m_account->state().forums) {
+      auto key = fc::forums::keyFromText(m.key);
+      auto f = key ? fc::forums::fromKey(*key, m.name) : std::nullopt;
+      if (!f || f->id != m.id) {
+        logEvent("skipped a private forum whose key doesn't match its id");
+        continue;
+      }
+      m_forumByTopic[topicOf(f->id)] = f->id;
+      m_forums.emplace(f->id, std::move(*f));
+    }
+  joinForumTopics();
+  publishForums();
+}
+
+void ForumerBackend::joinForumTopics() {
+  if (!m_joined || !m_transport)
+    return;   // joinForum() calls this again once the public topic is joined
+  for (const auto &[id, f] : m_forums) {
+    const std::string topic = topicOf(id);
+    if (m_joinedTopics.count(topic))
+      continue;
+    const std::string error = m_transport->join(topic);
+    if (!error.empty()) {
+      logEvent("could not join a private forum's topic: " + error);
+      continue;
+    }
+    m_joinedTopics.insert(topic);
+    logEvent("joined private forum " + id);
+    // What the store nodes kept of it (sealed: only members can read it).
+    enqueueStore(id);
+  }
+}
+
+void ForumerBackend::publishForums() {
+  QJsonArray list;
+  if (m_account)
+    for (const auto &m : m_account->state().forums)
+      if (m_forums.count(m.id))
+        list.append(QJsonObject{{"id", qs(m.id)}, {"name", qs(m.name)},
+                                {"joinedMs", static_cast<qint64>(m.joinedMs)}});
+  const QString json = QString::fromUtf8(QJsonDocument(list).toJson(QJsonDocument::Compact));
+  if (json != forumsJson())
+    setForumsJson(json);
+}
+
+QString ForumerBackend::inviteLink(const fc::forums::Forum &f) const {
+  // The same link format as shared threads (links.js): an intent whose
+  // parameters are base64url JSON. links.js turns the decoded bytes into one
+  // character each, so the JSON is ASCII: anything else travels as \uXXXX.
+  auto asciiJson = [](const QString &v) {
+    QString out = QStringLiteral("\"");
+    for (const QChar c : v) {
+      const ushort u = c.unicode();
+      if (u == '"' || u == '\\')
+        out += QStringLiteral("\\") + c;
+      else if (u < 0x20 || u > 0x7e)
+        out += QStringLiteral("\\u%1").arg(u, 4, 16, QLatin1Char('0'));
+      else
+        out += c;
+    }
+    return out + QLatin1Char('"');
+  };
+  const std::string text = (QStringLiteral("{\"invite\":") + asciiJson(qs(fc::forums::keyToText(f.key))) +
+                            QStringLiteral(",\"name\":") + asciiJson(qs(f.name)) + QLatin1Char('}'))
+                               .toStdString();
+  return QStringLiteral("basecamp://intent/forumer.open?p=") +
+         qs(fc::toBase64Url(reinterpret_cast<const uint8_t *>(text.data()), text.size()));
+}
+
+QString ForumerBackend::createPrivateForum(QString name) {
+  if (!m_account)
+    return jsonResult(QStringLiteral("Unlock first"));
+  if (m_busy)
+    return jsonResult(QString::fromUtf8(kBusy));
+  auto f = fc::forums::create(name.trimmed().toStdString());
+  if (!f)
+    return jsonResult(QStringLiteral("A forum needs a name: up to 64 characters, no line breaks"));
+  if (!m_account->joinForum({f->id, fc::forums::keyToText(f->key), f->name, nowMs()}))
+    return jsonResult(QStringLiteral("You can be in at most %1 private forums").arg(fc::forums::kMaxJoined));
+  saveAccount();
+  logEvent("created private forum " + f->id);
+  loadForums();
+  QJsonObject out{{"error", QString()}, {"id", qs(f->id)}, {"invite", inviteLink(*f)}};
+  return QString::fromUtf8(QJsonDocument(out).toJson(QJsonDocument::Compact));
+}
+
+QString ForumerBackend::joinPrivateForum(QString key, QString name) {
+  if (!m_account)
+    return jsonResult(QStringLiteral("Unlock first"));
+  if (m_busy)
+    return jsonResult(QString::fromUtf8(kBusy));
+  auto secret = fc::forums::keyFromText(key.trimmed().toStdString());
+  wipe(key);
+  if (!secret)
+    return jsonResult(QStringLiteral("That invite link is damaged"));
+  QString shown = name.trimmed();
+  if (shown.isEmpty())
+    shown = QStringLiteral("Private forum");
+  auto f = fc::forums::fromKey(*secret, shown.toStdString());
+  if (!f)
+    return jsonResult(QStringLiteral("That invite link has an unusable forum name"));
+  if (!m_account->joinForum({f->id, fc::forums::keyToText(f->key), f->name, nowMs()}))
+    return jsonResult(QStringLiteral("You can be in at most %1 private forums").arg(fc::forums::kMaxJoined));
+  saveAccount();
+  logEvent("joined private forum " + f->id);
+  loadForums();
+  // Its posts already on this device (another account of this device is in
+  // it too, or it was left and joined again) go to the view now.
+  if (m_posts)
+    emitForumPosts(f->id);
+  QJsonObject out{{"error", QString()}, {"id", qs(f->id)}, {"name", qs(f->name)}};
+  return QString::fromUtf8(QJsonDocument(out).toJson(QJsonDocument::Compact));
+}
+
+QString ForumerBackend::leavePrivateForum(QString id) {
+  if (!m_account)
+    return QStringLiteral("Unlock first");
+  if (m_busy)
+    return QString::fromUtf8(kBusy);
+  const std::string fid = id.toStdString();
+  if (!m_account->forum(fid))
+    return QStringLiteral("Not a member of that forum");
+  m_account->leaveForum(fid);
+  saveAccount();
+  // Its posts go from this device; members who stay keep them.
+  if (m_posts) {
+    const size_t gone = m_posts->removeForum(fid);
+    logEvent("left private forum " + fid + " (" + std::to_string(gone) + " post(s) removed)");
+    saveOwn();   // its outbox entries went with them
+  }
+  loadForums();
+  publishOwnStates();
+  publishSyncState();
+  publishInbox();
+  return QString();
+}
+
+QString ForumerBackend::privateForumInvite(QString id) {
+  const fc::forums::Forum *f = privateForum(id.toStdString());
+  if (!f)
+    return jsonResult(QStringLiteral("Not a member of that forum"));
+  QJsonObject out{{"error", QString()}, {"invite", inviteLink(*f)}};
+  return QString::fromUtf8(QJsonDocument(out).toJson(QJsonDocument::Compact));
+}
+
+void ForumerBackend::emitForumPosts(const std::string &only) {
+  // One walk over the log: the posts of `only`, or of every joined forum.
+  int64_t cursor = 0;
+  for (;;) {
+    const auto page = m_posts->page(cursor, 500);
+    for (const auto &row : page.sealed) {
+      if (!only.empty() && row.forum != only)
+        continue;
+      const fc::forums::Forum *f = privateForum(row.forum);
+      if (!f)
+        continue;
+      auto json = fc::forums::openStored(*f, row.envelope);
+      if (auto p = json ? fc::post::Post::fromJson(*json) : std::nullopt)
+        emitPost(*p);
+    }
+    if (page.done)
+      break;
+    cursor = page.next;
+  }
+}
+
+std::string ForumerBackend::checkPost(const fc::post::Post &post, bool fromHistory) const {
+  if (post.content.forum != kForum && !privateForum(post.content.forum))
     return "belongs to another forum";
   const int minPow = post.disclosure == Disclosure::Anonymous ? kAnonymousPowBits : kPowBits;
   const fc::post::Error err = fc::post::verify(post, minPow);
@@ -1378,7 +3278,12 @@ std::string ForumerBackend::checkPost(const fc::post::Post &post) const {
   // when we already hold it (a reply that arrives first is judged by the view,
   // which shows it at level 1 until the parent turns up).
   if (post.content.kind == fc::post::Kind::Reply) {
-    const auto placement = fc::thread::checkPlacement(post, m_posts->get(post.content.parent));
+    const auto parent = loadPost(post.content.parent);
+    if (!parent && m_posts->contains(post.content.parent))
+      return "answers a post in another forum";   // held, but sealed for a forum it isn't in
+    if (parent && parent->content.forum != post.content.forum)
+      return "answers a post in another forum";
+    const auto placement = fc::thread::checkPlacement(post, parent);
     if (placement != fc::thread::Placement::Ok)
       return fc::thread::describe(placement);
   }
@@ -1389,40 +3294,78 @@ std::string ForumerBackend::checkPost(const fc::post::Post &post) const {
                                                  ts - fc::flood::kWindowMs, ts);
   if (!fc::flood::withinLimit(post.content.kind, inWindow))
     return "persona is over its hourly limit";
+  // Timestamps are the author's to choose, so one key could back-date posts
+  // into every past hour (review F6). Live posts are also counted by when
+  // they reach us; bulk history and store imports per day of author time.
+  if (!fromHistory) {
+    const size_t arrived = m_posts->countByAuthorArrival(post.publicKey, post.content.kind,
+                                                         nowMs() - fc::flood::kWindowMs);
+    if (arrived >= static_cast<size_t>(fc::flood::maxPerArrival(post.content.kind)))
+      return "persona's posts are arriving faster than the limit (deferred)";
+  } else {
+    const size_t inDay = m_posts->countByAuthor(post.publicKey, post.content.kind,
+                                                ts - fc::flood::kDayMs, ts);
+    if (inDay >= static_cast<size_t>(fc::flood::maxPerDay(post.content.kind)))
+      return "persona is over its daily limit";
+  }
   return {};
 }
 
-void ForumerBackend::handlePost(fc::post::Post post) {
-  // Seen on the wire, valid or not — a peer about to answer a digest with
-  // this post can skip it.
-  m_lastSeenOnWire.insert(qs(post.id), nowMs());
+void ForumerBackend::handlePost(fc::post::Post post, const std::string &forum) {
+  // A post names its forum inside what it signs; it must also have come on
+  // that forum's topic (a member can't slip a private post into public, or
+  // move one between forums, by re-sending it elsewhere).
+  if (post.content.forum != forum) {
+    logEvent("dropped " + post.id + ": arrived on another forum's topic");
+    return;
+  }
+  // "Seen on the wire" lets a peer about to answer a digest skip a post
+  // someone else has just re-sent. Only a genuine copy counts: a forged
+  // message carrying a real post's id must not suppress its repair (F8).
+  const int minPow = post.disclosure == Disclosure::Anonymous ? kAnonymousPowBits : kPowBits;
+  if (m_posts->contains(post.id)) {
+    // Already have it (including our own echo). The id is a hash over the
+    // signed bytes, so a copy that verifies is the same post.
+    if (fc::post::verify(post, minPow) == fc::post::Error::None)
+      m_lastSeenOnWire.insert(qs(post.id), nowMs());
+    return;
+  }
 
-  if (m_posts->contains(post.id))
-    return; // already have it (including our own echo)
+  // Old posts arriving in answer to our own history request, or from a store
+  // node: these come in bulk, so they skip the live limits (arrival rate,
+  // new-key budget) - otherwise history would trickle in at the anti-flood
+  // rate - and are held to a per-day limit instead (flood.h, 2b).
+  const int64_t ts = post.content.timestampMs;
+  const bool inHistoryWindow =
+      m_storeImport || (m_historyActive && ts >= m_historyFrom && ts < m_historyTo);
 
-  const std::string problem = checkPost(post);
+  const std::string problem = checkPost(post, inHistoryWindow);
   if (!problem.empty()) {
     logEvent("dropped " + post.id + ": " + problem);
     return;
   }
+  m_lastSeenOnWire.insert(qs(post.id), nowMs());
 
   // Keys we've never seen (anonymous posts, fresh personas) share a budget.
   // Over it, the post isn't stored yet; the next digest exchange offers it
-  // again, so this delays rather than loses.
-  // Exception: old posts arriving in answer to our own history request -
-  // otherwise history would trickle in at the anti-flood rate.
-  const int64_t ts = post.content.timestampMs;
-  const bool inHistoryWindow =
-      m_storeImport || (m_historyActive && ts >= m_historyFrom && ts < m_historyTo);
-  if (!inHistoryWindow && !m_posts->hasAuthor(post.publicKey) && !m_newKeyBudget.take(nowMs())) {
-    m_lastSeenOnWire.remove(qs(post.id));   // let peers offer it again
-    ++m_roundArrivals;                       // more to come: ask again soon
-    logEvent("deferred " + post.id + ": new-key budget used up");
-    return;
+  // again, so this delays rather than loses. Posts with more work behind
+  // them first try a lane of their own, which cheap fresh keys can't drain
+  // (review F7).
+  if (!inHistoryWindow && !m_posts->hasAuthor(post.publicKey)) {
+    const qint64 now = nowMs();
+    const bool costly = post.powBits >= fc::flood::kPriorityPowBits;
+    if (!(costly && m_priorityKeyBudget.take(now)) && !m_newKeyBudget.take(now)) {
+      m_lastSeenOnWire.remove(qs(post.id));   // let peers offer it again
+      ++m_roundArrivals;                       // more to come: ask again soon
+      logEvent("deferred " + post.id + ": new-key budget used up");
+      return;
+    }
   }
 
-  switch (m_posts->insert(post, nowMs())) {
+  switch (storePost(post, nowMs())) {
   case fc::PostStore::Insert::Added:
+    if (!m_previewsWaiting.empty())
+      QTimer::singleShot(0, this, [this, id = post.id]() { previewsForPost(id); });
     ++m_receivedCount;
     ++m_roundArrivals;
     if (inHistoryWindow) {
@@ -1430,7 +3373,13 @@ void ForumerBackend::handlePost(fc::post::Post post) {
       ++m_historyReceived;
     }
     logEvent("received " + post.id);
+    noteNetworkContact();
     emitPost(post);
+    if (m_account) {
+      const auto own = m_ownKeys.find(post.publicKey);
+      if (own != m_ownKeys.end())
+        noteOwnPost(post, own->second);
+    }
     publishSyncState();
     if (post.content.kind == fc::post::Kind::Reply)
       scheduleInbox();
@@ -1443,13 +3392,71 @@ void ForumerBackend::handlePost(fc::post::Post post) {
   }
 }
 
-void ForumerBackend::handleDigest(const fc::sync::Digest &digest) {
+QByteArray ForumerBackend::payloadHash(const std::vector<uint8_t> &payload) {
+  const fc::Bytes h = fc::crypto::blake2b(payload, 16);
+  return QByteArray(reinterpret_cast<const char *>(h.data()), static_cast<int>(h.size()));
+}
+
+void ForumerBackend::confirmHeldByPeers(const fc::sync::Digest &digest) {
+  // delivery_module may never settle a send ("messageSent") when the
+  // connection is flaky, though the post went out: other peers have it, and
+  // it stays "sending…" here. A peer's digest listing it is proof it is on
+  // the network.
+  const auto unsent = m_posts->unsent();
+  if (unsent.empty())
+    return;
+  const std::set<std::string> have(digest.have.begin(), digest.have.end());
+  bool changed = false;
+  for (const auto &entry : unsent) {
+    if (!have.count(fc::sync::shortId(entry.postId)))
+      continue;
+    m_posts->markState(entry.postId, fc::SendState::Sent);
+    for (auto it = m_pendingSends.begin(); it != m_pendingSends.end();)
+      it = it.value() == qs(entry.postId) ? m_pendingSends.erase(it) : std::next(it);
+    logEvent("send of " + entry.postId + " confirmed: a peer holds it");
+    emit messageStateChanged(qs(entry.postId), QStringLiteral("sent"), QString());
+    changed = true;
+  }
+  if (changed) {
+    scheduleOwnSave();
+    publishSyncState();
+  }
+}
+
+void ForumerBackend::handleDigest(const fc::sync::Digest &digest, bool fromPeer,
+                                  const std::string &forum) {
   const qint64 now = nowMs();
+  if (fromPeer)
+    noteNetworkContact();
+  if (fromPeer && m_account)
+    confirmHeldByPeers(digest);
+
+  // A private forum is repaired over the digest window (48 h) only; what's
+  // older comes from the store nodes' archive (storeQueryNext).
+  if (forum != kForum) {
+    const int64_t since = std::max<int64_t>(digest.sinceMs, now - 2 * liveWindowMs());
+    if (now - m_lastPromptedDigestMs >= kPromptedDigestGapMs &&
+        fc::sync::listsUnknown(digest, m_posts->recent(since, forum))) {
+      m_lastPromptedDigestMs = now;
+      logEvent("digest: a member of " + forum + " holds posts we don't — sending ours");
+      QTimer::singleShot(kPromptedDigestDelayMs + jitter(kPromptedDigestJitterMs), this, [this]() {
+        if (nowMs() - m_lastDigestMs >= kMinDigestGapMs)
+          sendDigest("prompted");
+      });
+    }
+    const auto missing = fc::sync::missingFrom(digest, m_posts->recent(now - liveWindowMs(), forum));
+    if (!missing.empty())
+      queueAnswers(missing, "private digest");
+    return;
+  }
 
   // The sender's oldest post tells us how far back the forum's history goes.
-  if (digest.oldestMs > 0 && digest.oldestMs < now &&
-      (m_historyTarget == 0 || digest.oldestMs < m_historyTarget)) {
-    m_historyTarget = digest.oldestMs;
+  // oldestMs before Forumer existed is already dropped by decode (F10).
+  // Never further back than what this device pruned (F18).
+  const int64_t oldest = std::max<int64_t>(digest.oldestMs, m_historyLimitMs);
+  if (digest.oldestMs >= fc::sync::kForumEpochMs && oldest < now &&
+      (m_historyTarget == 0 || oldest < m_historyTarget)) {
+    m_historyTarget = oldest;
     publishHistory();
     maybeStartHistory();
   }
@@ -1501,8 +3508,12 @@ void ForumerBackend::handleRange(const fc::sync::Digest &range) {
   m_lastRangeAnswerMs = now;
 
   fc::sync::Digest window = range;
-  if (window.untilMs - window.sinceMs > kRangeMaxSpanMs)
-    window.sinceMs = window.untilMs - kRangeMaxSpanMs;  // answer the newest part
+  window.untilMs = std::min<int64_t>(window.untilMs, now + fc::sync::kMaxClockSkewMs);
+  if (window.untilMs <= window.sinceMs)
+    return;
+  // Overflow-safe for any decoded pair (F11): answer only the newest part.
+  if (fc::sync::spanExceeds(window.sinceMs, window.untilMs, kRangeMaxSpanMs))
+    window.sinceMs = window.untilMs - kRangeMaxSpanMs;
   const auto held = m_posts->range(window.sinceMs, window.untilMs);
   const auto missing = fc::sync::missingFrom(window, held);
   if (!missing.empty())
@@ -1524,6 +3535,10 @@ void ForumerBackend::loadHistoryState() {
   };
   const int64_t floor = number("history_floor");
   const int64_t covered = number("covered_until");
+  m_historyLimitMs = number("history_limit");
+  // When we were last online and syncing: "missed" starts there. 0 on a new
+  // device - nothing was missed, it's all new (F15).
+  setAwaySinceMs(static_cast<qint64>(covered));
   // First run, or away longer than the digest window: there may be a gap
   // between where we stopped syncing and the window. Walk again from the
   // top; windows we already hold complete in one round each.
@@ -1554,6 +3569,7 @@ QString ForumerBackend::loadOlderHistory() {
   if (m_historyTarget == 0 || deeper < m_historyTarget)
     m_historyTarget = std::max<int64_t>(1, deeper);
   publishHistory();
+  m_historyByRequest = true;  // the user asked: don't stop at empty weeks
   if (!m_historyActive && !m_historyScheduled && m_joined) {
     logEvent("history: loading four more weeks on request");
     historyStep();
@@ -1596,7 +3612,10 @@ void ForumerBackend::historyStep() {
     if (m_historyActive)
       logEvent("history: complete back to " + std::to_string(m_historyFloor));
     m_historyActive = false;
+    m_historyByRequest = false;
+    m_historyEmptyWindows = 0;
     publishHistory();
+    maybeFinishRestore();
     return;
   }
   m_historyActive = true;
@@ -1634,6 +3653,18 @@ void ForumerBackend::historyRoundDone() {
   }
   m_historyFloor = m_historyFrom;
   m_posts->setMeta("history_floor", std::to_string(m_historyFloor));
+  // A run of windows with nothing in them: the forum probably doesn't go back
+  // that far, whatever a digest claimed (F10). Stop here; "load older" can
+  // still go further on request.
+  if (m_historyRoundNew == 0 && m_posts->countRange(m_historyFrom, m_historyTo) == 0) {
+    if (++m_historyEmptyWindows >= fc::sync::kHistoryMaxEmptyWindows && !m_historyByRequest) {
+      logEvent("history: " + std::to_string(m_historyEmptyWindows) +
+               " empty windows in a row - stopping at " + std::to_string(m_historyFloor));
+      m_historyTarget = m_historyFloor;
+    }
+  } else {
+    m_historyEmptyWindows = 0;
+  }
   publishHistory();
   QTimer::singleShot(1'000, this, [this]() { historyStep(); });
 }
@@ -1683,9 +3714,13 @@ void ForumerBackend::startStoreHistory() {
     return;
   if (qEnvironmentVariableIsSet("FORUMER_NO_STORE")) {
     logEvent("store: skipped (FORUMER_NO_STORE)");
+    m_storeState = QStringLiteral("skipped");  // counts as done for a pending restore
+    publishHistory();
     return;
   }
   m_storeStarted = true;
+  m_storeRunning = true;
+  m_storeForum = kForum;
   m_storePeer = 0;
   m_storePage = 0;
   m_storeNodeMsgs = 0;
@@ -1696,21 +3731,63 @@ void ForumerBackend::startStoreHistory() {
   storeQueryNext();
 }
 
+void ForumerBackend::enqueueStore(const std::string &forum) {
+  // Asked once per private forum per session (when its topic is joined).
+  if (qEnvironmentVariableIsSet("FORUMER_NO_STORE") || !m_transport)
+    return;
+  if (forum == m_storeForum && m_storeRunning)
+    return;
+  if (std::find(m_storeQueue.begin(), m_storeQueue.end(), forum) == m_storeQueue.end())
+    m_storeQueue.push_back(forum);
+  // The public forum's archive goes first (startStoreHistory); after it the
+  // queue runs on. Already finished: start this one now.
+  if (m_storeStarted && !m_storeRunning) {
+    m_storeRunning = true;
+    m_storePeer = static_cast<int>(storePeers().size());   // "the current forum is done"
+    QTimer::singleShot(0, this, [this]() { storeQueryNext(); });
+  }
+}
+
 void ForumerBackend::storeQueryNext() {
   const QStringList peers = storePeers();
   if (m_storePeer >= peers.size()) {
-    m_storeState = m_storeGot > 0 ? QStringLiteral("done")
-                   : m_storeError.isEmpty() ? QStringLiteral("empty")
-                                            : QStringLiteral("unreachable");
-    logEvent("store: finished, " + std::to_string(m_storeGot) + " new post(s)");
-    publishHistory();
+    if (m_storeForum == kForum && m_storeState == QLatin1String("asking")) {
+      m_storeState = m_storeGot > 0 ? QStringLiteral("done")
+                     : m_storeError.isEmpty() ? QStringLiteral("empty")
+                                              : QStringLiteral("unreachable");
+      logEvent("store: finished, " + std::to_string(m_storeGot) + " new post(s)");
+      publishHistory();
+      maybeFinishRestore();
+    } else if (m_storeForum != kForum) {
+      logEvent("store: private forum " + m_storeForum + " finished");
+    }
+    // Next: the private forums the unlocked account is in (sealed on the
+    // store nodes too; only members can read what they kept).
+    while (!m_storeQueue.empty() && !privateForum(m_storeQueue.front()))
+      m_storeQueue.pop_front();
+    if (m_storeQueue.empty()) {
+      m_storeRunning = false;
+      return;
+    }
+    m_storeForum = m_storeQueue.front();
+    m_storeQueue.pop_front();
+    m_storePeer = 0;
+    m_storePage = 0;
+    m_storeNodeMsgs = 0;
+    m_storeCursor.clear();
+    logEvent("store: asking for private forum " + m_storeForum);
+  }
+  if (m_storeForum != kForum && !privateForum(m_storeForum)) {
+    m_storePeer = static_cast<int>(peers.size());   // left or locked meanwhile: skip it
+    QTimer::singleShot(0, this, [this]() { storeQueryNext(); });
     return;
   }
   const QString peer = peers.at(m_storePeer);
   m_storeNode = peer.section(QLatin1Char('/'), 2, 2);  // "/dns4/<host>/tcp/..." -> host
   const int64_t since = nowMs() - (m_storeShortRange ? kStoreShortLookbackMs : kStoreLookbackMs);
   QPointer<ForumerBackend> self(this);
-  m_transport->queryStorePage(m_topic, deliveryCluster(), since, m_storeCursor, peer.toStdString(),
+  m_transport->queryStorePage(topicOf(m_storeForum), deliveryCluster(), since, m_storeCursor,
+                              peer.toStdString(),
                               kStoreTimeoutMs,
                               [self](DeliveryModuleTransport::StorePage page) {
                                 if (self)
@@ -1745,15 +3822,28 @@ void ForumerBackend::storePageArrived(DeliveryModuleTransport::StorePage page) {
   }
 
   const int before = m_receivedCount;
+  const std::string forum = m_storeForum;
+  const fc::forums::Forum *sealedFor = forum == kForum ? nullptr : privateForum(forum);
   m_storeImport = true;
   for (const auto &payload : page.payloads) {
-    fc::sync::DecodeResult decoded = fc::sync::decode(payload);
+    std::optional<std::vector<uint8_t>> opened;
+    if (sealedFor) {
+      opened = fc::forums::openWire(*sealedFor, payload);
+      if (!opened)
+        continue;
+    } else if (forum != kForum) {
+      break;   // left or locked while the page was on its way
+    }
+    fc::sync::DecodeResult decoded = fc::sync::decode(opened ? *opened : payload);
     if (decoded.message && decoded.message->type == fc::sync::MessageType::Post)
-      handlePost(std::move(*decoded.message->post));
+      handlePost(std::move(*decoded.message->post), forum);
+    else if (decoded.message && decoded.message->type == fc::sync::MessageType::Preview)
+      handlePreviewPart(std::move(decoded.message->preview), forum);
   }
   m_storeImport = false;
   const int added = m_receivedCount - before;
-  m_storeGot += added;
+  if (forum == kForum)
+    m_storeGot += added;   // "archive" in the history line is the public forum's
   m_storeNodeMsgs += static_cast<int>(page.payloads.size());
   ++m_storePage;
   logEvent("store: " + m_storeNode.toStdString() + " page " + std::to_string(m_storePage) + ": " +
@@ -1798,17 +3888,20 @@ void ForumerBackend::sendOwn(const std::string &id) {
   if (!m_joined || !m_transport)
     return; // stays pending; the retry tick sends it once we've joined
 
-  auto post = m_posts->get(id);
+  auto post = loadPost(id);
   if (!post) {
     logEvent("outbox entry " + id + " has no stored post");
     return;
   }
 
-  m_posts->markAttempt(id, nowMs());
+  if (!m_posts->markAttempt(id, nowMs()))
+    return;  // not the unlocked account's post
+  scheduleOwnSave();
   m_lastSeenOnWire.insert(qs(id), nowMs());
-  const auto r = m_transport->publish(m_topic, fc::sync::encodePost(*post));
+  const auto r = publishTo(post->content.forum, fc::sync::encodePost(*post));
   if (!r.ok) {
     m_posts->markState(id, fc::SendState::Failed, r.error);
+    publishOwnStates();
     logEvent("send of " + id + " failed: " + r.error);
     emit messageStateChanged(qs(id), QStringLiteral("failed"), qs(r.error));
     publishSyncState();
@@ -1827,11 +3920,11 @@ bool ForumerBackend::resend(const std::string &id) {
   if (!m_resendBudget.take(now))
     return false; // over the re-send budget: keep it queued
 
-  auto post = m_posts->get(id);
+  auto post = loadPost(id);
   if (!post)
-    return true;
+    return true;   // gone, or a forum the unlocked account isn't in
   m_lastSeenOnWire.insert(qs(id), now);
-  const auto r = m_transport->publish(m_topic, fc::sync::encodePost(*post));
+  const auto r = publishTo(post->content.forum, fc::sync::encodePost(*post));
   if (!r.ok)
     logEvent("re-send of " + id + " failed: " + r.error);
   return true;
@@ -1886,7 +3979,13 @@ void ForumerBackend::sendDigest(const char *why) {
   const auto held = m_posts->recent(now - liveWindowMs());
   fc::sync::Digest digest = fc::sync::makeDigest(held, now - liveWindowMs());
   digest.oldestMs = m_posts->oldestTimestamp().value_or(0);
-  const auto r = m_transport->publish(m_topic, fc::sync::encodeDigest(digest));
+  const std::vector<uint8_t> payload = fc::sync::encodeDigest(digest);
+  // Remember it, to tell it apart from a peer's when it comes back to us.
+  m_ownDigests.insert(payloadHash(payload));
+  m_ownDigestOrder.append(payloadHash(payload));
+  while (m_ownDigestOrder.size() > kOwnDigestMemory)
+    m_ownDigests.remove(m_ownDigestOrder.takeFirst());
+  const auto r = m_transport->publish(m_topic, payload);
   if (!r.ok) {
     logEvent(std::string("digest (") + why + ") failed: " + r.error);
     return;
@@ -1894,6 +3993,19 @@ void ForumerBackend::sendDigest(const char *why) {
   m_lastDigestMs = now;
   logEvent(std::string("digest (") + why + "): " + std::to_string(digest.have.size()) +
            " post(s) held");
+  // Each private forum gets its own, sealed, on its own topic.
+  for (const auto &[id, f] : m_forums) {
+    const fc::sync::Digest fd = fc::sync::makeDigest(m_posts->recent(now - liveWindowMs(), id),
+                                                     now - liveWindowMs());
+    QByteArray hash;
+    const auto fr = publishTo(id, fc::sync::encodeDigest(fd), &hash);
+    if (fr.ok) {
+      m_ownDigests.insert(hash);
+      m_ownDigestOrder.append(hash);
+    }
+  }
+  while (m_ownDigestOrder.size() > kOwnDigestMemory)
+    m_ownDigests.remove(m_ownDigestOrder.takeFirst());
   m_roundArrivals = 0;
   scheduleFollowUp();
   // We're online and syncing: everything up to now - window is covered by
@@ -1903,6 +4015,7 @@ void ForumerBackend::sendDigest(const char *why) {
     m_posts->setMeta("covered_until", std::to_string(now));
   }
   publishSyncState();
+  maybeFinishRestore();
 }
 
 void ForumerBackend::scheduleFollowUp() {
@@ -1918,6 +4031,7 @@ void ForumerBackend::scheduleFollowUp() {
       sendDigest("follow-up");   // resets the count and schedules the next check
     } else {
       m_followUps = 0;           // burst over
+      maybeFinishRestore();
     }
   });
 }
@@ -1961,14 +4075,21 @@ void ForumerBackend::settleSend(const QString &requestId, const QString &state,
   if (state != QLatin1String("propagated")) {
     m_pendingSends.remove(requestId);
     if (m_posts) {
-      // A late failure from an earlier attempt must not undo a success.
+      // Settles only a post of the unlocked account. One sent before a lock
+      // stays pending in its account's file and is retried after unlock.
       auto entry = m_posts->outboxEntry(postId.toStdString());
-      if (entry && entry->state == fc::SendState::Sent)
+      if (!entry)
+        return;
+      // A late failure from an earlier attempt must not undo a success.
+      if (entry->state == fc::SendState::Sent)
         return;
       m_posts->markState(postId.toStdString(),
                          state == QLatin1String("sent") ? fc::SendState::Sent : fc::SendState::Failed,
                          detail.toStdString());
+      scheduleOwnSave();
     }
+  } else if (m_posts && !m_posts->outboxEntry(postId.toStdString())) {
+    return;
   }
 
   logEvent("send " + requestId.toStdString() + " -> " + state.toStdString() +
@@ -2001,13 +4122,18 @@ void ForumerBackend::publishQuota() {
 void ForumerBackend::publishSyncState() {
   if (!m_posts)
     return;
+  publishOwnStates();
   publishQuota();
   setUnsentCount(static_cast<int>(m_posts->unsent().size()));
 
+  // "synced" only once another peer has answered (F15): sending our own
+  // digest into an empty network proves nothing.
   QStringList parts;
-  if (m_lastDigestMs > 0)
+  if (m_lastPeerMs > 0)
     parts << QStringLiteral("synced %1")
-                 .arg(QDateTime::fromMSecsSinceEpoch(m_lastDigestMs).toString(QStringLiteral("hh:mm")));
+                 .arg(QDateTime::fromMSecsSinceEpoch(m_lastPeerMs).toString(QStringLiteral("hh:mm")));
+  else if (m_lastDigestMs > 0)
+    parts << QStringLiteral("no peers yet");
   if (m_receivedCount > 0)
     parts << QStringLiteral("%1 received").arg(m_receivedCount);
   setSyncInfo(parts.join(QStringLiteral(" · ")));

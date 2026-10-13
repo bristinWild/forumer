@@ -80,7 +80,9 @@ Item {
                         spacing: 8
                         Text {
                             textFormat: Text.PlainText
-                            text: "home"
+                            // The forum the thread is in: "home" for public.
+                            readonly property string forum: thread.topic && thread.topic.forum ? thread.topic.forum : "public"
+                            text: forum === "public" ? "home" : "private · " + thread.store.forumName(forum)
                             font.family: Ui.mono
                             font.pixelSize: Ui.size.small
                             color: crumbMouse.containsMouse ? Ui.text : Ui.text2
@@ -89,7 +91,7 @@ Item {
                                 anchors.fill: parent
                                 hoverEnabled: true
                                 cursorShape: Qt.PointingHandCursor
-                                onClicked: thread.store.open("home")
+                                onClicked: thread.store.openForum(parent.forum)
                             }
                         }
                         Text {
@@ -241,6 +243,14 @@ Item {
                         font.pixelSize: 17
                     }
 
+                    // Its images (fetched only when clicked)
+                    MediaCards {
+                        Layout.fillWidth: true
+                        store: thread.store
+                        postId: thread.store.selectedTopicId
+                        media: thread.topic && !thread.topic.placeholder && thread.topic.media ? thread.topic.media : []
+                    }
+
                     // Topic actions
                     Row {
                         visible: !linkPanel.visible
@@ -249,7 +259,7 @@ Item {
                             text: "reply"
                             icon: "reply"
                             implicitHeight: 36
-                            enabled: thread.store.canPost
+                            enabled: thread.store.canCompose
                             onClicked: { thread.store.replyTargetId = ""; thread.focusComposer(); }
                         }
                         FButton {
@@ -257,7 +267,9 @@ Item {
                             icon: copied ? "check" : "link"
                             kind: "ghost"
                             implicitHeight: 36
-                            tooltip: "A basecamp:// link to this thread. It names the post, not you."
+                            tooltip: thread.topic && thread.topic.forum && thread.topic.forum !== "public"
+                                     ? "A basecamp:// link to this thread. It opens only for members of " + thread.store.forumName(thread.topic.forum) + "; it is not an invite."
+                                     : "A basecamp:// link to this thread. It names the post, not you."
                             property bool copied: false
                             onClicked: {
                                 clipboard.text = thread.store.topicLink(thread.store.selectedTopicId);
@@ -299,8 +311,9 @@ Item {
                             delegate: ReplyItem {
                                 required property var modelData
                                 Layout.fillWidth: true
+                                store: thread.store
                                 item: modelData
-                                canReply: thread.store.canNestReplies && thread.store.canPost
+                                canReply: thread.store.canNestReplies && thread.store.canCompose
                                 replyTarget: thread.store.replyTargetId === modelData.id
                                 onReplyClicked: {
                                     thread.store.replyTargetId = modelData.id;
@@ -319,7 +332,15 @@ Item {
                         radius: Ui.radius.xl
                         color: Ui.surface
                         border.width: 1
-                        border.color: composerArea.input.activeFocus ? Ui.focus : Ui.borderStrong
+                        border.color: composerArea.input.activeFocus || replyDrop.containsDrag ? Ui.focus : Ui.borderStrong
+
+                        // Drop pictures on the composer to attach them.
+                        DropArea {
+                            id: replyDrop
+                            anchors.fill: parent
+                            enabled: thread.store.canAttachImages && thread.store.canCompose
+                            onDropped: (drop) => { if (drop.hasUrls) replyMedia.attach(drop.urls); }
+                        }
 
                         ColumnLayout {
                             id: composer
@@ -357,8 +378,16 @@ Item {
                                 bare: true
                                 compact: true
                                 minHeight: 72
-                                placeholder: thread.store.canPost ? "Write a reply…" : "Unlock and connect to reply"
-                                editable: thread.store.canPost
+                                placeholder: thread.store.canCompose ? "Write a reply…" : "Unlock and connect to reply"
+                                editable: thread.store.canCompose
+                            }
+
+                            MediaStrip {
+                                id: replyMedia
+                                Layout.fillWidth: true
+                                store: thread.store
+                                group: "reply"
+                                forum: thread.topic && thread.topic.forum ? thread.topic.forum : "public"
                             }
 
                             Rectangle { Layout.fillWidth: true; implicitHeight: 1; color: Ui.border }
@@ -387,6 +416,8 @@ Item {
                                     implicitHeight: 38
                                     enabled: thread.store.canPost && composerArea.text.trim().length > 0 && !thread.sending
                                              && thread.store.repliesLeft
+                                             && thread.store.attachmentsReady("reply")
+                                             && thread.store.utf8Bytes(composerArea.text) <= thread.store.maxBodyBytes
                                     onClicked: thread.send()
                                 }
                             }
@@ -399,12 +430,22 @@ Item {
                                 font.pixelSize: Ui.size.caption
                                 color: Ui.text3
                             }
+                            Text {
+                                textFormat: Text.PlainText
+                                Layout.fillWidth: true
+                                visible: composerArea.text.length > 0
+                                text: thread.store.sizeNote(composerArea.text, thread.store.maxBodyBytes)
+                                font.family: Ui.mono
+                                font.pixelSize: Ui.size.caption
+                                color: thread.store.utf8Bytes(composerArea.text) > thread.store.maxBodyBytes ? Ui.failedText : Ui.text3
+                            }
                             QuotaLine {
                                 visible: thread.store.unlocked && limit > 0
                                 quota: thread.store.quota.replies
                                 noun: "reply"
                                 nounPlural: "replies"
                             }
+                            RestoreNotice { Layout.fillWidth: true; store: thread.store }
                             Notice { Layout.fillWidth: true; message: thread.error }
                         }
                     }

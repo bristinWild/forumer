@@ -21,6 +21,7 @@
 #include <set>
 #include <string>
 #include <string_view>
+#include <utility>
 #include <vector>
 
 #include "forumer_core/bytes.h"
@@ -62,6 +63,20 @@ struct InboxItem {
     int64_t timestampMs = 0;    // the author's clock
 };
 
+/// What one account wrote on this device and which replies it has read: the
+/// private part of the log. Never stored in the post log file; the app keeps
+/// it in the account's encrypted file (AccountStore::savePrivate) and loads
+/// it into the store while the account is unlocked (importOwn).
+struct OwnData {
+    std::string accountId;
+    std::vector<OutboxEntry> outbox;
+    std::vector<std::pair<std::string, int64_t>> read;  // post id, read at
+
+    std::string toJson() const;
+    /// "" (no file yet) gives empty data; nullopt if the text is malformed.
+    static std::optional<OwnData> fromJson(std::string_view text, const std::string& accountId);
+};
+
 /// The minimum the sync protocol needs to know about a stored post.
 struct PostSummary {
     std::string id;
@@ -88,7 +103,35 @@ public:
     };
 
     /// Store a (verified) post. First copy wins; later copies are ignored.
-    Insert insert(const post::Post& post, int64_t receivedMs);
+    /// `storedEnvelope`, if given, is kept instead of the post's JSON - a
+    /// private forum's posts are sealed at rest (forums::sealStored).
+    Insert insert(const post::Post& post, int64_t receivedMs,
+                  const std::string* storedEnvelope = nullptr);
+
+    /// The forum and the envelope column of a stored post (sealed for
+    /// private forums), whatever forum it is in.
+    struct Stored {
+        std::string forum;
+        std::string envelope;
+    };
+    std::optional<Stored> stored(const std::string& id) const;
+
+    /// An image preview that came with a post (media.h "Previews"), sealed.
+    struct Preview {
+        std::string postId;
+        uint32_t index = 0;
+        std::string cid;      // of the full image
+        Bytes blob;
+        Bytes signature;      // the author's, over media::previewMessage
+    };
+    bool putPreview(const Preview& preview);   // first one kept
+    std::optional<Preview> preview(const std::string& postId, uint32_t index) const;
+    /// Previews of the image `cid` (to send on to someone asking for it).
+    std::vector<Preview> previewsOf(const std::string& cid) const;
+
+    /// Drop every post of a forum (leaving a private forum), with the loaded
+    /// account's outbox entries and read marks for them. Returns how many posts.
+    size_t removeForum(const std::string& forum);
 
     bool contains(const std::string& id) const;
     std::optional<post::Post> get(const std::string& id) const;
@@ -97,17 +140,35 @@ public:
     /// the author's timestamp (ties broken by id, so the order is stable).
     std::vector<post::Post> all() const;
 
+    /// One page of the log in storage order, for handing it to the view in
+    /// pieces (review F18): up to `limit` posts stored after `afterCursor`
+    /// (0 for the first page). `next` is the cursor for the following page.
+    struct Page {
+        std::vector<post::Post> posts;
+        std::vector<Stored> sealed;   // rows of private forums, still sealed
+        int64_t next = 0;
+        bool done = true;
+    };
+    Page page(int64_t afterCursor, size_t limit) const;
+
+    /// Keep the log at most `maxPosts` posts: drop the oldest (by author
+    /// timestamp) beyond that and compact the file. Returns how many went.
+    size_t pruneTo(size_t maxPosts);
+
+    // Sync queries are per forum ("public", or a private forum's id): each
+    // forum's digests list only its own posts.
+
     /// Posts whose author timestamp is >= sinceMs, newest first.
-    std::vector<PostSummary> recent(int64_t sinceMs) const;
+    std::vector<PostSummary> recent(int64_t sinceMs, const std::string& forum = "public") const;
 
     /// Posts dated in [fromMs, toMs), newest first (history windows).
-    std::vector<PostSummary> range(int64_t fromMs, int64_t toMs) const;
+    std::vector<PostSummary> range(int64_t fromMs, int64_t toMs, const std::string& forum = "public") const;
 
     /// How many posts are dated in [fromMs, toMs).
-    size_t countRange(int64_t fromMs, int64_t toMs) const;
+    size_t countRange(int64_t fromMs, int64_t toMs, const std::string& forum = "public") const;
 
     /// The author timestamp of the oldest post held, if any.
-    std::optional<int64_t> oldestTimestamp() const;
+    std::optional<int64_t> oldestTimestamp(const std::string& forum = "public") const;
 
     /// Small persistent settings of the log itself (e.g. how far back the
     /// history is complete). nullopt if unset.
@@ -123,6 +184,10 @@ public:
     /// Posts of `kind` signed by `author` whose author timestamp lies in
     /// [fromMs, toMs]. The flood limits are counted with this.
     size_t countByAuthor(const Bytes& author, post::Kind kind, int64_t fromMs, int64_t toMs) const;
+
+    /// Posts of `kind` signed by `author` that WE stored at or after
+    /// sinceReceivedMs (our clock) - the arrival-time limit (flood.h, 2a).
+    size_t countByAuthorArrival(const Bytes& author, post::Kind kind, int64_t sinceReceivedMs) const;
 
     /// Whether `author` has signed any stored post.
     bool hasAuthor(const Bytes& author) const;
@@ -155,7 +220,31 @@ public:
     /// Mark everything currently in the account's inbox read.
     bool markAllRead(const std::string& accountId, int64_t nowMs);
 
-    // Outbox 
+    /// Mark read every reply in the account's inbox dated before `beforeMs`
+    /// (after a restore: those were seen on the device the account came from).
+    bool markReadBefore(const std::string& accountId, int64_t beforeMs, int64_t nowMs);
+
+    // Outbox
+    //
+    // The outbox and read marks are held in memory only (TEMP tables), for
+    // the accounts whose data was imported with importOwn(). Nothing about
+    // which posts this device wrote reaches the log file.
+
+    /// Load an account's private data (on unlock). Merges with what's there.
+    bool importOwn(const OwnData& data);
+    /// An account's private data as it stands now (to save after a change).
+    OwnData exportOwn(const std::string& accountId) const;
+    /// Drop every account's private data from memory (on lock / switch).
+    void forgetOwn();
+
+    /// Logs written by Forumer 0.2.2 kept the outbox and read marks in clear
+    /// (main.outbox, main.inbox_read). Remove one account's rows from there
+    /// and return them, to be imported and saved encrypted.
+    OwnData takeLegacy(const std::string& accountId);
+    /// Whether any account's rows are still in the clear tables.
+    bool legacyRowsLeft() const;
+    /// Once no rows are left, drop the clear tables and VACUUM the file.
+    void dropLegacyTablesIfEmpty();
 
     /// Record that this device wrote `postId` (state Pending, 0 attempts).
     /// The post itself must already be stored. Idempotent.

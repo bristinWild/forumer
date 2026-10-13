@@ -6,6 +6,7 @@ Item {
     id: reply
 
     property var item: ({})           // ForumStore.thread entry
+    property var store: null
     property bool canReply: true
     property bool replyTarget: false  // the composer is answering this one
     signal replyClicked()
@@ -81,6 +82,16 @@ Item {
         MdText {
             width: parent.width
             source: reply.item.body || ""
+        }
+        Loader {   // its images, if any
+            width: parent.width
+            active: reply.store !== null && reply.item.media !== undefined && reply.item.media.length > 0
+            sourceComponent: MediaCards {
+                width: parent ? parent.width : 0
+                store: reply.store
+                postId: reply.item.id
+                media: reply.item.media
+            }
         }
         FButton {
             visible: reply.canReply

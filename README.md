@@ -45,20 +45,22 @@ Built for [λPrize LP-0026: Forum App](https://github.com/logos-co/lambda-prize/
 | **Disclosure per post** | Post as your persona (`fr:7Q4K-M2XD`), under an alias, or fully anonymously. |
 | **Topics and replies** | Topics tagged with up to 3 domains. Replies nest two levels deep. |
 | **Domains** | Follow the domains you care about; the home page shows *All* and *Followed* side by side. Starter domains (`#logosdevs`, `#lambdabuilders`, `#testnet-help`, `#privacy`, `#tech`) are offered even before anyone has posted in them, and a new topic started from a domain's page is posted there. |
+| **Private forums** | Create a forum only people with its invite link can read. Everything posted there is encrypted on the network with a key that only the link carries; relays and store nodes see ciphertext on an opaque topic. Personas, aliases, anonymous posting and flood limits work as in public. See [Private forums](#private-forums). |
 | **Search** | ⌘K / Ctrl+K searches every post on the device. |
-| **Shareable links** | *copy link* on a thread or a #domain gives a `basecamp://` link. Clicked in a browser or chat app, Basecamp 0.3.1+ opens it in Forumer; pasted into Forumer's search box it works on any version. The link names the post, never who shared it, and a reader who doesn't hold the thread yet asks peers for that whole week of posts, so nobody learns which thread was opened. See [Sharing links](#sharing-links). |
+| **Shareable links** | *copy link* on a thread or a #domain gives a `basecamp://` link. Clicked in a browser or chat app, Basecamp 0.3.1+ opens it in Forumer; pasted into Forumer's search box it works on any version. The link names the post, never who shared it, and a reader who doesn't hold the thread yet asks peers for every post from the day before it to about a week after, so nobody learns which thread was opened. See [Sharing links](#sharing-links). |
 | **Post status** | Every post you write shows *sending… → live*, or *failed* with retry. |
-| **Outbox** | Posts that couldn't be sent are kept on disk and retried automatically, even after a restart. |
+| **Outbox** | Posts that couldn't be sent are kept on disk (encrypted, per account) and retried automatically while the account is unlocked, even after a restart. |
 | **Offline catch-up** | Posts written while you were offline arrive when you come back. |
 | **Full history** | A newcomer gets the whole forum, not just the last two days. On joining, Forumer asks the network's own **store nodes** for what they kept, so this works even when nobody else is online; older posts are fetched from peers a week at a time, back to the oldest post anyone holds. |
 | **Formatting** | Topics and replies are written in Markdown with a toolbar (headings, bold, italic, code, lists, quotes, links), ⌘B / ⌘I / ⌘E, and a Write / Preview switch. Images and HTML in posts are never loaded, so reading a post can't reveal your IP address to its author. |
 | **Replies to you** | A badge and a list of replies to your posts and new replies in threads you started or joined, plus a notice when one arrives. Worked out on your device only — it even works for posts you made anonymously, and nobody can tell who was notified. |
-| **Missed tab** | Your unsent posts plus a *Catch up* button. |
+| **Missed tab** | Your unsent posts, posts written while this device was away (since it last synced; a new device has none), plus a *Catch up* button. |
 | **My posts** | Everything this account wrote, under any persona. Only you can see this list. |
 | **Flood control** | Proof-of-work on every post, hourly limits per persona and per account, with a counter in the composer. |
 | **Backup & restore** | Show the recovery phrase (password required), or restore an account from one. |
 | **Night-city theme** | Dark and light palettes with Chakra Petch and Share Tech Mono; delivery states colour-coded (sending, live, failed). |
-| Media and history snapshots via Logos Storage | **(investigated, planned)** — see [§10](#10-design-decisions-and-findings) |
+| **Images** | Attach up to 4 pictures to a topic or reply. They are re-encoded on your device (location, camera and other metadata never leave it), encrypted, and stored in **Logos Storage**; the post carries their IDs. Readers see a card and fetch a picture only when they click it, and it is shown only if it is exactly what the author signed. See [Images](#images). |
+| History snapshots via Logos Storage | **(planned)** — see [§10](#10-design-decisions-and-findings) |
 | Private messages between personas | **(planned)** |
 | Mute a persona / hide a post | **(planned)** |
 
@@ -104,7 +106,7 @@ To start again from nothing: `rm -rf ~/forumer-test`.
 ./scripts/test-core.sh
 ```
 
-This builds `forumer_core` and runs its 110 unit tests. It needs only Nix; cmake, the compiler, libsodium, SQLite and nlohmann/json come from nixpkgs. Set `FORUMER_NO_NIX=1` to use the system's own instead.
+This builds `forumer_core` and runs its 150 unit tests. It needs only Nix; cmake, the compiler, libsodium, SQLite and nlohmann/json come from nixpkgs. Set `FORUMER_NO_NIX=1` to use the system's own instead.
 
 ### Install in Basecamp (no build needed)
 
@@ -118,6 +120,20 @@ Forumer is served pre-built from its own Logos module catalog, [`bristinWild/for
 3. Open **Forumer** from the sidebar.
 
 Packages are built for macOS (Apple silicon) and Linux (x86_64).
+
+**If the install says "Download failed".** Basecamp downloads `delivery_module` (about 100 MB) from GitHub with the app, and on a slow connection its downloader can give up before it finishes. Two things help:
+
+- Leave the **optional** modules the install dialog preselects unticked (the RLN modules and `libp2p`). Forumer doesn't need them on `logos.dev`; they only add to the download.
+- Install from files instead with `lgpm`, the Logos package manager's command line. Download `forumer-<version>-<platform>.lgx` from this repo's [Releases](https://github.com/bristinWild/forumer/releases) and the matching `delivery_module` and `storage_module` packages from the official Logos catalog, then, with Basecamp closed:
+
+  ```bash
+  lgpm --modules-dir    ~/.local/share/Logos/LogosBasecamp/modules \
+       --ui-plugins-dir ~/.local/share/Logos/LogosBasecamp/plugins \
+       --allow-unsigned install --file delivery_module-<version>.lgx
+  # the same for storage_module-<version>.lgx and forumer-<version>-<platform>.lgx
+  ```
+
+  Those are Basecamp's folders on Linux; on macOS use the `modules` and `plugins` folders of Basecamp's own data folder. `--allow-unsigned` is needed because Forumer's packages aren't signed yet.
 
 ### Build the package yourself
 
@@ -141,6 +157,8 @@ This produces a self-contained `.lgx` package for Basecamp's package manager.
 8. **My posts** lists everything this account wrote, whichever persona it used.
 9. **Backup & restore:** show your phrase, or restore an account on another instance.
 10. **Lock** (bottom of the sidebar) locks the account again.
+11. **Images:** in the new-topic sheet or under a reply, press **attach images** under the title and choose them in the system's file picker, or drop them on the composer. (The picker runs as its own program - `osascript` on macOS, `zenity` or `kdialog` on Linux - because inside Basecamp the view is drawn offscreen and a dialog opened from it would take it down.) The first time, the storage node starts (about two minutes); each picture then uploads, and **post** turns on once all of them are *ready*. In a thread, an image shows as a card - click it to fetch it (often a minute or more), and it replaces the card.
+12. **Private forums:** in the sidebar under *forums*, **new private forum** asks for a name and gives you an invite link to send to the people you want in. They open the link (or paste it into search, or press **join** and paste it), confirm, and the forum appears in their sidebar. On the forum's page, **copy invite link** gives the link again and **leave** removes the forum and its posts from this device.
 
 ### Sharing links
 
@@ -163,8 +181,9 @@ What a link carries, and why it is safe to share:
 | Domain link | `{"domain": "<name>"}` |
 | Who shared it | Not in the link. A post id is a hash of the post itself. |
 | Who opened it | No server is involved: the link only tells your own Basecamp what to show. |
-| What the network learns | If you don't hold the thread yet, Forumer asks peers for every post from that day and the week after (the ordinary history range request), not for that one post. |
-| Untrusted input | Anyone can write a link. Basecamp checks the payload against the declared parameters, and Forumer checks it again (`src/qml/links.js`): only a 32-hex id, a day number and a domain name are accepted. |
+| What the network learns | If you don't hold the thread yet, Forumer asks peers for every post from the day before it to about a week after (the ordinary history range request), not for that one post. |
+| Invite link | `{"invite": "<forum key>", "name": "<forum name>"}`. Unlike the others, an invite is a secret: it **is** the forum's key. |
+| Untrusted input | Anyone can write a link. Basecamp checks the payload against the declared parameters, and Forumer checks it again (`src/qml/links.js`): only a 32-hex id, a day number, a domain name, or a 43-character key with a name are accepted. An invite is never joined without asking. |
 
 ---
 
@@ -179,15 +198,17 @@ What a link carries, and why it is safe to share:
 │        │  Qt Remote Objects (src/forumer.rep)         │
 └────────┼──────────────────────────────────────────────┘
 ┌────────▼──────────────────────┐      ┌──────────────────┐
-│ ui-host: ForumerBackend (C++) │─────▶│ delivery_module  │──▶ Logos network
+│ ui-host: ForumerBackend (C++) │─────▶│ delivery_module  │──▶ Logos Delivery (posts, sync, history)
 │   links forumer_core          │      └──────────────────┘
-└───────────────────────────────┘
+│                               │      ┌──────────────────┐
+│                               │─────▶│ storage_module   │──▶ Logos Storage (images)
+└───────────────────────────────┘      └──────────────────┘
 ```
 
 | Part | Role |
 |---|---|
-| **`lib/forumer_core`** | The forum engine as a plain C++20 library with no Qt and no UI: identity, vault, recovery phrase, signed posts, proof-of-work, post log, sync rules, thread rules, flood control. It is reusable by any other app (a bot, a CLI, another UI) and fully unit-tested. |
-| **`src/forumer_backend.*`** | The Basecamp backend. It wires `forumer_core` to `delivery_module`, runs the timers (digests, retries, quota) and exposes state to the view through the `.rep` contract. |
+| **`lib/forumer_core`** | The forum engine as a plain C++20 library with no Qt and no UI: identity, vault, recovery phrase, encrypted account files, signed posts, proof-of-work, post log, sync rules, thread rules, flood control, private forums, image sealing. It is reusable by any other app (a bot, a CLI, another UI) and fully unit-tested. |
+| **`src/forumer_backend.*`** | The Basecamp backend. It wires `forumer_core` to `delivery_module` and `storage_module`, runs the timers (digests, retries, history, quota) and exposes state to the view through the `.rep` contract. `src/image_prep.*` re-encodes attached pictures. |
 | **`src/qml`** | The interface. `ForumStore.qml` turns the backend's properties and signals into what the screens show. |
 
 Forumer is one `ui_qml` module. The engine is a separate library inside it, not a separate Logos module, so it builds and ships as one package and can still be reused.
@@ -197,17 +218,26 @@ Forumer is one `ui_qml` module. The engine is a separate library inside it, not 
 Everything lives under the instance's data folder: `$LOGOS_USER_DIR/module_data/forumer/` when Basecamp sets one, otherwise the system's app-data folder.
 
 ```
-forumer/
+forumer/                       (0700; every file below is 0600)
 ├── accounts/
-│   ├── accounts.json          list of accounts, which one is selected
+│   ├── accounts.json          accounts, their names, which one is selected
 │   └── <account id>/
-│       ├── vault.json         master key, encrypted with the password (file mode 0600)
-│       └── state.json         name, rotation policy, persona counter, alias, followed domains
+│       ├── vault.json         master key, encrypted with the password
+│       ├── state.enc          rotation policy, persona counter, alias, followed domains, private forums and their keys (encrypted)
+│       └── own.enc            which posts this account wrote, their send state, replies read (encrypted)
+├── media/tmp/                 a picture being uploaded or fetched (encrypted), deleted once done
+├── storage/                   this device's Logos Storage node (encrypted image blobs only)
+├── media-rehost               whether fetched images are offered to others ("1"/"0")
+├── media-autofull             whether full images load when a thread opens ("1"/"0")
+├── network                    the chosen network (logos.dev / logos.test)
+├── peer_id                    a random id for this install (reliable channels only; never linked to an account)
 └── posts/
-    └── posts.sqlite3          every verified post + the outbox of this device's own posts
+    └── posts.sqlite3          every verified post (at most 50,000; the oldest beyond that are pruned at start), image previews, history progress; a private forum's posts are stored encrypted with its key
 ```
 
-No file on disk holds anything that links personas to each other, except the encrypted vault.
+`state.enc` and `own.enc` are encrypted (XChaCha20-Poly1305) under a key derived from the account's master key, bound to the account and to the file's purpose. While an account is locked, nothing on disk says which posts it wrote, links its personas, or reveals its alias; only its name (shown on the lock screen) is readable. The unlocked account's list of its own posts and its outbox live in memory only (temporary tables), and are saved back to `own.enc`.
+
+Upgrading from 0.2.2, which kept the account state and the outbox in clear: each account's data moves into its encrypted files the first time it is unlocked, and the clear tables are dropped from the post log once every account has moved.
 
 ---
 
@@ -232,7 +262,11 @@ persona_key[i]  = Ed25519 key pair from persona_seed[i]
 fingerprint     = "fr:" + first 40 bits of BLAKE2b(public key), Crockford base32   e.g. fr:7Q4K-M2XD
 ```
 
-Personas are derived, so the recovery phrase brings all of them back, and **My posts** can be rebuilt on a new device. Without the master key, two personas cannot be linked.
+Personas are derived, so the recovery phrase brings all of them back, and **My posts** is rebuilt on a new device as the account's posts arrive from the network. Without the master key, two personas cannot be linked.
+
+Anonymous posts are signed with one-time keys derived from a random 64-bit id under their own context (`frmranon`), never from the persona counter: a restore can never hand one out again, and they are not recovered into **My posts**.
+
+**Restoring on a new device.** The new device doesn't hold the account's history yet, so it can't know which personas were already used. Until history has synced from at least one peer, posting waits (the composer says why, with a *post anyway* option); as posts by the account's personas arrive, it resumes as the newest one, never one the user had rotated away from. Persona recovery scans up to 1,000 unused indices ahead.
 
 ### Rotation policy
 
@@ -248,7 +282,7 @@ Personas are derived, so the recovery phrase brings all of them back, and **My p
 |---|---|---|---|
 | **Persona** | the policy's persona | `fr:7Q4K-M2XD` | "unique id" |
 | **Alias** | the policy's persona | `night owl · fr:7Q4K-M2XD` | "alias (alongside optional uid)" |
-| **Anonymous** | a fresh one-time persona | `Anonymous` | "without revealing any id" |
+| **Anonymous** | a one-time key, never reused | `Anonymous` | "without revealing any id" |
 
 Every post is signed, so it can't be forged or altered. Only *persona* and *alias* make posts recognisable as coming from the same author.
 
@@ -273,11 +307,11 @@ Anyone can check, without trusting the sender, that a post was written by the ke
 
 | Limit | Value |
 |---|---|
-| Title / body | 200 / 10,000 characters |
-| Domains per topic | 3, normalised to `[a-z0-9-]`, 2–32 characters |
-| Alias | 32 characters |
-| Whole envelope | 16 KB (media will travel by reference, never inline) |
-| Proof-of-work | 16 bits (persona/alias), 20 bits (anonymous) |
+| Title / body | 200 / 10,000 bytes of UTF-8 (a Latin letter is 1, accented and non-Latin letters 2–4, an emoji 4); the composer counts them as you type |
+| Domains per topic | 3, normalised to `[a-z0-9-]`, 2–32 characters; the composer shows what a domain becomes (`café` → `#caf`) and refuses a topic none of whose domains survive |
+| Alias | 32 bytes; always shown with its fingerprint; can't contain `fr:`, `·`, or invisible / direction-changing characters, or be `Anonymous` |
+| Whole envelope | 16 KB (media travels by reference, never inline) |
+| Proof-of-work | 16 bits (persona/alias; 18 for a persona's first post), 20 bits (anonymous) |
 | Clock | posts dated more than 10 minutes in the future are refused |
 
 ### Two-level threads
@@ -306,30 +340,83 @@ Each reply carries `root` (the topic) and `parent` (what it answers), so anyone 
 /forumer/3/public/proto          (LIP-23 format)
 ```
 
-Every public post goes on one shared topic. Domains are filtered on the device, so the network can't see which domains someone reads.
+Every public post goes on one shared topic. Domains are filtered on the device, so the network can't see which domains someone reads. Each private forum has a topic of its own ([below](#private-forums)).
+
+### Private forums
+
+A private forum is a 32-byte random key, made by whoever creates it and handed to others in an invite link. Everything else follows from the key (`lib/forumer_core/include/forumer_core/forums.h`):
+
+| | |
+|---|---|
+| Forum id | first 8 bytes of BLAKE2b(key), hex - names the forum on this device and in its posts |
+| Content topic | `/forumer/3/pf-<id>/proto` - its own topic, so nothing on the public one changes |
+| On the wire | every message on the topic (posts and digests) is sealed with XChaCha20-Poly1305 under a key derived from the forum key, the forum id bound in |
+| On disk | its posts are stored sealed under a second derived key: `posts.sqlite3` never holds a private forum's text, and while the account is locked nothing on the device can read it |
+| Membership | the key, kept in the account's encrypted `state.enc`; the view shows a forum's posts only while an account that is in it is unlocked |
+
+Inside the seal a post is an ordinary signed post whose `forum` field is the forum id, so personas, aliases, anonymous posting, proof-of-work and flood limits work unchanged. A post is accepted only on its own forum's topic: a member can't move a private post into the public forum, or between forums, by sending it elsewhere.
+
+**History.** Digests repair the last 48 hours inside each forum, exactly as in public. Older posts come from the network's store nodes, which keep the forum's sealed messages like any other (Forumer asks for up to a month, as for the public forum); after joining, Forumer asks them for each forum once the public archive is done. The week-by-week history walk is public-only, so a forum older than what the store nodes kept shows what its members still re-send within 48 hours.
+
+**What it does not do.** Anyone with the link can read and post, and can pass the link on; there is no admin and no way to remove a member. If a link leaks, make a new forum and share the new link. Members can recognise a persona you also use in public - post anonymously or rotate if that matters. The topic name and message timing are visible on the network, as for any Waku traffic. Memberships live in the account's state on this device: restoring an account from its recovery phrase on another device brings back its personas, not its forums - ask for the links again.
+
+### Images
+
+Pictures go through **Logos Storage**; posts only carry references to them (`lib/forumer_core/include/forumer_core/media.h`, `src/image_prep.cpp`).
+
+| Step | What happens |
+|---|---|
+| Attach | The picture is decoded and written out again - JPEG, or PNG when it has transparency - at most 2048 px on its longest side and 5 MB. Only pixels survive: EXIF (GPS, camera, dates), comments and colour profiles stay behind. JPEG, PNG and WebP are accepted. |
+| Seal | Encrypted with XChaCha20-Poly1305 under a key derived from the picture's own SHA-256 (in a private forum, also from the forum key). Storage nodes and the DHT see only ciphertext. |
+| Upload | One at a time, in the background, as soon as the storage node runs (it starts in the background shortly after unlocking, and takes one to two minutes). The file is uploaded under a fixed name, so its manifest says nothing about it. |
+| Post | Signed only once every picture has a CID. Each reference - `{cid, mime, size, sha256}` - is inside the signature (this field has existed since 0.2.2, so older versions still verify the post and show its text). |
+| Preview | Right after the post, the author's app sends a **preview** of each picture (JPEG, at most 96 KB, up to 1024 px) on the forum's topic, in up to three `mprev` pieces. It is sealed with a key derived from the full picture's signed hash (and the forum key in a private forum), and **signed with the post's own key** together with the post id and the picture's index - nobody else can attach a preview to a post. Receivers check the signature and keep it (sealed) next to the post, so **a thread shows its pictures the moment it opens, with no network contact**. Store nodes keep the pieces too; someone who missed them asks (`mask`) and any holder sends them again. |
+| Read | Opening a thread shows each preview at once and, with Settings → images → *load full images* (default), fetches the full picture from Storage in the background - otherwise on a click. The manifest's size is checked first, then the file is downloaded, decrypted and compared with the signed hash, size and type; anything else is refused, never shown. Pictures reach the view in memory, never written to disk in clear. A download that stops moving for a minute is restarted once. |
+| Find the holder | Storage's own lookup (its DHT) takes a minute or more from a home connection, so Forumer also asks the forum: on click it sends `{"t":"mask","cid":…}` on the post's topic (sealed in a private forum), and a peer whose storage node holds the picture answers `{"t":"mhere","cid":…,"peer":…,"addrs":[…]}` after a short random delay (staying quiet if someone else answered first). The asker dials that node directly and asks it for the manifest. A peer answers only for pictures it uploaded (already announced on the DHT anyway) or, with re-hosting on, pictures it fetched; at most three holders are dialled per picture, and only ip4/ip6/dns addresses are accepted. |
+| Re-host | By default a picture you opened stays in your storage node and is offered to others, so it stays reachable while its author is offline. Settings → images → *just view* turns this off. |
+
+**Limits.** Fetches can be slow - a minute or more without a holder hint - because Storage first has to find who holds the file; a holder answers hints only while its storage node runs. Previews avoid all of this: they arrive with the post. A node behind a home router may be unreachable for others until it has settled, and fetching across two different home networks is still untested. Whoever serves you a picture can see your storage node's address, and while re-hosting is on, so can whoever fetches from you. In the public forum, someone who already has a given picture can tell whether a stored blob is that picture (the key comes from the picture); in a private forum the forum key prevents that.
 
 ### Which network
 
 | Network | What it is | Default |
 |---|---|---|
 | `logos.dev` | Logos devnet, open to anyone | ✅ |
-| `logos.test` | Official testnet; Delivery v0.3 runs RLN rate limiting there, so the node only starts with an active RLN membership registered on the LEZ testnet | |
+| `logos.test` | Official testnet; Delivery v0.3 runs RLN rate limiting there. With the pinned delivery_module v0.3.0 the node only starts with an active RLN membership registered on the LEZ testnet (from v0.3.1, delivery_module's docs say a membership is needed only to send) | |
 
-Choose in **Settings → choose network** (takes effect after a restart; saved in the account's data folder as `network`). For testing, `FORUMER_NETWORK=logos.test` overrides it. The two are separate networks: you only see people on the same one. Settings → network shows the one in use.
+Choose in **Settings → choose network** (takes effect after a restart; saved in the instance's data folder as `network`). For testing, `FORUMER_NETWORK=logos.test` overrides it. The two are separate networks: you only see people on the same one. Settings → network shows the one in use.
 
-Two kinds of message, both small JSON objects:
+`delivery_module` runs one node for every app in a Basecamp instance. If another app created that node first, Forumer joins it as it is, with the network that app chose, while Settings → network still shows Forumer's own choice.
+
+### Messages on the wire
+
+Every message is a small JSON object (`lib/forumer_core/include/forumer_core/sync.h`); in a private forum it is sealed first:
 
 ```json
 {"v":1, "t":"post",   "env":"<signed envelope>"}
-{"v":1, "t":"digest", "since":1790000000000, "have":["<16-hex short id>", "..."]}
+{"v":1, "t":"digest", "since":<ms>, "have":["<16-hex short id>", "..."], "oldest":<ms>}
+{"v":1, "t":"range",  "since":<ms>, "until":<ms>, "have":["<16-hex short id>", "..."]}
+{"v":1, "t":"mask",   "cid":"<storage id>"}
+{"v":1, "t":"mhere",  "cid":"<storage id>", "peer":"<storage peer id>", "addrs":["..."]}
+{"v":1, "t":"mprev",  "post":"<id>", "i":<image>, "k":<part>, "n":<parts>, "sig":"…", "data":"…"}
 ```
+
+| Type | Purpose |
+|---|---|
+| `post` | One signed topic or reply ([§6](#6-posts-and-threads)) |
+| `digest` | The posts the sender holds in the last 48 hours ([Digests](#digests-filling-gaps-without-a-server)) |
+| `range` | A history request for an older window ([History](#history-everything-older)) |
+| `mask` / `mhere` | Who holds an image ([Images](#images)) |
+| `mprev` | A piece of an image preview ([Images](#images)) |
+
+Messages are at most 24 KB (preview pieces 64 KB). A message of a newer wire version, or one that isn't Forumer's, is ignored.
 
 ### Outbox: sending your own posts
 
 1. The post is signed and written to the outbox **before** anything touches the network.
 2. It is sent and shows **sending…**.
-3. When `delivery_module` confirms it, it turns **live**.
-4. If sending fails, it is retried automatically with growing delays (15 s, doubling, up to 5 min). You can also retry by hand from **Missed**. Retries survive restarts.
+3. When `delivery_module` confirms it, or a peer's digest lists it, it turns **live**.
+4. If sending fails, it is retried automatically with growing delays (15 s, doubling, up to 5 min). You can also retry by hand from **Missed**. Retries survive restarts and run while the account that wrote the post is unlocked.
 
 ### Digests: filling gaps without a server
 
@@ -346,13 +433,13 @@ Digests cover the last **48 hours** and list at most 512 ids (64-bit short ids).
 
 ### History from the network's store nodes
 
-Logos Delivery's fleet nodes keep recent messages (the store protocol). A few seconds after joining, Forumer asks them for the forum topic's messages of the last 30 days (the last day, where a node caps the range at 24 h), 100 per page, node by node until one answers with messages:
+Logos Delivery's fleet nodes keep recent messages (the store protocol). A few seconds after joining, Forumer asks them for the forum topic's messages of the last 30 days (the last day, where a node caps the range at 24 h), 100 per page and up to 20 pages per node, node by node until one answers with messages:
 
 | | |
 |---|---|
 | Query | `storeQuery` (async) with `contentTopics: ["/forumer/3/public/proto"]` and the autosharded `pubsubTopic` (`/waku/2/rs/3/4` on logos.dev) |
 | Nodes | the six logos.dev entry nodes (`delivery-0{1,2}.<dc>.logos.dev.status.im`); `FORUMER_STORE_PEERS` (comma-separated multiaddrs) overrides, `FORUMER_NO_STORE=1` skips |
-| What is taken | posts only — old digests and range requests in the archive are ignored, so a newcomer never answers requests settled days ago |
+| What is taken | posts and image previews only — old digests and range requests in the archive are ignored, so a newcomer never answers requests settled days ago |
 | Trust | every post is checked like a live one (signature, proof-of-work, flood limits): a store node can withhold posts but not forge or alter them |
 
 This is what lets a fresh install see the forum when nobody else is online. **Missed → history → network archive** shows what came from where.
@@ -367,7 +454,7 @@ Each live digest also says `"oldest": <ms>` — the sender's oldest post — so 
 
 "These are the posts I hold dated in [since, until)": peers send the rest, capped at 64 each. While a round still brings many new posts the same window is asked again; then the walk moves a week further back. A window where we already hold more than 400 posts is halved (down to one hour) so the request can list them all. Progress is saved (`history_floor`), and after an absence longer than 48 hours the walk restarts from the top, so the gap is filled too — windows already held complete in one round. **Missed → history** shows the progress and has *load older* (four more weeks, even past what peers advertised).
 
-Peers answer one range request every 3 s at most, about at most two weeks at a time, and every answer draws on the re-send budget — a stream of requests can't turn a peer into a firehose. Posts arriving in answer to our own request skip the new-key budget, so history doesn't trickle in at the anti-flood rate.
+Peers answer one range request every 3 s at most, covering at most two weeks at a time, and every answer draws on the re-send budget — a stream of requests can't turn a peer into a firehose. Posts arriving in answer to our own request skip the new-key budget, so history doesn't trickle in at the anti-flood rate.
 
 ---
 
@@ -379,12 +466,16 @@ There is no server to throttle anyone, so every peer applies the same rules to w
 |---|---|
 | Proof-of-work | Every post pays CPU time: 16 bits signed, 20 bits anonymous. |
 | Per persona (checked by every peer) | At most **10 topics** and **60 replies** per hour, counted on the posts' own timestamps, so catching up after a day offline doesn't look like a flood. |
-| Per account (checked by the sender) | The same hourly limits across *all* of an account's personas, including anonymous ones, so rotating doesn't lift them. The composer shows *"7 of 10 topics left this hour"* and disables posting at the limit. |
-| Brand-new keys | Posts from keys never seen before draw from a shared budget (60 per minute, bursts of 120). A post that finds it empty isn't lost: the next digest offers it again. |
+| Per persona, by arrival | Timestamps are the author's to choose, so the hourly limit alone let one key back-date hundreds of posts into past hours. Live posts are also counted by when **they reach us**: at most twice the hourly limit (20 topics, 120 replies) per hour of arrival. More are deferred, not lost: peers offer them again with later digests. |
+| Per persona, history | Posts that arrive in bulk from history walks and store nodes skip the arrival limit (or history would trickle in) and are held to **40 topics / 240 replies** per key in any 24 h of author time instead. |
+| Per account (checked by the sender) | The same hourly and daily limits across *all* of an account's personas, including anonymous ones, so rotating doesn't lift them. The composer shows *"7 of 10 topics left this hour"* and disables posting at the limit. |
+| Brand-new keys | Posts from keys never seen before draw from a shared budget (60 per minute, bursts of 120). Posts with at least **18 bits** of work first use a lane of their own (30 per minute), so a stream of cheap fresh keys can't crowd them out; Forumer mines a key's first post at 18 bits, and anonymous posts carry 20. A post that finds the budget empty isn't lost: the next digest offers it again. |
 | Re-sends | Answers to digests are capped (240 per minute), so digests can't turn a peer into an amplifier. |
 | Sizes | 16 KB per post, 24 KB per network message. |
 
 Rate-Limiting Nullifiers (RLN), which Delivery v0.3 enforces on `logos.test`, could later replace the new-key budget with a per-member cryptographic limit.
+
+Proof-of-work hashes the whole post on every try, so a long post costs more to mine (a 10 KB anonymous post takes seconds). Mining, like unlocking (Argon2id, 256 MiB), runs on a worker thread, so sync carries on meanwhile; the composer shows *signing…*. Changing the work to a fixed-size hash would make it cheaper for long posts, but every peer would have to upgrade at once, so it waits for a format version change.
 
 ---
 
@@ -410,6 +501,8 @@ Rate-Limiting Nullifiers (RLN), which Delivery v0.3 enforces on `logos.test`, co
 | Links you click | Opening a link in a post visits that site from your own connection. Images and HTML in posts are never loaded, so merely reading a post contacts no one. |
 | A compromised device while unlocked | Malware can read the unlocked key. |
 | Deleting posts | Nothing published peer to peer can be reliably deleted, so Forumer doesn't offer delete. |
+| Fetching an image | The node that serves a picture sees your storage node's address; images are fetched only when you click, and re-hosting can be turned off. |
+| A leaked invite link | Whoever has a private forum's link can read it - including everything the store nodes kept - and post. Links can't be revoked; replace the forum instead. |
 | Honest clocks | `ts` is set by the author; ordering is best-effort (future dates are capped). |
 
 ---
@@ -420,13 +513,29 @@ Rate-Limiting Nullifiers (RLN), which Delivery v0.3 enforces on `logos.test`, co
 |---|---|
 | **Plain relay, not reliable channels (SDS)** | SDS's causal ordering held back later messages until earlier ones arrived. The re-sent copy of a lost post was itself held back as "missing dependencies", so one lost post blocked repair. Digests over plain relay repair gaps reliably. The reliable-channel code path is kept behind a switch (`useChannels`). |
 | **Digest repair instead of store queries** | It works with no store node and no server: any peer holding a post can restore it. |
-| **History over Delivery, not Logos Storage (for now)** | We built a Storage probe (Settings → storage) and tested sharing a file between two instances with storage_module v2.1.2. Findings: (1) a node behind a home router reports *NotReachable* and never announces what it holds; (2) fetching a file's manifest only asks the DHT for providers, so even a peer we dialled directly can't be fetched from ("Failed to fetch manifest … after 10 attempts"); (3) the module's own download gives up on the manifest after 3 s. So files shared from home laptops can't be found by others. Retested on storage_module v3.0.0 (UPnP, relays, hole punching): the node takes ~2 min to start and its reachability goes *Unknown* → *NotReachable* on a home network, but sharing now **works** once both nodes have settled — two instances fetched each other's test file, in both directions, in 73–83 s (an attempt in the first minutes timed out). So Storage is usable, but slow to find content. History keeps travelling as posts over Delivery (seconds, crosses home routers); Storage is the path for media and history snapshots. |
-| **Local SQLite, not Logos SQL** | The post log is per-device and private (it also holds the outbox). Logos SQL runs as a blockchain zone, and the blockchain module is out of scope for LP-0026. |
+| **History over Delivery, not Logos Storage (for now)** | We built a Storage probe (Settings → storage; a developer tool, shown only when Forumer starts with `FORUMER_DEV=1`, since the share code it makes carries this machine's addresses) and tested sharing a file between two instances with storage_module v2.1.2. Findings: (1) a node behind a home router reports *NotReachable* and never announces what it holds; (2) fetching a file's manifest only asks the DHT for providers, so even a peer we dialled directly can't be fetched from ("Failed to fetch manifest … after 10 attempts"); (3) the module's own download gives up on the manifest after 3 s. So files shared from home laptops can't be found by others. Retested on storage_module v3.0.0 (UPnP, relays, hole punching): the node takes ~2 min to start and its reachability goes *Unknown* → *NotReachable* on a home network, but sharing now **works** once both nodes have settled — two instances fetched each other's test file, in both directions, in 73–83 s (an attempt in the first minutes timed out). So Storage is usable, but slow to find content. History keeps travelling as posts over Delivery (seconds, crosses home routers); Storage is the path for media and history snapshots. |
+| **Local SQLite, not Logos SQL** | The post log is per-device and private (while an account is unlocked it also holds that account's outbox, in memory). Logos SQL runs as a blockchain zone, and the blockchain module is out of scope for LP-0026. |
 | **Own keys instead of `keystore_signer`** | Forumer needs keys derived from one master key and the ability to verify, not only sign. |
 | **One topic for all domains** | No per-domain duplication, and the network doesn't learn what anyone reads. |
 | **Two-level threads** | Deep nesting becomes unreadable; a second level gives every sub-conversation one clear start. |
 | **Author-time hourly limits** | Counting arrival time would punish peers for catching up. |
 | **One data folder per instance** | `LOGOS_USER_DIR` keeps accounts, posts and network identity separate per Basecamp instance. |
+
+---
+
+### Security review fixes (0.2.3)
+
+All 18 findings from the code review of 0.2.2 are fixed in 0.2.3:
+
+| Area | Fix |
+|---|---|
+| Anonymous posts | A fresh one-time key per anonymous post, never reused, including after a restore. |
+| Restore | Restoring an account can't clash with or overwrite another account's data, and the app says what was restored. |
+| Your own posts | The outbox and "my posts" list are encrypted on disk and kept per account, so the file no longer links posts to an account. Files are created owner-only. |
+| Flood control | Proof-of-work and hourly limits per persona and per account, a limit on what is accepted from the network, and a quota counter in the composer. |
+| Markdown | Post text goes through a sanitiser; HTML and remote images in posts are never loaded. |
+| Long threads | Threads page in, instead of loading everything at once. |
+| Responsiveness | Crypto and database work run on a worker thread, not the UI thread. |
 
 ---
 
@@ -436,19 +545,26 @@ Rate-Limiting Nullifiers (RLN), which Delivery v0.3 enforces on `logos.test`, co
 forumer/
 ├── flake.nix, metadata.json     Logos module build (logos-module-builder 0.3.2)
 ├── CMakeLists.txt
+├── assets/icon.png
+├── .github/workflows/
+│   ├── ci.yml                   unit and view tests, module build on Linux and macOS
+│   └── release.yml              .lgx packages attached to a GitHub release on a v* tag
 ├── src/
 │   ├── forumer.rep              contract between backend and view (Qt Remote Objects)
-│   ├── forumer_backend.{h,cpp}  backend: delivery, timers, state for the view
-│   ├── delivery_module_transport.{h,cpp}   delivery_module adapter (from the sample)
+│   ├── forumer_backend.{h,cpp}  backend: delivery, storage, timers, state for the view
+│   ├── delivery_module_transport.{h,cpp}   delivery_module adapter (from the sample), store queries
+│   ├── image_prep.{h,cpp}       re-encodes attached pictures, makes previews
 │   ├── base64.{h,cpp}
-│   └── qml/                     Main, ForumStore, screens and components, fonts/
+│   └── qml/                     Main, ForumStore, screens and components, markdown.js, links.js, fonts/
 ├── lib/forumer_core/            reusable engine (C++20, libsodium, SQLite, nlohmann/json)
-│   ├── include/forumer_core/    account_store, bytes, crypto, flood, identity, mnemonic,
-│   │                            post, post_store, sync, thread, vault
+│   ├── include/forumer_core/    account_store, bytes, crypto, flood, forums, identity, media,
+│   │                            mnemonic, post, post_store, sealed, sync, thread, vault
 │   ├── src/
-│   └── tests/                   110 unit tests
+│   └── tests/                   150 unit tests
 ├── scripts/
 │   ├── test-core.sh             build and run the unit tests
+│   ├── test-markdown.mjs        Markdown sanitiser tests
+│   ├── test-links.mjs           link and invite parser tests
 │   └── two-instances.sh         two isolated instances for end-to-end testing
 ├── docs/Forumer-description.md  original design document
 ├── LICENSE-MIT
@@ -461,9 +577,11 @@ forumer/
 
 | Layer | What | How |
 |---|---|---|
-| Unit | crypto, vault, recovery phrase, personas and rotation, account store, envelope signing and verification, PoW, post log and outbox, sync rules (digests, answers, retry backoff), thread placement, flood limits | `./scripts/test-core.sh` |
+| Unit | crypto, vault, recovery phrase, personas and rotation, account store, envelope signing and verification, PoW, post log and outbox, sync rules (digests, answers, retry backoff), thread placement, flood limits, private forums (keys, sealing on the wire and at rest, memberships), images (sealing, checks against the signed reference, private-forum keys) | `./scripts/test-core.sh` |
+| View | Markdown sanitiser; link and invite parsing | `node scripts/test-markdown.mjs`, `node scripts/test-links.mjs` |
 | End to end | post → received; nested replies; offline → catch-up; outbox retry; hourly limits; restore | `./scripts/two-instances.sh` (needs the live `logos.dev` network) |
-| CI | GitHub Actions on every push: the `forumer_core` unit tests, then the full module build on Linux (Ubuntu 24.04) and macOS 14 | `.github/workflows/ci.yml` |
+| CI | GitHub Actions on every push and pull request: the `forumer_core` unit tests and the view tests, then the full module build on Linux (Ubuntu 24.04) and macOS 14 | `.github/workflows/ci.yml` |
+| Release | On a `v*` tag: `forumer-<version>-<platform>.lgx` for Linux x86_64 and macOS arm64, attached to the GitHub release | `.github/workflows/release.yml` |
 
 Backend logs are prefixed `[forumer backend]` on the host's stderr.
 
@@ -474,7 +592,7 @@ Backend logs are prefixed `[forumer backend]` on the host's stderr.
 | Requirement | Status | How |
 |---|---|---|
 | No central server or service | ✅ | Peer-to-peer over Logos Delivery; all state on the device |
-| Uses the Logos stack | ✅ / ⏳ | Delivery for posts, sync and history. Storage evaluated (see §10) and planned for media/snapshots; Chat planned |
+| Uses the Logos stack | ✅ | Delivery for posts, sync and history; Storage for images in posts ([Images](#images)); Chat planned |
 | Accounts, topics, replies | ✅ | Several accounts; topics with domains; two-level replies |
 | Reply by unique id, alias, or no id | ✅ | Persona / alias / anonymous per post |
 | Privacy of one identity everywhere | ✅ | Keep / manual / auto rotation ([§5](#5-identity-and-privacy)) |
@@ -506,7 +624,8 @@ Backend logs are prefixed `[forumer backend]` on the host's stderr.
 - [x] Replies to you: unread badge, list, in-thread highlight, notice
 - [x] Markdown formatting with toolbar and preview; user text never rendered as HTML
 - [x] Shareable `basecamp://` links to threads and domains
-- [ ] Media attachments through Logos Storage
+- [x] Private forums with invite links (sealed on the wire and at rest)
+- [x] Images in posts through Logos Storage (re-encoded, encrypted, click to load, re-hosting)
 - [ ] Private messages between personas
 - [ ] Mute a persona / hide a post
 - [x] CI (unit tests + module build on Linux and macOS)
@@ -517,7 +636,7 @@ Backend logs are prefixed `[forumer backend]` on the host's stderr.
 - [x] 0.3 module stack (builder 0.3.2, delivery v0.3.0, storage v3.0.0); network choice logos.dev / logos.test
 - [x] Storage file sharing between two nodes on storage v3 (both directions, 73–83 s per fetch)
 - [ ] Storage between two different home networks
-- Later: private forums with invite links; history snapshots and media through Logos Storage; RLN memberships for `logos.test` users
+- Later: history snapshots through Logos Storage; RLN memberships for `logos.test` users
 
 ---
 

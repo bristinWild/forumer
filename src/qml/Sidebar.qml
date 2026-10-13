@@ -3,13 +3,15 @@ import QtQuick.Controls.Basic as B
 import QtQuick.Layouts
 
 // Left column: wordmark, search (⌘K / Ctrl+K), connection line, navigation,
-// followed domains, the "you" section, and the account card with the theme
-// toggle and lock.
+// forums (public and the private ones you're in), followed domains, the "you"
+// section, and the account card with the theme toggle and lock.
 Rectangle {
     id: sidebar
 
     required property var store
     signal lockRequested()
+    signal newForumRequested()
+    signal joinForumRequested()
 
     function focusSearch() { searchInput.forceActiveFocus(); searchInput.selectAll(); }
 
@@ -223,6 +225,68 @@ Rectangle {
                     text: "chats"; icon: "chat"; badge: "soon"
                     active: sidebar.store.screen === "chats"
                     onClicked: sidebar.store.open("chats")
+                }
+            }
+
+            // ── Forums ────────────────────────────────────────────────────────
+            ColumnLayout {
+                Layout.fillWidth: true
+                Layout.leftMargin: 14
+                Layout.rightMargin: 14
+                spacing: 2
+                visible: sidebar.store.canUsePrivateForums
+                Text {
+                    textFormat: Text.PlainText
+                    Layout.leftMargin: 10
+                    Layout.bottomMargin: 4
+                    text: "forums"
+                    font.family: Ui.sans
+                    font.pixelSize: Ui.size.ui
+                    font.weight: Ui.weight.medium
+                    color: Ui.text
+                }
+                NavItem {
+                    Layout.fillWidth: true
+                    implicitHeight: 34
+                    text: "public"; icon: "list"
+                    active: (sidebar.store.screen === "home" || sidebar.store.screen === "thread")
+                            && sidebar.store.currentForum === "public"
+                    onClicked: sidebar.store.openForum("public")
+                }
+                Repeater {
+                    model: sidebar.store.forums
+                    delegate: NavItem {
+                        required property var modelData
+                        Layout.fillWidth: true
+                        implicitHeight: 34
+                        text: modelData.name.length > 24 ? modelData.name.substring(0, 23) + "…" : modelData.name
+                        icon: "lock"
+                        active: (sidebar.store.screen === "home" || sidebar.store.screen === "thread")
+                                && sidebar.store.currentForum === modelData.id
+                        onClicked: sidebar.store.openForum(modelData.id)
+                    }
+                }
+                RowLayout {
+                    Layout.fillWidth: true
+                    Layout.leftMargin: 6
+                    Layout.topMargin: 2
+                    spacing: 4
+                    FButton {
+                        compact: true
+                        kind: "ghost"
+                        icon: "plus"
+                        text: "new private forum"
+                        tooltip: "A forum only people with its invite link can read"
+                        onClicked: sidebar.newForumRequested()
+                    }
+                    FButton {
+                        compact: true
+                        kind: "ghost"
+                        icon: "link"
+                        text: "join"
+                        tooltip: "Join a private forum with an invite link"
+                        onClicked: sidebar.joinForumRequested()
+                    }
                 }
             }
 

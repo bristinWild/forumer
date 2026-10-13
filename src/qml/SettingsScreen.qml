@@ -83,6 +83,69 @@ Page {
     }
 
     Section {
+        title: "images"
+        caption: "pictures in posts travel through Logos Storage"
+        visible: settings.store.canAttachImages
+
+        ColumnLayout {
+            Layout.fillWidth: true
+            Layout.topMargin: 20
+            spacing: 12
+            Segmented {
+                Layout.preferredWidth: 360
+                options: [
+                    { value: "on", label: "help keep them available" },
+                    { value: "off", label: "just view" }
+                ]
+                value: settings.store.mediaRehost ? "on" : "off"
+                onPicked: (v) => settings.store.chooseMediaRehost(v === "on")
+            }
+            Text {
+                textFormat: Text.PlainText
+                Layout.fillWidth: true
+                text: settings.store.mediaRehost
+                      ? "Images you open stay in this device's storage node and are offered to others, so a picture stays reachable while its author is offline. Others fetching it can see your node's address."
+                      : "Images you open are fetched for you only and not offered to others."
+                wrapMode: Text.WordWrap
+                font.family: Ui.sans
+                font.pixelSize: Ui.size.small
+                color: Ui.text2
+            }
+            Segmented {
+                Layout.preferredWidth: 360
+                Layout.topMargin: 8
+                options: [
+                    { value: "on", label: "load full images" },
+                    { value: "off", label: "previews only" }
+                ]
+                value: settings.store.mediaAutoFull ? "on" : "off"
+                onPicked: (v) => settings.store.chooseMediaAutoFull(v === "on")
+            }
+            Text {
+                textFormat: Text.PlainText
+                Layout.fillWidth: true
+                text: settings.store.mediaAutoFull
+                      ? "A thread shows each picture's preview at once (it travels with the post) and fetches the full image from Storage in the background. Fetching connects to a storage node that holds it."
+                      : "A thread shows the previews that travel with posts; a full image is fetched only when you click it."
+                wrapMode: Text.WordWrap
+                font.family: Ui.sans
+                font.pixelSize: Ui.size.small
+                color: Ui.text2
+            }
+            Text {
+                textFormat: Text.PlainText
+                Layout.fillWidth: true
+                text: "storage node: " + settings.store.storageState
+                      + (settings.store.storageState === "off" ? " (starts shortly after you unlock)" : "")
+                      + (settings.store.media.detail ? " · " + settings.store.media.detail : "")
+                font.family: Ui.mono
+                font.pixelSize: Ui.size.caption
+                color: Ui.text3
+            }
+        }
+    }
+
+    Section {
         title: "network"
         caption: settings.store.status
 
@@ -150,7 +213,9 @@ Page {
         }
     }
 
+    // A developer tool (review F17): it shares this machine's addresses.
     StorageProbe {
+        visible: settings.store.devMode
         store: settings.store
     }
 

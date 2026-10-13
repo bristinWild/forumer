@@ -47,7 +47,16 @@ Sheet {
             function (err) { composer.sending = false; composer.error = err; });
     }
 
-    title: "new topic"
+    // Drop pictures anywhere on the sheet to attach them.
+    DropArea {
+        parent: composer
+        anchors.fill: parent
+        enabled: composer.visible && composer.store.canAttachImages && composer.store.canCompose
+        onDropped: (drop) => { if (drop.hasUrls) topicMedia.attach(drop.urls); }
+    }
+
+    title: composer.store.inPrivateForum ? "new topic in " + composer.store.forumName(composer.store.currentForum)
+                                         : "new topic"
     onOpened: {
         composer.error = "";
         composer.disclosure = composer.store.defaultDisclosure;
@@ -61,8 +70,18 @@ Sheet {
         id: titleField
         Layout.fillWidth: true
         label: "title"
+        hint: titleField.text.length > 0 ? composer.store.sizeNote(titleField.text, composer.store.maxTitleBytes) : ""
         placeholder: "What do you want to ask or share?"
         onAccepted: bodyArea.focusInput()
+    }
+
+    // Pictures, right under the title.
+    MediaStrip {
+        id: topicMedia
+        Layout.fillWidth: true
+        store: composer.store
+        group: "topic"
+        forum: composer.store.currentForum
     }
 
     MdEditor {
@@ -74,6 +93,17 @@ Sheet {
         minHeight: 140
         maxHeight: 300
     }
+    Text {
+        textFormat: Text.PlainText
+        Layout.fillWidth: true
+        Layout.topMargin: -10
+        visible: bodyArea.text.length > 0
+        horizontalAlignment: Text.AlignRight
+        text: composer.store.sizeNote(bodyArea.text, composer.store.maxBodyBytes)
+        font.family: Ui.mono
+        font.pixelSize: Ui.size.caption
+        color: composer.store.utf8Bytes(bodyArea.text) > composer.store.maxBodyBytes ? Ui.failedText : Ui.text3
+    }
 
     ColumnLayout {
         Layout.fillWidth: true
@@ -82,7 +112,10 @@ Sheet {
             id: domainsField
             Layout.fillWidth: true
             label: "domains"
-            hint: "up to 3 · type your own, comma-separated"
+            readonly property var preview: composer.store.domainPreview(text)
+            hint: text.trim().length === 0 ? "up to 3 · type your own, comma-separated"
+                : preview.kept.length === 0 ? "no usable domain: a-z, 0-9 and -"
+                : "posts in #" + preview.kept.join(" #") + (preview.changed.length > 0 ? " · " + preview.changed.join(", ") : "")
             placeholder: "privacy, campus"
             mono: true
             onAccepted: composer.post()
@@ -131,11 +164,25 @@ Sheet {
         }
     }
 
+    Text {
+        textFormat: Text.PlainText
+        Layout.fillWidth: true
+        visible: composer.store.inPrivateForum
+        text: "private: only members of " + composer.store.forumName(composer.store.currentForum)
+              + " can read it - everyone who has the invite link."
+        wrapMode: Text.WordWrap
+        font.family: Ui.mono
+        font.pixelSize: Ui.size.caption
+        color: Ui.text3
+    }
+
     QuotaLine {
         visible: composer.store.unlocked && limit > 0
         quota: composer.store.quota.topics
         noun: "topic"
     }
+
+    RestoreNotice { Layout.fillWidth: true; store: composer.store }
 
     Notice { Layout.fillWidth: true; message: composer.error }
 
@@ -146,6 +193,10 @@ Sheet {
             text: composer.sending ? "signing…" : "post"
             enabled: titleField.text.trim().length > 0 && !composer.sending && composer.store.canPost
                      && composer.store.topicsLeft
+                     && composer.store.attachmentsReady("topic")
+                     && composer.store.utf8Bytes(titleField.text) <= composer.store.maxTitleBytes
+                     && composer.store.utf8Bytes(bodyArea.text) <= composer.store.maxBodyBytes
+                     && (domainsField.text.trim().length === 0 || domainsField.preview.kept.length > 0)
             onClicked: composer.post()
         }
     ]
