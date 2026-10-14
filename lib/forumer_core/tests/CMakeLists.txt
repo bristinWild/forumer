@@ -15,6 +15,7 @@ add_executable(forumer_core_tests
     test_review_fixes.cpp
     test_forums.cpp
     test_media.cpp
+    test_phase_a.cpp
 )
 
 target_link_libraries(forumer_core_tests PRIVATE forumer_core)
