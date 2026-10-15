@@ -1,0 +1,73 @@
+
+name: E3 Headless UI Tests
+
+on:
+  push:
+    branches:
+      - release/0.2.4
+      - test/e3-ui-smoke
+
+  pull_request:
+    branches:
+      - release/0.2.4
+
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  ui-smoke:
+    name: Forumer Headless UI
+    runs-on: ubuntu-24.04
+    timeout-minutes: 75
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Free disk space
+        run: |
+          sudo rm -rf \
+            /usr/share/dotnet \
+            /usr/local/lib/android \
+            /opt/ghc \
+            /opt/hostedtoolcache/CodeQL
+
+          df -h /
+
+      - name: Install Nix
+        uses: DeterminateSystems/nix-installer-action@main
+        with:
+          extra-conf: |
+            extra-substituters = https://cache.nix.logos.co/public
+            extra-trusted-public-keys = public:l4HrXgL4nw246+LBh2SOJyhz64BoGegOYLheT/iIAPU=
+
+      - name: Run headless UI tests
+        run: |
+          nix build .#integration-test \
+            --out-link result-e3 -L
+
+      - name: Collect test logs
+        if: always()
+        run: |
+          mkdir -p e3-artifacts
+
+          if [ -f result-e3/integration-test.log ]; then
+            cp -L \
+              result-e3/integration-test.log \
+              e3-artifacts/integration-test.log
+
+            cat e3-artifacts/integration-test.log
+          else
+            echo "Integration test output unavailable" \
+              > e3-artifacts/README.txt
+          fi
+
+      - name: Upload test evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: e3-ui-smoke-log
+          path: e3-artifacts/
+          retention-days: 7
