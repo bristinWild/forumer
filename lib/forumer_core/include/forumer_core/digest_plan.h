@@ -43,14 +43,19 @@ struct DigestPlan {
 DigestPlan planDigest(const Digest& digest, int64_t nowMs, int64_t liveWindowMs, bool checkPeer,
                       bool mayScan, const RecentFn& recent, size_t maxAnswer = kMaxAnswer);
 
-/// Admits range requests one at a time. The gap starts only when a request
-/// is answered; an invalid one is refused without touching the gap.
+/// Admits range requests one at a time. The gap starts only when something is
+/// actually sent: admit() alone never starts it, so a valid window with nothing
+/// missing (or a send that was dropped) doesn't silence the next request.
 class RangeGate {
 public:
     /// The window to answer for this request, clamped to the clock skew and
     /// span limits, or nullopt if it is refused (too soon, or not a window).
+    /// Does not start the gap; call answered() once an answer goes out.
     std::optional<Digest> admit(const Digest& range, int64_t nowMs, int64_t gapMs,
                                 int64_t maxSkewMs, int64_t maxSpanMs);
+
+    /// Starts the gap: call only after an answer was actually queued.
+    void answered(int64_t nowMs) { lastAnswerMs_ = nowMs; }
 
 private:
     int64_t lastAnswerMs_ = 0;

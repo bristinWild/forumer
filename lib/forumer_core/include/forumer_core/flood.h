@@ -41,10 +41,11 @@
 //
 //   6. Unsigned sync work (0.2.4, review of 0.2.3): every digest that needs a
 //      read of our held set draws from kDigestScansPerMinute, and every
-//      image-discovery question (mask) that reaches the storage module's
-//      exists() draws from kMediaAskPerMinute. Both used to be unlimited.
-//      A refused digest is re-sent by its sender's next digest; a refused
-//      mask is simply not answered.
+//      image-discovery question (mask) draws from kMediaAskPerMinute before
+//      any database read, queued preview or storage exists() call, so a flood
+//      of asks costs the same bounded work whatever it asks about. Both used
+//      to be unlimited. A refused digest is re-sent by its sender's next
+//      digest; a refused mask is simply not answered.
 //
 // Sizes are capped separately (post::kMaxEncoded per post, sync::kMaxPayload
 // per message). Rate-Limiting Nullifiers (RLN) in Logos Delivery v0.3 would

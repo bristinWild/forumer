@@ -134,12 +134,24 @@ TEST(phase_a_invalid_range_does_not_start_the_gap) {
     CHECK(gate.admit(good, kNow, 3'000, 600'000, 2 * kH).has_value());
 }
 
+TEST(phase_a_empty_answer_does_not_start_the_gap) {
+    // A valid window with nothing missing is admitted but never answered:
+    // the next request must not be silenced by it.
+    RangeGate gate;
+    Digest good;
+    good.sinceMs = 1;
+    good.untilMs = kNow;
+    CHECK(gate.admit(good, kNow, 3'000, 600'000, 2 * kH).has_value());
+    CHECK(gate.admit(good, kNow + 1'000, 3'000, 600'000, 2 * kH).has_value());
+}
+
 TEST(phase_a_answered_range_starts_the_gap) {
     RangeGate gate;
     Digest good;
     good.sinceMs = 1;
     good.untilMs = kNow;
     CHECK(gate.admit(good, kNow, 3'000, 600'000, 2 * kH).has_value());
+    gate.answered(kNow);   // something was actually sent
     CHECK(!gate.admit(good, kNow + 1'000, 3'000, 600'000, 2 * kH).has_value());
     CHECK(gate.admit(good, kNow + 3'000, 3'000, 600'000, 2 * kH).has_value());
 }
@@ -195,4 +207,18 @@ TEST(phase_a_log_refs_hide_the_tail_of_identity) {
     CHECK_EQ(ref, std::string(8, 'f') + "...");
     CHECK(ref.size() < account.size());
     CHECK_EQ(forumer::shortRef("short"), std::string("short"));
+}
+
+TEST(phase_a_scrub_shortens_every_long_identifier) {
+    const std::string cid(59, 'b');   // a content id
+    const std::string postId(64, 'a');
+    const std::string line = "stored " + postId + " as fr:SAYQ-ZYKX... media " + cid +
+                             " at 1744000000000 ms, 3 post(s)";
+    const std::string out = forumer::scrubIds(line);
+    CHECK(out.find(postId) == std::string::npos);
+    CHECK(out.find(cid) == std::string::npos);
+    CHECK(out.find(std::string(8, 'a') + "...") != std::string::npos);
+    CHECK(out.find("1744000000000") != std::string::npos);   // timestamps stay
+    CHECK(out.find("post(s)") != std::string::npos);          // words stay
+    CHECK_EQ(forumer::scrubIds("received"), std::string("received"));
 }

@@ -52,8 +52,7 @@ std::optional<Digest> RangeGate::admit(const Digest& range, int64_t nowMs, int64
     if (spanExceeds(window.sinceMs, window.untilMs, maxSpanMs))
         window.sinceMs = window.untilMs - maxSpanMs;
 
-    lastAnswerMs_ = nowMs;     // the gap starts only now
-    return window;
+    return window;   // the gap starts in answered(), once something is sent
 }
 
 } // namespace forumer::sync

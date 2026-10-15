@@ -70,7 +70,9 @@ namespace {
 // With FORUMER_LOG_FILE set (scripts/two-instances.sh sets it), the same
 // lines also go to that file with a time: the host doesn't always pass the
 // backend's stderr on. Off by default - the lines name posts and images.
-void logEvent(const std::string &what) {
+void logEvent(const std::string &raw) {
+  // Identifiers are shortened here, for every line (forumer_core/redact.h).
+  const std::string what = fc::scrubIds(raw);
   std::cerr << "[forumer backend] " << what << std::endl;
   static std::mutex lock;
   static std::ofstream file;
@@ -2316,6 +2318,10 @@ void ForumerBackend::askForHolders(const std::string &cid, const std::string &fo
 void ForumerBackend::handleMediaAsk(const std::string &cid, const std::string &forum) {
   if (m_mediaFetches.count(cid) || m_previewAskedAt.count(cid))
     return;   // our own question coming back, or fetching it ourselves
+  // Bound the work a flood of asks can cause, before any database read or
+  // queued preview (flood.h, layer 6). Every ask draws on the bucket.
+  if (!m_mediaAskBudget.take(nowMs()))
+    return;
   // Its preview, if we have it: sent again after a moment, unless someone
   // else does first.
   for (const auto &pv : m_posts ? m_posts->previewsOf(cid) : std::vector<fc::PostStore::Preview>{}) {
@@ -2341,9 +2347,6 @@ void ForumerBackend::handleMediaAsk(const std::string &cid, const std::string &f
   const qint64 now = nowMs();
   const auto sent = m_hintSentAt.find(cid);
    if (sent != m_hintSentAt.end() && now - sent->second < 30'000)
-    return;
-  // Each distinct id costs a storage lookup; bound how many we make (flood.h, layer 6).
-  if (!m_mediaAskBudget.take(now))
     return;
   LogosResult held = modules().storage_module.exists(qs(cid));
   if (!held.success || !held.value.toBool()) {
@@ -3507,8 +3510,10 @@ void ForumerBackend::handleRange(const fc::sync::Digest &range) {
     return;
   const auto held = m_posts->range(window->sinceMs, window->untilMs);
   const auto missing = fc::sync::missingFrom(*window, held);
-  if (!missing.empty())
-    queueAnswers(missing, "history request");
+  if (missing.empty())
+    return;   // nothing to send: the gap stays open for the next request
+  queueAnswers(missing, "history request");
+  m_rangeGate.answered(now);
 }
 
 //  History walk 
