@@ -92,6 +92,8 @@ Item {
                 visible: store.screen === "home"
                 store: store
                 onNewTopic: composer.open()
+                onNewForum: newForum.open()
+                onJoinForum: joinForum.open()
             }
             ThreadScreen {
                 anchors.fill: parent

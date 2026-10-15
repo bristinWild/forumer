@@ -266,28 +266,6 @@ Rectangle {
                         onClicked: sidebar.store.openForum(modelData.id)
                     }
                 }
-                RowLayout {
-                    Layout.fillWidth: true
-                    Layout.leftMargin: 6
-                    Layout.topMargin: 2
-                    spacing: 4
-                    FButton {
-                        compact: true
-                        kind: "ghost"
-                        icon: "plus"
-                        text: "new private forum"
-                        tooltip: "A forum only people with its invite link can read"
-                        onClicked: sidebar.newForumRequested()
-                    }
-                    FButton {
-                        compact: true
-                        kind: "ghost"
-                        icon: "link"
-                        text: "join"
-                        tooltip: "Join a private forum with an invite link"
-                        onClicked: sidebar.joinForumRequested()
-                    }
-                }
             }
 
             // ── Followed domains ──────────────────────────────────────────────

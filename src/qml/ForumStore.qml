@@ -1,4 +1,5 @@
 import QtQuick
+import QtCore
 import "markdown.js" as Md
 import "links.js" as Links
 
@@ -540,7 +541,44 @@ Item {
     function clock(ms) { return Qt.formatTime(new Date(ms), "hh:mm"); }
 
     // Re-render relative times ("12m") once a minute.
-    property int tick: 0
+   // ── Muted personas (B1) ──────────────────────────────────────────────
+// Hidden on this device only: their posts leave the feeds, search and
+// threads. Keys are public persona keys (authorKey), so the list is not
+// secret. Anonymous posts are never muted: each one has a new key.
+Settings {
+    id: mutePrefs
+    category: "forumer"
+    property string mutedKeys: "[]"
+}
+property var mutedSet: ({})
+Component.onCompleted: store.loadMuted()
+
+function loadMuted() {
+    var list = [];
+    try { list = JSON.parse(mutePrefs.mutedKeys) || []; } catch (e) { list = []; }
+    var set = {};
+    list.forEach(function (k) { if (typeof k === "string" && k.length > 0) set[k] = true; });
+    store.mutedSet = set;
+}
+function isMuted(key) {
+    return typeof key === "string" && key.length > 0 && store.mutedSet[key] === true;
+}
+// Only personas can be muted: an anonymous post's key is one-time.
+function canMute(item) {
+    return item !== undefined && item !== null && typeof item.authorKey === "string"
+        && item.authorKey.length > 0 && item.author !== "Anonymous";
+}
+function setMuted(key, on) {
+    if (typeof key !== "string" || key.length === 0) return;
+    var copy = Object.assign({}, store.mutedSet);
+    if (on) copy[key] = true; else delete copy[key];
+    store.mutedSet = copy;
+    mutePrefs.mutedKeys = JSON.stringify(Object.keys(copy));
+    store.rev++;   // re-runs the feed and thread bindings
+}
+function mutedList() { return Object.keys(store.mutedSet); }
+
+property int tick: 0
     Timer { interval: 60000; running: true; repeat: true; onTriggered: store.tick++ }
 
     // ── Derived lists ─────────────────────────────────────────────────────────
@@ -583,6 +621,7 @@ Item {
         for (var id in store.topics) {
             var t = store.topics[id];
             if (t.forum !== store.currentForum) continue;
+            if (store.isMuted(t.authorKey)) continue;
             if (store.domainFilter.length > 0 && t.domains.indexOf(store.domainFilter) < 0) continue;
             if (followedOnly && !t.domains.some(function (d) { return store.followed.indexOf(d) >= 0; })) continue;
             if (!store.matches(t, query)) continue;
@@ -642,6 +681,7 @@ Item {
         for (var id in store.replies) {
             var r = store.replies[id];
             if (r.topicId !== topicId) continue;
+            if (store.isMuted(r.authorKey)) continue;   // B1: muted replies and the thread under them
             var top = store.subthreadOf(r, topicId);
             if (top === "") level1.push(r);
             else (under[top] = under[top] || []).push(r);
@@ -653,6 +693,7 @@ Item {
             return {
                 id: r.id, author: r.author, body: r.body, time: store.ago(r.tsMs), media: r.media || [],
                 depth: depth, delivery: r.delivery, subthread: subthread,
+                authorKey: r.authorKey,
                 fresh: store.freshIds[r.id] === true,
                 // Same signing key as the topic: display text can be imitated (F5).
                 isOp: t !== undefined && !t.placeholder && t.authorKey !== "" && r.authorKey === t.authorKey

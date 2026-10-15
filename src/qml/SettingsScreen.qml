@@ -220,6 +220,46 @@ Page {
     }
 
     Section {
+    title: "muted personas"
+    caption: "posts from these personas are hidden on this device. they are not blocked on the network."
+
+    Column {
+        Layout.fillWidth: true
+        Layout.topMargin: 20
+        spacing: 10
+        Repeater {
+            model: settings.store.mutedList()
+            delegate: RowLayout {
+                required property string modelData
+                width: parent ? parent.width : 0
+                spacing: 12
+                Text {
+                    textFormat: Text.PlainText
+                    Layout.fillWidth: true
+                    text: modelData
+                    font.family: Ui.mono
+                    font.pixelSize: Ui.size.reading
+                    color: Ui.text
+                }
+                FButton {
+                    implicitHeight: 36
+                    text: "unmute"
+                    onClicked: settings.store.setMuted(modelData, false)
+                }
+            }
+        }
+        Text {
+            textFormat: Text.PlainText
+            visible: settings.store.mutedList().length === 0
+            text: "no one is muted."
+            font.family: Ui.sans
+            font.pixelSize: Ui.size.caption
+            color: Ui.text3
+        }
+    }
+}
+
+    Section {
         title: "remove from this device"
         caption: "irreversible without the recovery phrase"
 
