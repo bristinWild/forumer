@@ -7,9 +7,10 @@ import QtQuick.Layouts
 // user must not skim past.
 //
 // Copy: the phrase goes on the system clipboard, which other apps can read.
-// The clipboard is overwritten with blank text 60 seconds after copying, and
-// again when this screen closes. QML can't read the clipboard, so the clear
-// is unconditional: anything else copied in that minute is cleared too.
+// Sixty seconds after copying, and when this screen closes, the clipboard is
+// cleared, but only if it still holds this phrase: anything the user copied
+// since is left alone. To check, the clipboard's text is pasted into a hidden
+// field for a moment and compared; it is not logged or kept.
 Rectangle {
     id: phraseScreen
 
@@ -45,15 +46,33 @@ Rectangle {
         clearTimer.restart();
     }
 
+    // Whitespace-insensitive, so a phrase that was reflowed still matches.
+    function sameText(a, b) {
+        const norm = function (s) { return s.replace(/\s+/g, " ").trim(); };
+        return norm(a).length > 0 && norm(a) === norm(b);
+    }
+
+    // What the clipboard holds right now, read through the hidden field.
+    function clipboardText() {
+        clipboard.text = "";
+        clipboard.paste();
+        const now = clipboard.text;
+        clipboard.text = "";
+        return now;
+    }
+
     function clearClipboard() {
         clearTimer.stop();
         if (!phraseScreen.copied)
+            return;
+        phraseScreen.copied = false;
+        // Only overwrite what is still our phrase; leave anything else alone.
+        if (!sameText(clipboardText(), phraseScreen.phrase))
             return;
         clipboard.text = " ";
         clipboard.selectAll();
         clipboard.copy();
         clipboard.text = "";
-        phraseScreen.copied = false;
     }
 
     Component.onDestruction: clearClipboard()
