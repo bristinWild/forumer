@@ -20,6 +20,10 @@ jobs:
         run: node scripts/test-markdown.mjs
       - name: Link and invite parser tests
         run: node scripts/test-links.mjs
+      - name: Phase A security regression tests
+        run: |
+          node scripts/test-phase-a-handler.mjs
+          node scripts/test-log-safety.mjs
 
   module:
     name: module (${{ matrix.os }})

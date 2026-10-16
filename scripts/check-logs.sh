@@ -15,7 +15,7 @@ if [[ ! -f "$log" ]]; then
     exit 2
 fi
 status=0
-grep -En '[A-Za-z0-9]{20,}' "$log" || status=$?
+grep -Eq '[A-Za-z0-9]{20,}' "$log" || status=$?
 case "$status" in
     0) echo "FAIL: full identifiers in $log (lines above)" >&2; exit 1 ;;
     1) echo "ok: no full identifiers in $log" ;;
