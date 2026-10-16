@@ -70,7 +70,14 @@ ColumnLayout {
                 asynchronous: true
                 smooth: true
                 visible: slot.full || slot.previewOnly
-                source: slot.st.state === "done" ? slot.st.detail : (slot.st.previewUrl || "")
+                // Basecamp blocks data: image URLs in sandboxed plugins.
+                // Use its engine-local in-memory provider when available; keep
+                // the original behavior for older standalone environments.
+                source: {
+                    var raw = slot.st.state === "done" ? slot.st.detail : (slot.st.previewUrl || "");
+                    return typeof SandboxImages !== "undefined"
+                        ? SandboxImages.sourceFor(raw) : raw;
+                }
                 onStatusChanged: if (status === Image.Error) cards.store.log("media image didn't decode: " + errorString)
             }
 
