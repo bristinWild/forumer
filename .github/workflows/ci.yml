@@ -24,6 +24,8 @@ jobs:
         run: |
           node scripts/test-phase-a-handler.mjs
           node scripts/test-log-safety.mjs
+      - name: Image pipeline tests
+        run: ./scripts/test-image-pipeline.sh
 
   module:
     name: module (${{ matrix.os }})
