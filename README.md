@@ -587,6 +587,27 @@ Backend logs are prefixed `[forumer backend]` on the host's stderr.
 
 ---
 
+### Delivery Module v0.4.0 Compatibility
+
+Forumer v0.2.4 has been tested with **Logos Delivery Module v0.4.0** and **Logos Storage Module v3.0.2**.
+
+The application declares Delivery v0.4.0 as its runtime dependency in `metadata.json`.
+
+The Nix build currently retains the Delivery v0.3.0 source input for interface generation because the public repository does not provide a matching v0.4.0 source tag. Forumer uses the existing Delivery API methods, whose signatures remain compatible with v0.4.0.
+
+**Verified functionality**
+- Topic publishing and cross-profile synchronization
+- Image previews and full-image rendering
+- Cross-profile image visibility
+- Image persistence after application restart
+- Basecamp QML sandbox regression tests (14/14 passed)
+
+**Basecamp compatibility:** Image rendering requires Basecamp's scoped in-memory image-provider implementation. This has been verified in a modified Basecamp build and is not yet confirmed in an official Basecamp release.
+
+This compatibility statement describes the tested runtime configuration; it does not claim that Forumer is built from Delivery v0.4.0 source code.
+
+----
+
 ## 13. LP-0026 requirements
 
 | Requirement | Status | How |
