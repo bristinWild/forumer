@@ -1,0 +1,63 @@
+name: E3 Two-Node Network Integration (manual)
+
+# This test joins the shared logos.dev fleet and publishes synthetic posts.
+# It is NOT an isolated, deterministic CI test. Deliberately never run on push.
+on:
+  workflow_dispatch:
+    inputs:
+      confirm_shared_network:
+        description: 'I understand this will publish synthetic posts to the shared logos.dev network'
+        required: true
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+jobs:
+  two-node:
+    name: Forumer two-node live network (experimental)
+    if: ${{ inputs.confirm_shared_network == true }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - name: Checkout source
+        uses: actions/checkout@v4
+
+      - name: Free disk space
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL
+          df -h /
+
+      - name: Install Nix
+        uses: DeterminateSystems/nix-installer-action@main
+        with:
+          extra-conf: |
+            extra-substituters = https://cache.nix.logos.co/public
+            extra-trusted-public-keys = public:l4HrXgL4nw246+LBh2SOJyhz64BoGegOYLheT/iIAPU=
+
+      - name: Build pinned Forumer standalone launcher
+        run: nix build .#ui-dev -L -o result-e3-ui
+
+      - name: Test real two-node topic, reply and restart sync
+        # Test script prints only PASS stage labels and generic error text;
+        # app stdout, backend logs and test profiles stay local, then deleted.
+        env:
+          QT_QPA_PLATFORM: offscreen
+        run: python3 tests/test-e3-two-node.py
+
+      - name: Privacy-safe summary
+        if: always()
+        env:
+          RESULT: ${{ job.status }}
+        run: |
+          mkdir -p e3-summary
+          printf 'Manual two-node test: %s\nNetwork: shared logos.dev (not isolated)\n' "$RESULT" > e3-summary/result.txt
+
+      - name: Upload seven-day summary only
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: e3-two-node-summary
+          path: e3-summary/result.txt
+          retention-days: 7
