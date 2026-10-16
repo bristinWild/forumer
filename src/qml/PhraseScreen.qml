@@ -164,8 +164,8 @@ Rectangle {
                     Layout.fillWidth: true
                     wrapMode: Text.WordWrap
                     text: phraseScreen.copied
-                          ? "copied. other apps can read the clipboard, so paste it only where you mean to. it clears in 60 seconds."
-                          : "copying puts all 24 words on the clipboard, where other apps can read them."
+                          ? "copied. the clipboard clears in 60 seconds, but clipboard managers may keep a copy. paste only where you intend."
+                          : "copying puts all 24 words on the clipboard. clipboard managers may keep a copy even after it is cleared."
                     font.family: Ui.sans
                     font.pixelSize: Ui.size.caption
                     lineHeight: 1.4

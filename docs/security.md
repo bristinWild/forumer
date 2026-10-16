@@ -1,6 +1,6 @@
 # Forumer security
  
-Version 0.2.4 (pre-release). This document maps each security threat to the defence that addresses it, the test that checks that defence, and what is still not covered. Read it as a list of claims: if a claim has no test, it says so.
+Version 0.2.5 (release candidate, building on 0.2.4). This document maps each security threat to the defence that addresses it, the test that checks that defence, and what is still not covered. Read it as a list of claims: if a claim has no test, it says so.
  
 Every test name below is in `lib/forumer_core/tests/` unless marked otherwise. Run them with `./scripts/test-core.sh`. The QML sanitiser and link tests are in `scripts/test-markdown.mjs` and `scripts/test-links.mjs`.
  
@@ -150,7 +150,7 @@ These are stated plainly so they can be checked and fixed later.
 - **Clocks are the author's.** Ordering is best-effort.
 - **Storage is slow to find content.** Image and history transfer over the Storage module can take about 2 minutes to settle on a home network.
 - **Transport-level rate limiting is not implemented.**
-- **WebP decoding is not tested in CI.** Only PNG and JPEG are covered in the planned CI image test.
+- **WebP decoding is not tested in CI.** PNG and JPEG processing, resizing, metadata stripping and the pixel-count guard are covered by the image-pipeline test.
 - **The cost of `storage_module.exists()` has not been measured.** The MediaAsk budget bounds how often it is called, but not how long each call takes.
 - **Mute is not per account.** The muted list is stored in app-wide settings, so accounts on the same app share it. Muting also does not filter the replies inbox or the unread count, only the feeds and threads.
 - **Manual checks.** Clipboard behaviour, the phrase screen, and the link opening flow have no automated test.

@@ -1,7 +1,7 @@
 
 # E3 - Forumer Integration Testing
 
-Version: 0.2.4
+Version: 0.2.5 (candidate)
 
 ## Objective
 
@@ -14,7 +14,7 @@ offline recovery and private forums.
 
 ## Milestone 1 - Headless UI smoke tests
 
-Status: Implemented, pending successful execution.
+Status: Implemented; 2/2 headless UI tests previously passed locally. CI verification for this candidate remains pending.
 
 Tests:
 - Forumer launches successfully.
@@ -42,7 +42,7 @@ This does not yet test network communication.
 
 ## Milestone 2 - Multi-node integration
 
-Status: Planned.
+Status: Manual cross-profile topic sync, image sharing and restart persistence passed. Automated multi-node CI remains planned.
 
 Run at least two independent Forumer nodes with
 separate data folders, accounts and network identities.
