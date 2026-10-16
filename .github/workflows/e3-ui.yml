@@ -6,6 +6,7 @@ on:
     branches:
       - release/0.2.4
       - test/e3-ui-smoke
+      - hardening/v0.2.5
 
   pull_request:
     branches:
@@ -48,26 +49,18 @@ jobs:
           nix build .#integration-test \
             --out-link result-e3 -L
 
-      - name: Collect test logs
+      - name: Record privacy-safe test summary
         if: always()
+        env:
+          TEST_RESULT: ${{ job.status }}
         run: |
           mkdir -p e3-artifacts
-
-          if [ -f result-e3/integration-test.log ]; then
-            cp -L \
-              result-e3/integration-test.log \
-              e3-artifacts/integration-test.log
-
-            cat e3-artifacts/integration-test.log
-          else
-            echo "Integration test output unavailable" \
-              > e3-artifacts/README.txt
-          fi
+          printf 'Headless UI smoke result: %s\n' "$TEST_RESULT" > e3-artifacts/summary.txt
 
       - name: Upload test evidence
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: e3-ui-smoke-log
+          name: e3-ui-smoke-summary
           path: e3-artifacts/
           retention-days: 7
