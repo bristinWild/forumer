@@ -180,3 +180,15 @@ Run `check-logs.sh` on the logs of two instances after posting from each. A pass
 
 email - bristineth@gmail.com
 x - @borah_bristin
+
+## 15. v0.2.5 integration and logging audit addendum
+
+This section supersedes stale wording above that said multi-node CI and logging regression checks were not yet run. It records the scope **actually verified**, not blanket security claims. Full test matrix: [testing.md](testing.md); integration: [e3-testing.md](e3-testing.md).
+
+- **A5 logging hardening, commit `3e07c97`:** removed complete local storage paths, peer addresses and raw send request IDs/error details from three backend diagnostic call sites. `scripts/test-log-safety.mjs` now guards these patterns; `logEvent()` still applies `fc::scrubIds()` to logged strings. Unit/regression tests and native module builds passed. **Limit:** `scrubIds()` shortens alphanumeric runs of 20+ characters, not filesystem paths in general, IP addresses with punctuation, short keys or mnemonic phrases. This is not a complete audit of the Basecamp host or dependency logs.
+- **A3 MediaAsk:** verified budget-before-expensive-work source ordering (`scripts/test-phase-a-handler.mjs`) and token bucket behavior (`phase_a_mediaask_budget_bounds_distinct_lookups`). A full handler stress run including queued `QTimer::singleShot` preview responses was **not** performed.
+- **E3 public/private peer tests:** manual GitHub Actions #2 on shared `logos.dev` passed public signed topic/reply/restart-catch-up and private forum member sync/non-member isolation using synthetic identities, with backend identifier checks. This is not an isolated network and not official Logos Testnet 0.4 validation.
+- **Outbox fault test:** Sender offline/forced transport error across restart deliberately deferred; receiver restart/catch-up is a different claim.
+- **Windows:** experimental x86_64 DLL and LGX **cross-build** passed on Ubuntu; native Windows Basecamp execution and security behavior remain unverified.
+- **Artifacts:** manual E3 uploads a seven-day synthetic summary artifact only; GitHub job logs have a distinct retention policy and should still be treated as potentially sensitive.
+- **Release dependencies:** Basecamp image provider PR #514 was open at the review; verify the exact host build before claiming sandbox image display support.
