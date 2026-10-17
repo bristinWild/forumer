@@ -16,6 +16,27 @@ assert.match(logger, /fc::scrubIds\(raw\)/);
 assert.match(logger, /std::cerr\s*<<[\s\S]*?<< what << std::endl/);
 assert.match(logger, /file\s*<<[\s\S]*?<< what << std::endl/);
 
+
+// A5: prevent sensitive diagnostic values from being reintroduced.
+assert.match(source, /logEvent\("storage: sharing started"\)/);
+assert.match(source, /logEvent\("storage: dialing holder"\)/);
+assert.match(source, /logEvent\(std::string\("send outcome: "\)/);
+
+// These values may be used by the application, but must not be
+// interpolated into the diagnostic log.
+assert.doesNotMatch(
+  source,
+  /logEvent\("storage: sharing " \+ path\.toStdString\(\)\)/
+);
+assert.doesNotMatch(
+  source,
+  /logEvent\("storage: dialing " \+ peer\.toStdString\(\)/
+);
+assert.doesNotMatch(
+  source,
+  /logEvent\("send " \+ requestId\.toStdString\(\)/
+);
+
 const dir = mkdtempSync(join(tmpdir(), "forumer-log-test-"));
 
 function check(path) {

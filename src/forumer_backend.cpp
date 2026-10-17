@@ -1532,7 +1532,7 @@ QString ForumerBackend::storageShareTest() {
     logEvent("storage: upload timed out");
     publishStorage();
   });
-  logEvent("storage: sharing " + path.toStdString());
+  logEvent("storage: sharing started");
   publishStorage();
   return QString();
 }
@@ -1584,8 +1584,7 @@ QString ForumerBackend::storageFetch(QString code) {
     LogosResult r = modules().storage_module.connect(peer, addrs);
     if (r.success) {
       m_storageFetch.insert("state", "connecting");
-      logEvent("storage: dialing " + peer.toStdString() + " at " +
-               addrs.join(QLatin1Char(' ')).toStdString());
+      logEvent("storage: dialing holder");
       publishStorage();
       // If no storageConnect arrives, go ahead anyway.
       QTimer::singleShot(20'000, this, [this, cid]() {
@@ -4088,8 +4087,10 @@ void ForumerBackend::settleSend(const QString &requestId, const QString &state,
     return;
   }
 
-  logEvent("send " + requestId.toStdString() + " -> " + state.toStdString() +
-           (detail.isEmpty() ? "" : " (" + detail.toStdString() + ")"));
+  logEvent(std::string("send outcome: ") +
+           (state == QLatin1String("sent") ? "sent" :
+            state == QLatin1String("failed") ? "failed" :
+            state == QLatin1String("propagated") ? "propagated" : "other"));
   emit messageStateChanged(postId, state, detail);
   publishSyncState();
 }
