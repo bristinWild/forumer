@@ -19,8 +19,13 @@ jobs:
         include:
           - os: ubuntu-24.04
             platform: linux-x86_64
+            target: .#lgx-portable
           - os: macos-14
             platform: macos-arm64
+            target: .#lgx-portable
+          - os: ubuntu-24.04
+            platform: windows-x86_64
+            target: .#packages.x86_64-windows.lgx
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
@@ -40,7 +45,7 @@ jobs:
         # retry, and build anything that still can't be fetched (--fallback).
         run: |
           for i in 1 2 3; do
-            nix build -L .#lgx-portable --fallback && exit 0
+            nix build -L "${{ matrix.target }}" --fallback && exit 0
             echo "build attempt $i failed, retrying"; sleep 20
           done
           exit 1
@@ -63,3 +68,4 @@ jobs:
         with:
           files: dist/*
           generate_release_notes: true
+          prerelease: ${{ contains(github.ref_name, '-rc.') }}
