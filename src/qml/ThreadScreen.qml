@@ -221,6 +221,7 @@ Item {
                                 color: Ui.text3
                             }
                             StateTag { delivery: thread.topic ? thread.topic.delivery : "" }
+                            MuteBell { store: thread.store; item: thread.topic }   // B1
                         }
                     }
 

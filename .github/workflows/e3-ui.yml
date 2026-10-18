@@ -1,0 +1,66 @@
+
+name: E3 Headless UI Tests
+
+on:
+  push:
+    branches:
+      - release/0.2.4
+      - test/e3-ui-smoke
+      - hardening/v0.2.5
+
+  pull_request:
+    branches:
+      - release/0.2.4
+
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  ui-smoke:
+    name: Forumer Headless UI
+    runs-on: ubuntu-24.04
+    timeout-minutes: 75
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Free disk space
+        run: |
+          sudo rm -rf \
+            /usr/share/dotnet \
+            /usr/local/lib/android \
+            /opt/ghc \
+            /opt/hostedtoolcache/CodeQL
+
+          df -h /
+
+      - name: Install Nix
+        uses: DeterminateSystems/nix-installer-action@main
+        with:
+          extra-conf: |
+            extra-substituters = https://cache.nix.logos.co/public
+            extra-trusted-public-keys = public:l4HrXgL4nw246+LBh2SOJyhz64BoGegOYLheT/iIAPU=
+
+      - name: Run headless UI tests
+        run: |
+          nix build .#integration-test \
+            --out-link result-e3 -L
+
+      - name: Record privacy-safe test summary
+        if: always()
+        env:
+          TEST_RESULT: ${{ job.status }}
+        run: |
+          mkdir -p e3-artifacts
+          printf 'Headless UI smoke result: %s\n' "$TEST_RESULT" > e3-artifacts/summary.txt
+
+      - name: Upload test evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: e3-ui-smoke-summary
+          path: e3-artifacts/
+          retention-days: 7

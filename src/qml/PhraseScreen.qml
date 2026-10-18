@@ -5,15 +5,77 @@ import QtQuick.Layouts
 // The 24-word recovery phrase, full screen (after creating an identity, or
 // "show phrase" in backup). A screen, not a popup: this is the one thing the
 // user must not skim past.
+//
+// Copy: the phrase goes on the system clipboard, which other apps can read.
+// Sixty seconds after copying, and when this screen closes, the clipboard is
+// cleared, but only if it still holds this phrase: anything the user copied
+// since is left alone. To check, the clipboard's text is pasted into a hidden
+// field for a moment and compared; it is not logged or kept.
 Rectangle {
     id: phraseScreen
 
     property string phrase: ""
+    property bool copied: false
     signal done()
+
+    readonly property int clearAfterMs: 60000
 
     color: Ui.bg
 
     MouseArea { anchors.fill: parent }
+
+    // Off-screen helper for the clipboard (QML has no clipboard API of its
+    // own; the same approach HomeScreen uses for "copy link").
+    TextEdit { id: clipboard; visible: false; textFormat: TextEdit.PlainText }
+
+    Timer {
+        id: clearTimer
+        interval: phraseScreen.clearAfterMs
+        repeat: false
+        onTriggered: phraseScreen.clearClipboard()
+    }
+
+    function copyPhrase() {
+        if (phraseScreen.phrase.length === 0)
+            return;
+        clipboard.text = phraseScreen.phrase;
+        clipboard.selectAll();
+        clipboard.copy();
+        clipboard.text = "";
+        phraseScreen.copied = true;
+        clearTimer.restart();
+    }
+
+    // Whitespace-insensitive, so a phrase that was reflowed still matches.
+    function sameText(a, b) {
+        const norm = function (s) { return s.replace(/\s+/g, " ").trim(); };
+        return norm(a).length > 0 && norm(a) === norm(b);
+    }
+
+    // What the clipboard holds right now, read through the hidden field.
+    function clipboardText() {
+        clipboard.text = "";
+        clipboard.paste();
+        const now = clipboard.text;
+        clipboard.text = "";
+        return now;
+    }
+
+    function clearClipboard() {
+        clearTimer.stop();
+        if (!phraseScreen.copied)
+            return;
+        phraseScreen.copied = false;
+        // Only overwrite what is still our phrase; leave anything else alone.
+        if (!sameText(clipboardText(), phraseScreen.phrase))
+            return;
+        clipboard.text = " ";
+        clipboard.selectAll();
+        clipboard.copy();
+        clipboard.text = "";
+    }
+
+    Component.onDestruction: clearClipboard()
 
     B.ScrollView {
         id: scroller
@@ -97,15 +159,39 @@ Rectangle {
                     }
                 }
 
+                Text {
+                    textFormat: Text.PlainText
+                    Layout.fillWidth: true
+                    wrapMode: Text.WordWrap
+                    text: phraseScreen.copied
+                          ? "copied. the clipboard clears in 60 seconds, but clipboard managers may keep a copy. paste only where you intend."
+                          : "copying puts all 24 words on the clipboard. clipboard managers may keep a copy even after it is cleared."
+                    font.family: Ui.sans
+                    font.pixelSize: Ui.size.caption
+                    lineHeight: 1.4
+                    color: Ui.text3
+                }
+
                 RowLayout {
                     Layout.fillWidth: true
+                    spacing: 12
                     Item { Layout.fillWidth: true }
+                    FButton {
+                        kind: "outline"
+                        implicitHeight: 44
+                        text: phraseScreen.copied ? "copied" : "copy phrase"
+                        enabled: phraseScreen.phrase.length > 0
+                        onClicked: phraseScreen.copyPhrase()
+                    }
                     FButton {
                         kind: "primary"
                         implicitHeight: 44
                         text: "i've written it down"
                         icon: "check"
-                        onClicked: phraseScreen.done()
+                        onClicked: {
+                            phraseScreen.clearClipboard();
+                            phraseScreen.done();
+                        }
                     }
                 }
             }

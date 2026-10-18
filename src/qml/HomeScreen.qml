@@ -11,6 +11,8 @@ Item {
 
     required property var store
     signal newTopic()
+    signal newForum()
+    signal joinForum()
 
     B.ScrollView {
         id: scroller
@@ -56,14 +58,33 @@ Item {
                         color: Ui.text2
                     }
                 }
-                FButton {
+                RowLayout {
                     Layout.alignment: Qt.AlignBottom
-                    kind: "primary"
-                    icon: "plus"
-                    text: "new topic"
-                    implicitHeight: 44
-                    enabled: home.store.canCompose
-                    onClicked: home.newTopic()
+                    spacing: 8
+                    FButton {
+                        kind: "outline"
+                        icon: "lock"
+                        text: "new private forum"
+                        tooltip: "A forum only people with its invite link can read"
+                        implicitHeight: 44
+                        onClicked: home.newForum()
+                    }
+                    FButton {
+                        kind: "outline"
+                        icon: "link"
+                        text: "join"
+                        tooltip: "Join a private forum with an invite link"
+                        implicitHeight: 44
+                        onClicked: home.joinForum()
+                    }
+                    FButton {
+                        kind: "primary"
+                        icon: "plus"
+                        text: "new topic"
+                        implicitHeight: 44
+                        enabled: home.store.canCompose
+                        onClicked: home.newTopic()
+                    }
                 }
             }
 

@@ -46,6 +46,11 @@ jobs:
           QT_QPA_PLATFORM: offscreen
         run: python3 tests/test-e3-two-node.py
 
+      - name: Test private-forum synchronization and isolation
+        env:
+          QT_QPA_PLATFORM: offscreen
+        run: python3 tests/test-e3-private.py
+
       - name: Privacy-safe summary
         if: always()
         env:

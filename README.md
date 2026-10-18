@@ -1,5 +1,7 @@
 # Forumer
 
+> **v0.2.5 release candidate:** The implementation and latest security fixes are on [`hardening/v0.2.5`](https://github.com/bristinWild/forumer/tree/hardening/v0.2.5), not necessarily the default `master` branch. Documentation: [Architecture](docs/architecture.md) · [Testing](docs/testing.md) · [E3 integration](docs/e3-testing.md) · [Release notes](docs/releases/v0.2.5.md) · [Security](docs/security.md). Windows x86_64 has passed cross-compilation and LGX packaging, **not** native Windows Basecamp runtime validation. Official Logos Testnet 0.4 E2E and the required Basecamp image-provider patch remain release gates.
+
 **A private, serverless discussion forum for Logos Basecamp.**
 
 Forumer lets people discuss any topic (politics, privacy, campus life, technology) without a central server, without an account tied to their real identity, and without one profile that links everything they say. Posts travel peer to peer over **Logos Delivery**; everything else (identities, the post log, unsent posts) stays on the user's own device.
@@ -8,7 +10,7 @@ Built for [λPrize LP-0026: Forum App](https://github.com/logos-co/lambda-prize/
 
 > **Demo video:** [watch the end-to-end walkthrough](https://youtu.be/Tc-MUpDcn7M) (about 14 min: install from the catalog, accounts, topics and replies, personas, links, offline, history, flood control).
 >
-> **Install in Basecamp:** Settings → Package Repositories → add `https://raw.githubusercontent.com/bristinWild/forumer-catalog/main/logos-repo.json`, then Package Manager → Social → Forumer → Install.
+> **Install in Basecamp:** Settings → Package Repositories → add `https://raw.githubusercontent.com/bristinWild/forumer-catalog/main/logos-repo.json`, then Package Manager → Social → Forumer → Install. **Catalog note:** the catalog currently serves v0.2.3, not the v0.2.5 release candidate; for v0.2.5-rc.1, use the published platform-specific LGX from [Releases](https://github.com/bristinWild/forumer/releases/tag/v0.2.5-rc.1) and a compatible patched Basecamp host.
 
 > **Status:** working and in active development. This README describes what is built today. Planned features are marked **(planned)**. The original design document is kept in [`docs/Forumer-description.md`](docs/Forumer-description.md).
 
@@ -84,7 +86,7 @@ nix run            # run Forumer in a standalone Basecamp window
 
 The first build downloads the Logos modules (delivery, storage) and can take a while.
 
-Versions: logos-module-builder **0.3.2**, delivery_module **v0.3.0**, storage_module **v3.0.0** — the 0.3 module generation that current Basecamp runs (0.2 modules don't load in 0.3).
+Build inputs: logos-module-builder **0.3.2**, delivery_module **v0.3.0** (build-time API input), storage_module **v3.0.0**. The v0.2.5 module metadata declares **Delivery ~0.4.0** and **Storage ~3.0.0** as runtime dependencies — the 0.3 module generation that current Basecamp runs (0.2 modules don't load in 0.3).
 
 On macOS the first launch asks whether to accept incoming network connections: choose **Allow** (the delivery and storage nodes listen for peers).
 
@@ -106,7 +108,7 @@ To start again from nothing: `rm -rf ~/forumer-test`.
 ./scripts/test-core.sh
 ```
 
-This builds `forumer_core` and runs its 150 unit tests. It needs only Nix; cmake, the compiler, libsodium, SQLite and nlohmann/json come from nixpkgs. Set `FORUMER_NO_NIX=1` to use the system's own instead.
+This builds `forumer_core` and runs the unit tests (the exact number depends on the checked-out revision). It needs only Nix; cmake, the compiler, libsodium, SQLite and nlohmann/json come from nixpkgs. Set `FORUMER_NO_NIX=1` to use the system's own instead.
 
 ### Install in Basecamp (no build needed)
 
@@ -116,7 +118,7 @@ Forumer is served pre-built from its own Logos module catalog, [`bristinWild/for
    ```
    https://raw.githubusercontent.com/bristinWild/forumer-catalog/main/logos-repo.json
    ```
-2. **Package Manager → Social → Forumer → Install.** Its dependencies, `delivery_module` (~0.3.0) and `storage_module` (~3.0.0), come from the official Logos catalog and are installed with it.
+2. **Package Manager → Social → Forumer → Install.** The catalog currently provides v0.2.3. For the v0.2.5-rc.1 candidate, install the platform-specific LGX from [Releases](https://github.com/bristinWild/forumer/releases/tag/v0.2.5-rc.1) in a compatible Basecamp build. Candidate runtime requirements are `delivery_module` (~0.4.0) and `storage_module` (~3.0.0).
 3. Open **Forumer** from the sidebar.
 
 Packages are built for macOS (Apple silicon) and Linux (x86_64).
@@ -586,6 +588,27 @@ forumer/
 Backend logs are prefixed `[forumer backend]` on the host's stderr.
 
 ---
+
+### Delivery Module v0.4.0 Compatibility
+
+Forumer v0.2.4 has been tested with **Logos Delivery Module v0.4.0** and **Logos Storage Module v3.0.2**.
+
+The application declares Delivery v0.4.0 as its runtime dependency in `metadata.json`.
+
+The Nix build currently retains the Delivery v0.3.0 source input for interface generation because the public repository does not provide a matching v0.4.0 source tag. Forumer uses the existing Delivery API methods, whose signatures remain compatible with v0.4.0.
+
+**Verified functionality**
+- Topic publishing and cross-profile synchronization
+- Image previews and full-image rendering
+- Cross-profile image visibility
+- Image persistence after application restart
+- Basecamp QML sandbox regression tests (14/14 passed)
+
+**Basecamp compatibility:** Image rendering requires Basecamp's scoped in-memory image-provider implementation. This has been verified in a modified Basecamp build and is not yet confirmed in an official Basecamp release.
+
+This compatibility statement describes the tested runtime configuration; it does not claim that Forumer is built from Delivery v0.4.0 source code.
+
+----
 
 ## 13. LP-0026 requirements
 

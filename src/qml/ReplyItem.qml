@@ -93,12 +93,16 @@ Item {
                 media: reply.item.media
             }
         }
-        FButton {
-            visible: reply.canReply
-            compact: true
-            kind: "ghost"
-            text: "reply"
-            onClicked: reply.replyClicked()
+        Row {
+            spacing: 4
+            FButton {
+                visible: reply.canReply
+                compact: true
+                kind: "ghost"
+                text: "reply"
+                onClicked: reply.replyClicked()
+            }
+            MuteBell { store: reply.store; item: reply.item }   // B1
         }
     }
 }

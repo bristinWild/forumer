@@ -51,6 +51,10 @@ ColumnLayout {
             readonly property bool previewOnly: !full && (st.previewUrl || "").length > 0
                                                 && picture.status === Image.Ready
             readonly property bool busy: st.state === "starting" || st.state === "fetching"
+            // The picture's data can't be drawn here. In Basecamp builds that
+            // block data: image URLs (and have no SandboxImages provider yet)
+            // this is the normal case, so say so instead of showing a blank box.
+            readonly property bool cantShow: picture.status === Image.Error
             Layout.fillWidth: true
             implicitHeight: full ? picture.height
                           : previewOnly ? picture.height + status.implicitHeight + 6
@@ -70,7 +74,14 @@ ColumnLayout {
                 asynchronous: true
                 smooth: true
                 visible: slot.full || slot.previewOnly
-                source: slot.st.state === "done" ? slot.st.detail : (slot.st.previewUrl || "")
+                // Basecamp blocks data: image URLs in sandboxed plugins.
+                // Use its engine-local in-memory provider when available; keep
+                // the original behavior for older standalone environments.
+                source: {
+                    var raw = slot.st.state === "done" ? slot.st.detail : (slot.st.previewUrl || "");
+                    return typeof SandboxImages !== "undefined"
+                        ? SandboxImages.sourceFor(raw) : raw;
+                }
                 onStatusChanged: if (status === Image.Error) cards.store.log("media image didn't decode: " + errorString)
             }
 
@@ -134,6 +145,9 @@ ColumnLayout {
                             var s = slot.st;
                             var what = "image · " + cards.store.sizeText(slot.modelData.size);
                             if (!slot.modelData.ok) return "an attachment this version can't show";
+                            if (slot.cantShow)
+                                return what + " · this Basecamp can't display images yet "
+                                     + "(it may need an update). The post itself is unaffected.";
                             if (s.state === "starting") return what + " · starting the storage node…";
                             if (s.state === "fetching") {
                                 var secs = s.startedMs ? Math.floor((Date.now() - s.startedMs) / 1000) : 0;
@@ -158,7 +172,8 @@ ColumnLayout {
                     id: mouse
                     anchors.fill: parent
                     hoverEnabled: true
-                    enabled: slot.modelData.ok && (slot.st.state === "idle" || slot.st.state === "failed")
+                    enabled: slot.modelData.ok && !slot.cantShow
+                             && (slot.st.state === "idle" || slot.st.state === "failed")
                     cursorShape: enabled ? Qt.PointingHandCursor : Qt.ArrowCursor
                     onClicked: cards.store.loadMedia(cards.postId, slot.index)
                 }

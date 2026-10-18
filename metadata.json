@@ -1,7 +1,7 @@
 {
   "name": "forumer",
   "display_name": "Forumer",
-  "version": "0.2.3",
+  "version": "0.2.5",
   "type": "ui_qml",
   "interface": "universal",
   "category": "social",
@@ -12,7 +12,7 @@
   "dependencies": [
     {
       "name": "delivery_module",
-      "version": "~0.3.0"
+      "version": "~0.4.0"
     },
     {
       "name": "storage_module",

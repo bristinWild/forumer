@@ -39,6 +39,14 @@
 //   5. Re-sending to repair other peers' gaps is capped (kResendPerMinute), so
 //      a stream of digests can't turn a peer into an amplifier.
 //
+//   6. Unsigned sync work (0.2.4, review of 0.2.3): every digest that needs a
+//      read of our held set draws from kDigestScansPerMinute, and every
+//      image-discovery question (mask) draws from kMediaAskPerMinute before
+//      any database read, queued preview or storage exists() call, so a flood
+//      of asks costs the same bounded work whatever it asks about. Both used
+//      to be unlimited. A refused digest is re-sent by its sender's next
+//      digest; a refused mask is simply not answered.
+//
 // Sizes are capped separately (post::kMaxEncoded per post, sync::kMaxPayload
 // per message). Rate-Limiting Nullifiers (RLN) in Logos Delivery v0.3 would
 // replace (3) with a cryptographic per-member limit; see the README.
@@ -66,6 +74,10 @@ inline constexpr double kPriorityPerMinute = 30;          // their own lane, on 
 inline constexpr double kPriorityBurst = 60;
 inline constexpr double kResendPerMinute = 240;           // digest answers
 inline constexpr double kResendBurst = 128;
+inline constexpr double kDigestScansPerMinute = 60;       // digests that read our held set (layer 6)
+inline constexpr double kDigestScansBurst = 120;
+inline constexpr double kMediaAskPerMinute = 30;          // mask lookups in the storage module (layer 6)
+inline constexpr double kMediaAskBurst = 60;
 
 /// The hourly limit for a kind of post.
 int maxPerWindow(post::Kind kind);

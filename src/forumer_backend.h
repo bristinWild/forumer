@@ -20,6 +20,7 @@ class QProcess;
 
 #include "delivery_module_transport.h"
 #include "forumer_core/account_store.h"
+#include "forumer_core/digest_plan.h"
 #include "forumer_core/flood.h"
 #include "forumer_core/forums.h"
 #include "forumer_core/media.h"
@@ -414,6 +415,9 @@ private:
   forumer::flood::TokenBucket m_newKeyBudget{forumer::flood::kNewKeyPerMinute, forumer::flood::kNewKeyBurst};
   forumer::flood::TokenBucket m_priorityKeyBudget{forumer::flood::kPriorityPerMinute, forumer::flood::kPriorityBurst};
   forumer::flood::TokenBucket m_resendBudget{forumer::flood::kResendPerMinute, forumer::flood::kResendBurst};
+  // Unsigned sync work (flood.h, layer 6): digests that read our held set, and mask lookups.
+  forumer::flood::TokenBucket m_digestScanBudget{forumer::flood::kDigestScansPerMinute, forumer::flood::kDigestScansBurst};
+  forumer::flood::TokenBucket m_mediaAskBudget{forumer::flood::kMediaAskPerMinute, forumer::flood::kMediaAskBurst};
 
   bool m_inboxScheduled = false;
 
@@ -429,7 +433,7 @@ private:
   int m_historyReceived = 0;       // older posts that arrived this session
   int m_historyEmptyWindows = 0;   // windows in a row that brought nothing (F10)
   bool m_historyByRequest = false; // walking because the user asked ("load older")
-  qint64 m_lastRangeAnswerMs = 0;  // we answer one range request at a time
+  forumer::sync::RangeGate m_rangeGate;  // one range request at a time; only answered ones start the gap
   qint64 m_lastLinkFetchMs = 0;    // fetchAround: at most one request per few seconds
   qint64 m_lastCoveredSaveMs = 0;
 

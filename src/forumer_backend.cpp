@@ -45,7 +45,9 @@
 
 // Forumer's own engine (lib/forumer_core).
 #include "forumer_core/crypto.h"
+#include "forumer_core/digest_plan.h"
 #include "forumer_core/flood.h"
+#include "forumer_core/redact.h"
 #include "forumer_core/forums.h"
 #include "forumer_core/media.h"
 #include "forumer_core/mnemonic.h"
@@ -68,7 +70,9 @@ namespace {
 // With FORUMER_LOG_FILE set (scripts/two-instances.sh sets it), the same
 // lines also go to that file with a time: the host doesn't always pass the
 // backend's stderr on. Off by default - the lines name posts and images.
-void logEvent(const std::string &what) {
+void logEvent(const std::string &raw) {
+  // Identifiers are shortened here, for every line (forumer_core/redact.h).
+  const std::string what = fc::scrubIds(raw);
   std::cerr << "[forumer backend] " << what << std::endl;
   static std::mutex lock;
   static std::ofstream file;
@@ -644,7 +648,7 @@ void ForumerBackend::publishIdentityState() {
 
 void ForumerBackend::saveAccount() {
   if (m_account && m_accounts && !m_accounts->save(*m_account))
-    logEvent("failed to save account state for " + m_account->state().id);
+    logEvent("failed to save account state for " + fc::shortRef(m_account->state().id));
 }
 
 // ── The unlocked account's own posts ──────────────────────────────────────────
@@ -714,7 +718,7 @@ bool ForumerBackend::saveOwn() {
     return false;
   const auto own = m_posts->exportOwn(m_account->state().id);
   if (!m_accounts->savePrivate(*m_account, "own", own.toJson())) {
-    logEvent("failed to save own posts of " + m_account->state().id);
+    logEvent("failed to save own posts of " + fc::shortRef(m_account->state().id));
     return false;
   }
   return true;
@@ -857,7 +861,7 @@ QString ForumerBackend::createIdentity(QString label, QString password) {
 
   detachAccount();
   m_account = std::move(result.account);
-  logEvent("created account " + m_account->state().id);
+  logEvent("created account " + fc::shortRef(m_account->state().id));
   attachAccount();
   publishIdentityState();
 
@@ -883,7 +887,7 @@ QString ForumerBackend::unlockIdentity(QString accountId, QString password) {
   m_accounts->select(accountId.toStdString());
   detachAccount();
   m_account = std::move(result.account);
-  logEvent("unlocked account " + m_account->state().id);
+  logEvent("unlocked account " + fc::shortRef(m_account->state().id));
   attachAccount();
   publishIdentityState();
   return QString();
@@ -915,7 +919,7 @@ QString ForumerBackend::restoreIdentity(QString phrase, QString label, QString p
 
   detachAccount();
   m_account = std::move(result.account);
-  logEvent("restored account " + m_account->state().id + " (next persona " +
+  logEvent("restored account " + fc::shortRef(m_account->state().id) + " (next persona " +
            std::to_string(m_account->state().nextIndex) +
            (m_account->restorePending() ? ", recovering from history)" : ")"));
   attachAccount();
@@ -1035,7 +1039,7 @@ QString ForumerBackend::deleteAccount(QString password) {
   forgetAccountMedia();
   publishOwnStates();
   publishSyncState();
-  logEvent("removed account " + id + " from this device");
+  logEvent("removed account " + fc::shortRef(id) + " from this device");
   publishIdentityState();
   return QString();
 }
@@ -1528,7 +1532,7 @@ QString ForumerBackend::storageShareTest() {
     logEvent("storage: upload timed out");
     publishStorage();
   });
-  logEvent("storage: sharing " + path.toStdString());
+  logEvent("storage: sharing started");
   publishStorage();
   return QString();
 }
@@ -1580,8 +1584,7 @@ QString ForumerBackend::storageFetch(QString code) {
     LogosResult r = modules().storage_module.connect(peer, addrs);
     if (r.success) {
       m_storageFetch.insert("state", "connecting");
-      logEvent("storage: dialing " + peer.toStdString() + " at " +
-               addrs.join(QLatin1Char(' ')).toStdString());
+      logEvent("storage: dialing holder");
       publishStorage();
       // If no storageConnect arrives, go ahead anyway.
       QTimer::singleShot(20'000, this, [this, cid]() {
@@ -2314,6 +2317,10 @@ void ForumerBackend::askForHolders(const std::string &cid, const std::string &fo
 void ForumerBackend::handleMediaAsk(const std::string &cid, const std::string &forum) {
   if (m_mediaFetches.count(cid) || m_previewAskedAt.count(cid))
     return;   // our own question coming back, or fetching it ourselves
+  // Bound the work a flood of asks can cause, before any database read or
+  // queued preview (flood.h, layer 6). Every ask draws on the bucket.
+  if (!m_mediaAskBudget.take(nowMs()))
+    return;
   // Its preview, if we have it: sent again after a moment, unless someone
   // else does first.
   for (const auto &pv : m_posts ? m_posts->previewsOf(cid) : std::vector<fc::PostStore::Preview>{}) {
@@ -2338,7 +2345,7 @@ void ForumerBackend::handleMediaAsk(const std::string &cid, const std::string &f
   }
   const qint64 now = nowMs();
   const auto sent = m_hintSentAt.find(cid);
-  if (sent != m_hintSentAt.end() && now - sent->second < 30'000)
+   if (sent != m_hintSentAt.end() && now - sent->second < 30'000)
     return;
   LogosResult held = modules().storage_module.exists(qs(cid));
   if (!held.success || !held.value.toBool()) {
@@ -2851,7 +2858,7 @@ QString ForumerBackend::publish(fc::post::Draft draft, const QString &disclosure
     logEvent("could not store our own post " + signedPost->id);
     return QStringLiteral("Couldn't save the post");
   }
-  logEvent("stored " + signedPost->id + " as " + persona.fingerprint() + " (" +
+  logEvent("stored " + signedPost->id + " as " + fc::shortRef(persona.fingerprint()) + " (" +
            std::string(fc::identity::toString(disclosure)) + ")");
 
   // Its images are part of it now: off the composer. Their previews are
@@ -3431,60 +3438,53 @@ void ForumerBackend::handleDigest(const fc::sync::Digest &digest, bool fromPeer,
   if (fromPeer && m_account)
     confirmHeldByPeers(digest);
 
-  // A private forum is repaired over the digest window (48 h) only; what's
-  // older comes from the store nodes' archive (storeQueryNext).
-  if (forum != kForum) {
-    const int64_t since = std::max<int64_t>(digest.sinceMs, now - 2 * liveWindowMs());
-    if (now - m_lastPromptedDigestMs >= kPromptedDigestGapMs &&
-        fc::sync::listsUnknown(digest, m_posts->recent(since, forum))) {
-      m_lastPromptedDigestMs = now;
-      logEvent("digest: a member of " + forum + " holds posts we don't — sending ours");
-      QTimer::singleShot(kPromptedDigestDelayMs + jitter(kPromptedDigestJitterMs), this, [this]() {
-        if (nowMs() - m_lastDigestMs >= kMinDigestGapMs)
-          sendDigest("prompted");
-      });
-    }
-    const auto missing = fc::sync::missingFrom(digest, m_posts->recent(now - liveWindowMs(), forum));
-    if (!missing.empty())
-      queueAnswers(missing, "private digest");
-    return;
-  }
-
   // The sender's oldest post tells us how far back the forum's history goes.
   // oldestMs before Forumer existed is already dropped by decode (F10).
   // Never further back than what this device pruned (F18).
-  const int64_t oldest = std::max<int64_t>(digest.oldestMs, m_historyLimitMs);
-  if (digest.oldestMs >= fc::sync::kForumEpochMs && oldest < now &&
-      (m_historyTarget == 0 || oldest < m_historyTarget)) {
-    m_historyTarget = oldest;
-    publishHistory();
-    maybeStartHistory();
+  if (forum == kForum) {
+    const int64_t oldest = std::max<int64_t>(digest.oldestMs, m_historyLimitMs);
+    if (digest.oldestMs >= fc::sync::kForumEpochMs && oldest < now &&
+        (m_historyTarget == 0 || oldest < m_historyTarget)) {
+      m_historyTarget = oldest;
+      publishHistory();
+      maybeStartHistory();
+    }
+  }
+
+  // One read of our held posts for this digest, at most, and only while the
+  // digest scan budget lasts (digest_plan.h, flood.h layer 6). A private forum
+  // is repaired over the digest window (48 h) only; what's older comes from
+  // the store nodes' archive (storeQueryNext).
+  const bool checkPeer = now - m_lastPromptedDigestMs >= kPromptedDigestGapMs;
+  const bool mayScan = m_digestScanBudget.take(now);
+  const auto plan = fc::sync::planDigest(digest, now, liveWindowMs(), checkPeer, mayScan,
+                                         [this, &forum](int64_t since) {
+                                           return m_posts->recent(since, forum);
+                                         });
+  if (!plan.scanned) {
+    if (!mayScan)
+      logEvent("digest: scan budget used up - not answering this one");
+    return;
   }
 
   // Does the sender hold posts we don't? Then ask for them now: our digest
   // tells it what we hold, and it answers with the rest. (This is what lets a
   // peer that was offline while others posted catch up within seconds of
-  // someone else coming online, not minutes.) Look across the digest's whole
-  // window, but never further back than twice ours.
-  const int64_t since = std::max<int64_t>(digest.sinceMs, now - 2 * liveWindowMs());
-  if (now - m_lastPromptedDigestMs >= kPromptedDigestGapMs &&
-      fc::sync::listsUnknown(digest, m_posts->recent(since))) {
+  // someone else coming online, not minutes.)
+  if (plan.peerHoldsUnknown) {
     m_lastPromptedDigestMs = now;
-    logEvent("digest: peer holds posts we don't — sending ours");
+    logEvent(forum == kForum
+                 ? std::string("digest: peer holds posts we don't — sending ours")
+                 : "digest: a member of " + forum + " holds posts we don't — sending ours");
     QTimer::singleShot(kPromptedDigestDelayMs + jitter(kPromptedDigestJitterMs), this, [this]() {
       if (nowMs() - m_lastDigestMs >= kMinDigestGapMs)
         sendDigest("prompted");
     });
   }
 
-  // Never answer about posts older than our own window, however far back the
-  // digest reaches: that would let one message pull our whole history.
-  const auto held = m_posts->recent(now - liveWindowMs());
-  const auto missing = fc::sync::missingFrom(digest, held);
-  if (missing.empty())
-    return;
-
-  queueAnswers(missing, "digest");
+  // Never answer about posts older than our own window (planDigest does that).
+  if (!plan.missing.empty())
+    queueAnswers(plan.missing, forum == kForum ? "digest" : "private digest");
 }
 
 void ForumerBackend::queueAnswers(const std::vector<std::string> &ids, const char *why) {
@@ -3501,26 +3501,21 @@ void ForumerBackend::queueAnswers(const std::vector<std::string> &ids, const cha
 
 void ForumerBackend::handleRange(const fc::sync::Digest &range) {
   const qint64 now = nowMs();
-  // One at a time: a stream of range requests can't make us replay history
-  // faster than this (and every answer still draws on the re-send budget).
-  if (now - m_lastRangeAnswerMs < kRangeAnswerGapMs)
+  // One at a time, and only a valid window starts the gap (digest_plan.h).
+  // Every answer still draws on the re-send budget.
+  const auto window = m_rangeGate.admit(range, now, kRangeAnswerGapMs, fc::sync::kMaxClockSkewMs,
+                                        kRangeMaxSpanMs);
+  if (!window)
     return;
-  m_lastRangeAnswerMs = now;
-
-  fc::sync::Digest window = range;
-  window.untilMs = std::min<int64_t>(window.untilMs, now + fc::sync::kMaxClockSkewMs);
-  if (window.untilMs <= window.sinceMs)
-    return;
-  // Overflow-safe for any decoded pair (F11): answer only the newest part.
-  if (fc::sync::spanExceeds(window.sinceMs, window.untilMs, kRangeMaxSpanMs))
-    window.sinceMs = window.untilMs - kRangeMaxSpanMs;
-  const auto held = m_posts->range(window.sinceMs, window.untilMs);
-  const auto missing = fc::sync::missingFrom(window, held);
-  if (!missing.empty())
-    queueAnswers(missing, "history request");
+  const auto held = m_posts->range(window->sinceMs, window->untilMs);
+  const auto missing = fc::sync::missingFrom(*window, held);
+  if (missing.empty())
+    return;   // nothing to send: the gap stays open for the next request
+  queueAnswers(missing, "history request");
+  m_rangeGate.answered(now);
 }
 
-// ── History walk ──────────────────────────────────────────────────────────────
+//  History walk 
 
 void ForumerBackend::loadHistoryState() {
   const int64_t now = nowMs();
@@ -4092,8 +4087,10 @@ void ForumerBackend::settleSend(const QString &requestId, const QString &state,
     return;
   }
 
-  logEvent("send " + requestId.toStdString() + " -> " + state.toStdString() +
-           (detail.isEmpty() ? "" : " (" + detail.toStdString() + ")"));
+  logEvent(std::string("send outcome: ") +
+           (state == QLatin1String("sent") ? "sent" :
+            state == QLatin1String("failed") ? "failed" :
+            state == QLatin1String("propagated") ? "propagated" : "other"));
   emit messageStateChanged(postId, state, detail);
   publishSyncState();
 }
