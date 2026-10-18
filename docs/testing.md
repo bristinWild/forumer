@@ -24,7 +24,7 @@ This document separates **source-level checks**, **unit tests**, **integration r
 - `.github/workflows/e3-ui.yml` — headless QML smoke suite.
 - `.github/workflows/e3-two-node-manual.yml` — **manual**, shared `logos.dev` network; synthetic accounts only; two-node public topic/reply/restart sync and three-node private-forum sync/non-member isolation; only short-lived summary artifact (seven days). **Never treat this as isolated network CI.**
 - `.github/workflows/windows-build.yml` — **manual**, Linux-hosted MinGW cross-build, DLL check and Windows LGX build; seven-day summary, not distributable binary artifact.
-- `.github/workflows/release.yml` — on `v*` tag, package and attach Linux x86_64 and macOS arm64 LGX plus SHA256 files; Windows is **not** part of this release matrix.
+- `.github/workflows/release.yml` — on `v*` tag, package and attach Linux x86_64, macOS arm64, and Windows x86_64 LGX plus SHA256 files; Windows runtime remains **unverified**.
 
 ## Evidence available at documentation time
 
@@ -40,7 +40,7 @@ This document separates **source-level checks**, **unit tests**, **integration r
 | Linux/macOS module builds | Pass on CI | Platform build is not release installer acceptance testing. |
 | Windows x86_64 cross-build | Pass on manual Actions #1 | DLL and LGX build, **not** native Windows/Basecamp runtime test. |
 | Official Logos Testnet 0.4 | Not verified | Must be done on official testnet if required for prize/release. |
-| Windows distribution in release workflow | Not implemented | Normal tag workflow currently covers Linux/macOS only. |
+| Windows distribution in release workflow | Packaged | Windows x86_64 LGX is included in the tag workflow; native Windows Basecamp install/runtime remains unverified. |
 | Basecamp image-provider PR #514 | Not merged at review time | Target Basecamp must include required image-provider patch. |
 | Sender transport-failure persistence | Deferred | An explicit injected sender-offline test was not completed. |
 

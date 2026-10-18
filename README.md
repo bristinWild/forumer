@@ -10,7 +10,7 @@ Built for [λPrize LP-0026: Forum App](https://github.com/logos-co/lambda-prize/
 
 > **Demo video:** [watch the end-to-end walkthrough](https://youtu.be/Tc-MUpDcn7M) (about 14 min: install from the catalog, accounts, topics and replies, personas, links, offline, history, flood control).
 >
-> **Install in Basecamp:** Settings → Package Repositories → add `https://raw.githubusercontent.com/bristinWild/forumer-catalog/main/logos-repo.json`, then Package Manager → Social → Forumer → Install.
+> **Install in Basecamp:** Settings → Package Repositories → add `https://raw.githubusercontent.com/bristinWild/forumer-catalog/main/logos-repo.json`, then Package Manager → Social → Forumer → Install. **Catalog note:** the catalog currently serves v0.2.3, not the v0.2.5 release candidate; for v0.2.5-rc.1, use the published platform-specific LGX from [Releases](https://github.com/bristinWild/forumer/releases/tag/v0.2.5-rc.1) and a compatible patched Basecamp host.
 
 > **Status:** working and in active development. This README describes what is built today. Planned features are marked **(planned)**. The original design document is kept in [`docs/Forumer-description.md`](docs/Forumer-description.md).
 
@@ -118,7 +118,7 @@ Forumer is served pre-built from its own Logos module catalog, [`bristinWild/for
    ```
    https://raw.githubusercontent.com/bristinWild/forumer-catalog/main/logos-repo.json
    ```
-2. **Package Manager → Social → Forumer → Install.** Its v0.2.5 runtime dependencies, `delivery_module` (~0.4.0) and `storage_module` (~3.0.0), come from the configured Logos catalog and are installed with it.
+2. **Package Manager → Social → Forumer → Install.** The catalog currently provides v0.2.3. For the v0.2.5-rc.1 candidate, install the platform-specific LGX from [Releases](https://github.com/bristinWild/forumer/releases/tag/v0.2.5-rc.1) in a compatible Basecamp build. Candidate runtime requirements are `delivery_module` (~0.4.0) and `storage_module` (~3.0.0).
 3. Open **Forumer** from the sidebar.
 
 Packages are built for macOS (Apple silicon) and Linux (x86_64).
