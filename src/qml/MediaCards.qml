@@ -51,15 +51,47 @@ ColumnLayout {
             readonly property bool previewOnly: !full && (st.previewUrl || "").length > 0
                                                 && picture.status === Image.Ready
             readonly property bool busy: st.state === "starting" || st.state === "fetching"
-            // The picture's data can't be drawn here. In Basecamp builds that
-            // block data: image URLs (and have no SandboxImages provider yet)
-            // this is the normal case, so say so instead of showing a blank box.
-            readonly property bool cantShow: picture.status === Image.Error
+            // Basecamp blocks data: image URLs in sandboxed plugins and gives them
+            // a SandboxImages provider instead. Without one (an older Basecamp, or
+            // a plain standalone run) the data URL is used as it is.
+            readonly property bool sandboxed: typeof SandboxImages !== "undefined"
+            readonly property string rawImage: st.state === "done" ? st.detail : (st.previewUrl || "")
+            property int attempt: 0          // asking Basecamp for the picture again
+            property bool retried: false
+            property bool retrying: false
+            // What the Image loads. Empty when there is nothing yet, and also when
+            // Basecamp will not keep the picture: its image memory is full, or it
+            // is not a JPEG or PNG.
+            readonly property string shownSource: {
+                slot.attempt;
+                if (rawImage.length === 0) return "";
+                return sandboxed ? SandboxImages.sourceFor(rawImage) : rawImage;
+            }
+            readonly property bool refused: sandboxed && rawImage.length > 0 && shownSource.length === 0
+            // The picture can't be drawn here: say so instead of showing a blank box.
+            readonly property bool cantShow: refused || picture.status === Image.Error
+            function register() {
+                // Tell the store which pictures this screen holds, so Basecamp
+                // can let go of them when the thread closes.
+                if (shownSource.length > 0 && typeof cards.store.noteShownImage === "function")
+                    cards.store.noteShownImage(shownSource);
+            }
+            // A different picture (the full image replacing its preview) gets its own retry.
+            onRawImageChanged: { retried = false; attempt = 0; }
+            onShownSourceChanged: register()
+            Component.onCompleted: register()
             Layout.fillWidth: true
             implicitHeight: full ? picture.height
                           : previewOnly ? picture.height + status.implicitHeight + 6
                           : card.implicitHeight
 
+
+            // Gives the failed request a moment to be dropped before asking again.
+            Timer {
+                id: retryTimer
+                interval: 120
+                onTriggered: slot.retrying = false
+            }
 
             // The full image, or its preview until then.
             Image {
@@ -74,15 +106,23 @@ ColumnLayout {
                 asynchronous: true
                 smooth: true
                 visible: slot.full || slot.previewOnly
-                // Basecamp blocks data: image URLs in sandboxed plugins.
-                // Use its engine-local in-memory provider when available; keep
-                // the original behavior for older standalone environments.
-                source: {
-                    var raw = slot.st.state === "done" ? slot.st.detail : (slot.st.previewUrl || "");
-                    return typeof SandboxImages !== "undefined"
-                        ? SandboxImages.sourceFor(raw) : raw;
+                source: slot.retrying ? "" : slot.shownSource
+                // Decode no larger than this bounding box (the picture is never
+                // scaled up), so a large photo is not held at full size.
+                sourceSize: Qt.size(1600, cards.maxImageHeight * 2)
+                onStatusChanged: {
+                    if (picture.status !== Image.Error) return;
+                    cards.store.log("media image didn't decode");
+                    // Basecamp may have let go of the picture a moment ago (another
+                    // thread closing). Ask for it again, once.
+                    if (slot.sandboxed && !slot.retried && slot.shownSource.length > 0) {
+                        slot.retried = true;
+                        slot.retrying = true;
+                        slot.attempt++;
+                        slot.register();
+                        retryTimer.restart();
+                    }
                 }
-                onStatusChanged: if (status === Image.Error) cards.store.log("media image didn't decode: " + errorString)
             }
 
             // Under a preview: where the full image is.
@@ -145,9 +185,14 @@ ColumnLayout {
                             var s = slot.st;
                             var what = "image · " + cards.store.sizeText(slot.modelData.size);
                             if (!slot.modelData.ok) return "an attachment this version can't show";
+                            if (slot.refused && !slot.retried)
+                                return what + " · can't be shown now: Basecamp's image memory is full, or this "
+                                     + "isn't a JPEG or PNG · click to try again. The post itself is unaffected.";
                             if (slot.cantShow)
-                                return what + " · this Basecamp can't display images yet "
-                                     + "(it may need an update). The post itself is unaffected.";
+                                return slot.sandboxed
+                                    ? what + " · this image couldn't be displayed. The post itself is unaffected."
+                                    : what + " · this Basecamp can't display images yet "
+                                      + "(it may need an update). The post itself is unaffected.";
                             if (s.state === "starting") return what + " · starting the storage node…";
                             if (s.state === "fetching") {
                                 var secs = s.startedMs ? Math.floor((Date.now() - s.startedMs) / 1000) : 0;
@@ -172,10 +217,13 @@ ColumnLayout {
                     id: mouse
                     anchors.fill: parent
                     hoverEnabled: true
-                    enabled: slot.modelData.ok && !slot.cantShow
-                             && (slot.st.state === "idle" || slot.st.state === "failed")
+                    enabled: slot.modelData.ok && (slot.refused
+                             || (!slot.cantShow && (slot.st.state === "idle" || slot.st.state === "failed")))
                     cursorShape: enabled ? Qt.PointingHandCursor : Qt.ArrowCursor
-                    onClicked: cards.store.loadMedia(cards.postId, slot.index)
+                    onClicked: {
+                        if (slot.refused) { slot.retried = false; slot.attempt++; slot.register(); }
+                        else cards.store.loadMedia(cards.postId, slot.index);
+                    }
                 }
             }
         }
