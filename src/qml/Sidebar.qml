@@ -184,6 +184,22 @@ Rectangle {
                 }
             }
 
+            // ── Network hint ──────────────────────────────────────────────────
+            // logos.test needs an RLN membership to send, so on it posts sit on
+            // "sending…" and then fail. Say so where the connection is shown.
+            Text {
+                visible: sidebar.store.network === "logos.test"
+                textFormat: Text.PlainText
+                Layout.fillWidth: true
+                Layout.leftMargin: 22
+                Layout.rightMargin: 14
+                wrapMode: Text.WordWrap
+                text: "logos.test needs an RLN membership to send, so posts stay on sending… and then fail. Switch to logos.dev in Settings."
+                font.family: Ui.mono
+                font.pixelSize: Ui.size.caption
+                color: Ui.sending
+            }
+
             // ── Navigation ────────────────────────────────────────────────────
             ColumnLayout {
                 Layout.fillWidth: true
