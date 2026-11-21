@@ -1,6 +1,6 @@
 # Forumer
 
-> **v0.2.5 release candidate:** The implementation and latest security fixes are on [`hardening/v0.2.5`](https://github.com/bristinWild/forumer/tree/hardening/v0.2.5), not necessarily the default `master` branch. Documentation: [Architecture](docs/architecture.md) · [Testing](docs/testing.md) · [E3 integration](docs/e3-testing.md) · [Release notes](docs/releases/v0.2.5.md) · [Security](docs/security.md). Windows x86_64 has passed cross-compilation and LGX packaging, **not** native Windows Basecamp runtime validation. Official Logos Testnet 0.4 E2E and the required Basecamp image-provider patch remain release gates.
+> **v0.2.6:** [Release notes](docs/releases/v0.2.6.md) · [Architecture](docs/architecture.md) · [Testing](docs/testing.md) · [E3 integration](docs/e3-testing.md) · [Security](docs/security.md). Windows x86_64 is packaged but experimental: it has not been installed or run in a Windows Basecamp. Images need a Basecamp that includes the image provider; see [Basecamp compatibility](#delivery-module-v040-compatibility).
 
 **A private, serverless discussion forum for Logos Basecamp.**
 
@@ -10,7 +10,7 @@ Built for [λPrize LP-0026: Forum App](https://github.com/logos-co/lambda-prize/
 
 > **Demo video:** [watch the end-to-end walkthrough](https://youtu.be/Tc-MUpDcn7M) (about 14 min: install from the catalog, accounts, topics and replies, personas, links, offline, history, flood control).
 >
-> **Install in Basecamp:** Settings → Package Repositories → add `https://raw.githubusercontent.com/bristinWild/forumer-catalog/main/logos-repo.json`, then Package Manager → Social → Forumer → Install. **Catalog note:** the catalog currently serves v0.2.3, not the v0.2.5 release candidate; for v0.2.5-rc.1, use the published platform-specific LGX from [Releases](https://github.com/bristinWild/forumer/releases/tag/v0.2.5-rc.1) and a compatible patched Basecamp host.
+> **Install in Basecamp:** Settings → Package Repositories → add `https://raw.githubusercontent.com/bristinWild/forumer-catalog/main/logos-repo.json`, then Package Manager → Social → Forumer → Install. **Catalog note:** the catalog currently serves v0.2.3, not the v0.2.5 release candidate; for v0.2.5-rc.1, use the published platform-specific LGX from [Releases](https://github.com/bristinWild/forumer/releases/tag/v0.2.5-rc.1) and a Basecamp build that includes the image provider (https://github.com/logos-co/logos-basecamp/pull/514)".
 
 > **Status:** working and in active development. This README describes what is built today. Planned features are marked **(planned)**. The original design document is kept in [`docs/Forumer-description.md`](docs/Forumer-description.md).
 
@@ -61,7 +61,7 @@ Built for [λPrize LP-0026: Forum App](https://github.com/logos-co/lambda-prize/
 | **Flood control** | Proof-of-work on every post, hourly limits per persona and per account, with a counter in the composer. |
 | **Backup & restore** | Show the recovery phrase (password required), or restore an account from one. |
 | **Night-city theme** | Dark and light palettes with Chakra Petch and Share Tech Mono; delivery states colour-coded (sending, live, failed). |
-| **Images** | Attach up to 4 pictures to a topic or reply. They are re-encoded on your device (location, camera and other metadata never leave it), encrypted, and stored in **Logos Storage**; the post carries their IDs. Readers see a card and fetch a picture only when they click it, and it is shown only if it is exactly what the author signed. See [Images](#images). |
+| **Images** | Attach up to 4 pictures to a topic or reply. They are re-encoded on your device (location, camera and other metadata never leave it), encrypted, and stored in **Logos Storage**; the post carries their IDs. Readers see a preview the moment a thread opens, and the full picture is fetched in the background (or on a click, with *previews only* chosen in Settings); it is shown only if it is exactly what the author signed. See [Images](#images). |
 | History snapshots via Logos Storage | **(planned)** — see [§10](#10-design-decisions-and-findings) |
 | Private messages between personas | **(planned)** |
 | Mute a persona / hide a post | **(planned)** |
@@ -99,6 +99,8 @@ On macOS the first launch asks whether to accept incoming network connections: c
 This starts two independent instances, each with its own data folder (`~/forumer-test/a` and `~/forumer-test/b`, set through `LOGOS_USER_DIR`). They have separate accounts, post logs and network identities, so they behave like two different people. Set `FORUMER_TEST_DIR` to use another folder.
 
 > Never run two instances on the **same** data folder: they would share one post log and one network identity.
+
+> Storage keeps one config per computer (`$HOME/.logos_storage`), not one per data folder, so two instances on the same machine also need different `HOME` folders for their storage nodes to start. Give the second instance its own, for example `HOME=/tmp/home-b`.
 
 To start again from nothing: `rm -rf ~/forumer-test`.
 
@@ -159,7 +161,7 @@ This produces a self-contained `.lgx` package for Basecamp's package manager.
 8. **My posts** lists everything this account wrote, whichever persona it used.
 9. **Backup & restore:** show your phrase, or restore an account on another instance.
 10. **Lock** (bottom of the sidebar) locks the account again.
-11. **Images:** in the new-topic sheet or under a reply, press **attach images** under the title and choose them in the system's file picker, or drop them on the composer. (The picker runs as its own program - `osascript` on macOS, `zenity` or `kdialog` on Linux - because inside Basecamp the view is drawn offscreen and a dialog opened from it would take it down.) The first time, the storage node starts (about two minutes); each picture then uploads, and **post** turns on once all of them are *ready*. In a thread, an image shows as a card - click it to fetch it (often a minute or more), and it replaces the card.
+11. **Images:** in the new-topic sheet or under a reply, press **attach images** under the title and choose them in the system's file picker, or drop them on the composer. (The picker runs as its own program - `osascript` on macOS, `zenity` or `kdialog` on Linux - because inside Basecamp the view is drawn offscreen and a dialog opened from it would take it down.) The first time, the storage node starts (about two minutes); each picture then uploads, and **post** turns on once all of them are *ready*. In a thread, each image shows its preview at once and the full picture replaces it when the download finishes (often a minute or more; with *previews only* chosen in Settings, click the picture to fetch it).
 12. **Private forums:** in the sidebar under *forums*, **new private forum** asks for a name and gives you an invite link to send to the people you want in. They open the link (or paste it into search, or press **join** and paste it), confirm, and the forum appears in their sidebar. On the forum's page, **copy invite link** gives the link again and **leave** removes the forum and its posts from this device.
 
 ### Sharing links
@@ -591,7 +593,7 @@ Backend logs are prefixed `[forumer backend]` on the host's stderr.
 
 ### Delivery Module v0.4.0 Compatibility
 
-Forumer v0.2.4 has been tested with **Logos Delivery Module v0.4.0** and **Logos Storage Module v3.0.2**.
+Forumer v0.2.6 has been tested with **Logos Delivery Module v0.4.0** and **Logos Storage Module v3.0.2**.
 
 The application declares Delivery v0.4.0 as its runtime dependency in `metadata.json`.
 
@@ -604,7 +606,7 @@ The Nix build currently retains the Delivery v0.3.0 source input for interface g
 - Image persistence after application restart
 - Basecamp QML sandbox regression tests (14/14 passed)
 
-**Basecamp compatibility:** Image rendering requires Basecamp's scoped in-memory image-provider implementation. This has been verified in a modified Basecamp build and is not yet confirmed in an official Basecamp release.
+**Basecamp compatibility:** Images need a Basecamp that includes the sandbox image provider ([logos-basecamp #514](https://github.com/logos-co/logos-basecamp/pull/514)), which is merged to master and on the `release/0.4.0` branch. On older builds a notice replaces the picture and the post text is unaffected. Checked on macOS arm64 with two Basecamp instances: the preview travels with the post and the full image is fetched through Logos Storage. Both instances ran on one Mac; transfer between separate networks is untested.
 
 This compatibility statement describes the tested runtime configuration; it does not claim that Forumer is built from Delivery v0.4.0 source code.
 

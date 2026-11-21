@@ -271,10 +271,36 @@ Item {
     property string pendingPhrase: ""        // shown full-screen until confirmed
     readonly property real sessionStartMs: Date.now()
 
-    function open(name) {
-        store.screen = name;
-        store.lastError = "";
-    }
+   // Pictures the open thread shows, so Basecamp can let go of them when it closes.
+property var shownImages: ({})   // topic id -> { image url: true }
+
+function noteShownImage(url) {
+    if (store.screen !== "thread" || !store.selectedTopicId) return;
+    var m = store.shownImages[store.selectedTopicId] || {};
+    m[url] = true;
+    store.shownImages[store.selectedTopicId] = m;
+}
+
+// Hands a closed thread's pictures back to Basecamp. A picture the thread now
+// open also shows is kept. Older Basecamps have no release(); then nothing happens.
+function releaseImagesOf(topicId) {
+    var gone = store.shownImages[topicId];
+    if (!gone) return;
+    delete store.shownImages[topicId];
+    Qt.callLater(function () {
+        if (typeof SandboxImages === "undefined" || typeof SandboxImages.release !== "function") return;
+        var keep = store.screen === "thread" ? (store.shownImages[store.selectedTopicId] || {}) : {};
+        for (var url in gone)
+            if (!keep[url]) SandboxImages.release(url);
+    });
+}
+
+function open(name) {
+    if (store.screen === "thread" && name !== "thread")
+        store.releaseImagesOf(store.selectedTopicId);
+    store.screen = name;
+    store.lastError = "";
+}
 
     // ── Shareable links (links.js) ───────────────────────────────────────────
     // Domains offered to newcomers next to the ones already in use.
@@ -338,7 +364,9 @@ Item {
     }
 
     function openTopic(id) {
-        store.selectedTopicId = id;
+    if (store.screen === "thread" && store.selectedTopicId && store.selectedTopicId !== id)
+        store.releaseImagesOf(store.selectedTopicId);
+    store.selectedTopicId = id;
         var t = store.topics[id];
         if (t && store.isJoined(t.forum)) store.currentForum = t.forum;
         store.replyTargetId = "";

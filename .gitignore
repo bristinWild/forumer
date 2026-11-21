@@ -18,3 +18,7 @@ pm
 
 build.log
 .claude/
+
+
+__pycache__/
+*.pyc

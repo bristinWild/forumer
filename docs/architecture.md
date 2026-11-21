@@ -75,9 +75,9 @@ A request or digest is not evidence that a peer accepted an object until corresp
 
 ## Images and Logos Storage
 
-Attached images are locally decoded, resized/processed, re-encoded to strip metadata, and uploaded to Storage; the signed post carries a media reference (CID, MIME, size and checksum), not inline image bytes. Viewers load images on demand and verify the downloaded content against the author's signed reference. Private-forum media are sealed with a forum-dependent key. Preview transfer and MediaAsk discovery are rate-budgeted. Re-hosting can be disabled.
+Attached images are locally decoded, resized/processed, re-encoded to strip metadata, and uploaded to Storage; the signed post carries a media reference (CID, MIME, size and checksum), not inline image bytes. A preview travels with the post and is shown at once; the full image is fetched in the background (or on a click, with previews only chosen in Settings) and verified against the author's signed reference.Private-forum media are sealed with a forum-dependent key. Preview transfer and MediaAsk discovery are rate-budgeted. Re-hosting can be disabled.
 
-PNG/JPEG pipeline behavior is verified in CI; WebP decode compatibility is not. Image display in Basecamp depends on the upstream sandbox-safe image-provider fix (Basecamp PR #514), not solely on the Forumer module build. The execution cost of `storage_module.exists()` has not been benchmarked.
+PNG/JPEG pipeline behavior is verified in CI; WebP decode compatibility is not. Image display in Basecamp needs a build that includes the upstream sandbox image provider (Basecamp PR #514, merged to master and on `release/0.4.0`), not only the Forumer module build. The execution cost of `storage_module.exists()` has not been benchmarked.
 
 ## Flood-control layers
 
@@ -92,9 +92,9 @@ These quotas are *local per peer*, not network-level transport throttling. A3's 
 
 ## Deployment and compatibility
 
-`metadata.json` declares Forumer **v0.2.5**, type `ui_qml`, runtime Delivery dependency `~0.4.0`, Storage `~3.0.0`, and `forumer.open` intent. The Nix flake uses logos-module-builder `0.3.2`, with Delivery **v0.3.0 as a build-time interface input** and Storage `v3.0.0` as a build input. Do not confuse Nix build-time inputs with the versions installed in a target Basecamp runtime.
+`metadata.json` declares Forumer **v0.2.6**, type `ui_qml`, runtime Delivery dependency `~0.4.0`, Storage `~3.0.0`, and `forumer.open` intent. The Nix flake uses logos-module-builder `0.3.2`, with Delivery **v0.3.0 as a build-time interface input** and Storage `v3.0.0` as a build input. Do not confuse Nix build-time inputs with the versions installed in a target Basecamp runtime.
 
-The regular release workflow currently builds installable portable LGX packages for **Linux x86_64** and **macOS arm64**. A separate, manually triggered workflow cross-builds **Windows x86_64** DLL and LGX on Ubuntu; a green cross-build is not evidence of Windows Basecamp runtime support, nor does the regular release workflow currently attach a Windows asset.
+The release workflow builds installable portable LGX packages for **Linux x86_64** and **macOS arm64**, and a cross-built **Windows x86_64** package. The Windows package is experimental: it has not been installed or run in a Windows Basecamp, and images must be attached by dragging them onto the composer, because there is no file picker on Windows yet. A separate, manually triggered workflow also cross-builds the Windows DLL and package on Ubuntu; a green cross-build is not evidence of Windows runtime support.
 
 ## Where to go next
 
