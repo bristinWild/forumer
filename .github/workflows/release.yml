@@ -20,7 +20,7 @@ jobs:
           - os: ubuntu-24.04
             platform: linux-x86_64
             target: .#lgx-portable
-          - os: macos-14
+          - os: macos-15
             platform: macos-arm64
             target: .#lgx-portable
           - os: ubuntu-24.04
