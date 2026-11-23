@@ -92,7 +92,7 @@ These quotas are *local per peer*, not network-level transport throttling. A3's 
 
 ## Deployment and compatibility
 
-`metadata.json` declares Forumer **v0.2.6**, type `ui_qml`, runtime Delivery dependency `~0.4.0`, Storage `~3.0.0`, and `forumer.open` intent. The Nix flake uses logos-module-builder `0.3.2`, with Delivery **v0.3.0 as a build-time interface input** and Storage `v3.0.0` as a build input. Do not confuse Nix build-time inputs with the versions installed in a target Basecamp runtime.
+`metadata.json` declares Forumer **v0.2.7**, type `ui_qml`, runtime Delivery dependency `>=0.3.0`, Storage `~3.0.0`, and `forumer.open` intent. The Nix flake uses logos-module-builder `0.3.2`, with Delivery **v0.3.0 as a build-time interface input** and Storage `v3.0.0` as a build input. Do not confuse Nix build-time inputs with the versions installed in a target Basecamp runtime.
 
 The release workflow builds installable portable LGX packages for **Linux x86_64** and **macOS arm64**, and a cross-built **Windows x86_64** package. The Windows package is experimental: it has not been installed or run in a Windows Basecamp, and images must be attached by dragging them onto the composer, because there is no file picker on Windows yet. A separate, manually triggered workflow also cross-builds the Windows DLL and package on Ubuntu; a green cross-build is not evidence of Windows runtime support.
 
