@@ -591,24 +591,25 @@ Backend logs are prefixed `[forumer backend]` on the host's stderr.
 
 ---
 
-### Delivery Module v0.4.0 Compatibility
+### Delivery Module Compatibility
 
-Forumer v0.2.6 has been tested with **Logos Delivery Module v0.4.0** and **Logos Storage Module v3.0.2**.
+Forumer v0.2.7 declares **Delivery Module >=0.3.0** and **Storage Module ~3.0.0** as runtime dependencies in `metadata.json`.
 
-The application declares Delivery v0.4.0 as its runtime dependency in `metadata.json`.
+**Tested configurations**
+- **Delivery v0.3.0**, the version pinned in `flake.nix`: a development build run with `nix run` on macOS arm64, on `logos.dev`. A post settles as sent, history is fetched from the store nodes, and two instances exchange posts in a private forum.
+- **Delivery v0.4.0 and Storage v3.0.2**, the v0.2.6 checks (the code is unchanged): topic publishing and cross-profile synchronisation, image previews and full-image rendering, cross-profile image visibility, image persistence after application restart, and the Basecamp QML sandbox regression tests (14/14 passed).
 
-The Nix build currently retains the Delivery v0.3.0 source input for interface generation because the public repository does not provide a matching v0.4.0 source tag. Forumer uses the existing Delivery API methods, whose signatures remain compatible with v0.4.0.
+**Not tested:** installing the package from the catalogue on a Basecamp whose only Delivery module is 0.3.x, and images on Delivery 0.3.x.
 
-**Verified functionality**
-- Topic publishing and cross-profile synchronization
-- Image previews and full-image rendering
-- Cross-profile image visibility
-- Image persistence after application restart
-- Basecamp QML sandbox regression tests (14/14 passed)
+**Why the range is `>=0.3.0`.** The newest stable Delivery module in the official catalogue is v0.3.3. Delivery v0.4.0 exists only as a release candidate, so v0.2.6 (which required `~0.4.0`) showed a conflict on the Delivery row in Package Manager. Forumer keys each send on whatever `send` returns and reads the first event argument, so the same code handles the request id of 0.3.x and the message hash of 0.4.x. The range has no upper bound, so a later Delivery release that changes `send` or its events could break Forumer.
+
+**If Package Manager shows DOWNGRADE** on the Delivery row, the install would replace a newer Delivery module that you already have. Do not force it. Install the release `.lgx` from [Releases](https://github.com/bristinWild/forumer/releases) instead.
+
+The Nix build retains the Delivery v0.3.0 source input for interface generation because the public repository does not provide a matching v0.4.0 source tag. Forumer uses the existing Delivery API methods, whose signatures remain compatible with v0.4.0.
 
 **Basecamp compatibility:** Images need a Basecamp that includes the sandbox image provider ([logos-basecamp #514](https://github.com/logos-co/logos-basecamp/pull/514)), which is merged to master and on the `release/0.4.0` branch. On older builds a notice replaces the picture and the post text is unaffected. Checked on macOS arm64 with two Basecamp instances: the preview travels with the post and the full image is fetched through Logos Storage. Both instances ran on one Mac; transfer between separate networks is untested.
 
-This compatibility statement describes the tested runtime configuration; it does not claim that Forumer is built from Delivery v0.4.0 source code.
+This compatibility statement describes the tested runtime configurations; it does not claim that Forumer is built from Delivery v0.4.0 source code.
 
 ----
 
