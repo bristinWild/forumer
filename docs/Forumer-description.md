@@ -644,7 +644,7 @@ Then in Basecamp: *Package Manager → Install from file* → select the `.lgx`,
 Forumer is published from a fork of `logos-modules-release-base`. Add this repository in Basecamp's package manager:
 
 ```
-https://raw.githubusercontent.com/bristinWild/forumer-modules/main/logos-repo.json
+https://apps.bristinborah.com/logos-repo.json
 ```
 
 Variants built: `darwin-arm64`, `linux-amd64`, `linux-arm64` (+ `windows-x86_64` if the Windows cross-build is supported ⚠ verify).

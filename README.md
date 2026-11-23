@@ -1,6 +1,6 @@
 # Forumer
 
-> **v0.2.6:** [Release notes](docs/releases/v0.2.6.md) · [Architecture](docs/architecture.md) · [Testing](docs/testing.md) · [E3 integration](docs/e3-testing.md) · [Security](docs/security.md). Windows x86_64 is packaged but experimental: it has not been installed or run in a Windows Basecamp. Images need a Basecamp that includes the image provider; see [Basecamp compatibility](#delivery-module-v040-compatibility).
+> **v0.2.7:** [Release notes](docs/releases/v0.2.7.md) · [Architecture](docs/architecture.md) · [Testing](docs/testing.md) · [E3 integration](docs/e3-testing.md) · [Security](docs/security.md). Windows x86_64 is packaged but experimental: it has not been installed or run in a Windows Basecamp. Images need a Basecamp that includes the image provider; see [Basecamp compatibility](#delivery-module-compatibility).
 
 **A private, serverless discussion forum for Logos Basecamp.**
 
@@ -10,7 +10,7 @@ Built for [λPrize LP-0026: Forum App](https://github.com/logos-co/lambda-prize/
 
 > **Demo video:** [watch the end-to-end walkthrough](https://youtu.be/Tc-MUpDcn7M) (about 14 min: install from the catalog, accounts, topics and replies, personas, links, offline, history, flood control).
 >
-> **Install in Basecamp:** Settings → Package Repositories → add `https://raw.githubusercontent.com/bristinWild/forumer-catalog/main/logos-repo.json`, then Package Manager → Social → Forumer → Install. **Catalog note:** the catalog currently serves v0.2.3, not the v0.2.5 release candidate; for v0.2.5-rc.1, use the published platform-specific LGX from [Releases](https://github.com/bristinWild/forumer/releases/tag/v0.2.5-rc.1) and a Basecamp build that includes the image provider (https://github.com/logos-co/logos-basecamp/pull/514)".
+> **Install in Basecamp:** Settings → Package Repositories → add `https://apps.bristinborah.com/logos-repo.json`, then Package Manager → Social → Forumer → Install. Forumer needs the Delivery module v0.3.0 or later. Images need a Basecamp that includes the image provider (https://github.com/logos-co/logos-basecamp/pull/514).
 
 > **Status:** working and in active development. This README describes what is built today. Planned features are marked **(planned)**. The original design document is kept in [`docs/Forumer-description.md`](docs/Forumer-description.md).
 
@@ -86,7 +86,7 @@ nix run            # run Forumer in a standalone Basecamp window
 
 The first build downloads the Logos modules (delivery, storage) and can take a while.
 
-Build inputs: logos-module-builder **0.3.2**, delivery_module **v0.3.0** (build-time API input), storage_module **v3.0.0**. The v0.2.5 module metadata declares **Delivery ~0.4.0** and **Storage ~3.0.0** as runtime dependencies — the 0.3 module generation that current Basecamp runs (0.2 modules don't load in 0.3).
+Build inputs: logos-module-builder **0.3.2**, delivery_module **v0.3.0** (build-time API input), storage_module **v3.0.0**. The v0.2.7 module metadata declares **Delivery >=0.3.0** and **Storage ~3.0.0** as runtime dependencies, for the 0.3 module generation that current Basecamp runs (0.2 modules don't load in 0.3).
 
 On macOS the first launch asks whether to accept incoming network connections: choose **Allow** (the delivery and storage nodes listen for peers).
 
@@ -114,13 +114,13 @@ This builds `forumer_core` and runs the unit tests (the exact number depends on 
 
 ### Install in Basecamp (no build needed)
 
-Forumer is served pre-built from its own Logos module catalog, [`bristinWild/forumer-catalog`](https://github.com/bristinWild/forumer-catalog), made from the official [`logos-modules-release-base`](https://github.com/logos-co/logos-modules-release-base):
+Forumer is served pre-built from its own Logos module catalog, [`bristinWild/bristin-catalog`](https://github.com/bristinWild/bristin-catalog), made from the official [`logos-modules-release-base`](https://github.com/logos-co/logos-modules-release-base):
 
 1. In Basecamp: **Settings → Package Repositories → Add a repository**, and paste
    ```
-   https://raw.githubusercontent.com/bristinWild/forumer-catalog/main/logos-repo.json
+   https://apps.bristinborah.com/logos-repo.json
    ```
-2. **Package Manager → Social → Forumer → Install.** The catalog currently provides v0.2.3. For the v0.2.5-rc.1 candidate, install the platform-specific LGX from [Releases](https://github.com/bristinWild/forumer/releases/tag/v0.2.5-rc.1) in a compatible Basecamp build. Candidate runtime requirements are `delivery_module` (~0.4.0) and `storage_module` (~3.0.0).
+2. **Package Manager → Social → Forumer → Install.** The catalogue provides the latest Forumer release. Runtime requirements are `delivery_module` (>=0.3.0) and `storage_module` (~3.0.0); see [Delivery Module compatibility](#delivery-module-compatibility) if Package Manager reports a conflict.
 3. Open **Forumer** from the sidebar.
 
 Packages are built for macOS (Apple silicon) and Linux (x86_64).
@@ -622,7 +622,7 @@ This compatibility statement describes the tested runtime configuration; it does
 | Reply by unique id, alias, or no id | ✅ | Persona / alias / anonymous per post |
 | Privacy of one identity everywhere | ✅ | Keep / manual / auto rotation ([§5](#5-identity-and-privacy)) |
 | Basecamp GUI with local build steps | ✅ | [§2](#2-quick-start) |
-| Pre-built in a module catalog | ✅ | [`forumer-catalog`](https://github.com/bristinWild/forumer-catalog), built by the official release action ([§2](#2-quick-start)) |
+| Pre-built in a module catalog | ✅ | [`bristin-catalog`](https://github.com/bristinWild/bristin-catalog), built by the official release action ([§2](#2-quick-start)) |
 | Usable by a non-expert | ✅ | Guided onboarding, search, clear sending / live / failed states |
 | Past messages after being offline | ✅ | Store nodes (works with nobody else online), digest catch-up for 48 h, then week-by-week history back to the forum's first post ([§7](#7-network-and-sync)) |
 | Failed sends kept for retry | ✅ | Persistent outbox, automatic and manual retry |
@@ -654,7 +654,7 @@ This compatibility statement describes the tested runtime configuration; it does
 - [ ] Private messages between personas
 - [ ] Mute a persona / hide a post
 - [x] CI (unit tests + module build on Linux and macOS)
-- [x] Module catalog ([`forumer-catalog`](https://github.com/bristinWild/forumer-catalog))
+- [x] Module catalog ([`bristin-catalog`](https://github.com/bristinWild/bristin-catalog))
 - [x] Video demo, FURPS self-assessment
 - [x] Full history for newcomers (week-by-week range requests over Delivery)
 - [x] History from the network's store nodes, with nobody else online
